@@ -1,0 +1,101 @@
+{
+  "gsi": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 3000,
+    "token": "aidota-local-token",
+    "stale_seconds": 45.0
+  },
+  "audio": {
+    "model_path": "vosk-model-ru-0.22",
+    "sample_rate": 16000,
+    "block_size": 8000,
+    "input_device": null,
+    "listen_timeout": 0.0,
+    "push_to_talk": true,
+    "ptt_key": "v"
+  },
+  "tts": {
+    "enabled": true,
+    "rate": 0,
+    "volume": 100,
+    "voice_hint": "Irina",
+    "max_chars": 700
+  },
+  "overlay": {
+    "enabled": true,
+    "width": 520,
+    "height": 300,
+    "alpha": 0.9,
+    "topmost": true,
+    "x": null,
+    "y": null
+  },
+  "vision": {
+    "enabled": true,
+    "icons_dir": "hero_icons",
+    "auto_download": true,
+    "threshold": 0.78,
+    "search_radius": 90
+  },
+  "ollama": {
+    "host": "http://127.0.0.1:11434",
+    "model": "gemma3",
+    "timeout": 120.0,
+    "temperature": 0.4
+  },
+  "llm": {
+    "provider": "ollama",
+    "base_url": "http://127.0.0.1:11434",
+    "api_key": "",
+    "model": "gemma3",
+    "temperature": 0.4,
+    "timeout": 120.0,
+    "presets": {
+      "deepseek": {
+        "provider": "openai_compatible",
+        "base_url": "https://api.deepseek.com/v1",
+        "api_key": "",
+        "model": "deepseek-chat",
+        "temperature": 0.4,
+        "timeout": 60.0
+      },
+      "openrouter": {
+        "provider": "openai_compatible",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key": "",
+        "model": "openai/gpt-4o-mini",
+        "temperature": 0.4,
+        "timeout": 60.0
+      },
+      "groq": {
+        "provider": "openai_compatible",
+        "base_url": "https://api.groq.com/openai/v1",
+        "api_key": "",
+        "model": "llama-3.3-70b-versatile",
+        "temperature": 0.4,
+        "timeout": 60.0
+      }
+    }
+  },
+  "player_profile": {
+    "default_position": 1,
+    "mmr_bracket": "",
+    "hero_pool": {
+      "1": ["Juggernaut", "Slark", "Sven"],
+      "2": ["Queen of Pain", "Puck"],
+      "3": ["Axe", "Centaur Warrunner", "Mars"],
+      "4": ["Hoodwink", "Rubick"],
+      "5": ["Crystal Maiden", "Lich", "Lion"]
+    }
+  },
+  "dota": {
+    "cfg_dir": null,
+    "gsi_config_name": "gamestate_integration_aidota.cfg"
+  },
+  "data_dir": "data",
+  "cache_dir": ".cache",
+  "logs_dir": "logs",
+  "memory_size": 6,
+  "log_level": "INFO"
+}

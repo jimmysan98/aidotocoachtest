@@ -1,0 +1,30 @@
+# Виртуальное окружение и мусор разработки
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Логи и кэш
+logs/
+.cache/
+.test-tmp/
+test-output.txt
+doctor-output.txt
+
+# Сборка PyInstaller
+build/
+dist/
+
+# Большая локальная модель Vosk (скачивается отдельно)
+vosk-model-ru-0.22/
+
+# Временные файлы диагностики
+probe_*.py
+smoke*.py
+fetch_assets_tmp.py
+regen_items.py
+
+# Редакторы
+.vscode/
+.idea/
+*.swp
