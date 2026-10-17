@@ -1,0 +1,12 @@
+# AIDOTA — минимальный набор зависимостей для Windows.
+# Установка: python -m venv .venv && .venv\Scripts\python.exe -m pip install -r requirements.txt
+
+vosk==0.3.45
+srt==3.5.3               # импортируется внутри vosk (субтитры, нужен даже без transcriber)
+sounddevice==0.5.5
+numpy==2.4.6
+opencv-python==4.13.0.92
+mss==10.2.0
+requests==2.34.2
+# Озвучка через Windows SAPI (pywin32) и COM:
+pywin32==311; sys_platform == "win32"

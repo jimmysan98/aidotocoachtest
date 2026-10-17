@@ -1,0 +1,83 @@
+{
+  "provider": {
+    "name": "Dota 2",
+    "appid": 570,
+    "version": 44,
+    "timestamp": 1760700000
+  },
+  "map": {
+    "name": "dota",
+    "matchid": "7550123456",
+    "game_time": 754,
+    "clock_time": 754,
+    "daytime": true,
+    "nightstalker_night": false,
+    "radiant_score": 5,
+    "dire_score": 3,
+    "game_state": "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS",
+    "paused": false
+  },
+  "player": {
+    "steamid": "76561198000000000",
+    "accountid": 39734237,
+    "name": "Player",
+    "activity": "playing",
+    "kills": 4,
+    "deaths": 1,
+    "assists": 2,
+    "last_hits": 87,
+    "denies": 5,
+    "kill_streak": 2,
+    "commands_issued": 1240,
+    "team_name": "radiant",
+    "gold": 1234,
+    "gold_reliable": 500,
+    "gold_unreliable": 734,
+    "gpm": 450,
+    "xpm": 500
+  },
+  "hero": {
+    "id": 1,
+    "name": "npc_dota_hero_antimage",
+    "level": 12,
+    "xp": 8400,
+    "alive": true,
+    "respawn_seconds": 0,
+    "buyback_cost": 300,
+    "buyback_cooldown": 0,
+    "health": 1000,
+    "max_health": 1200,
+    "health_percent": 83.3,
+    "mana": 400,
+    "max_mana": 500,
+    "mana_percent": 80.0,
+    "silenced": false,
+    "stunned": false,
+    "disarmed": false,
+    "magicimmune": false,
+    "hexed": false,
+    "muted": false,
+    "break": false,
+    "aghanims_scepter": false,
+    "aghanims_shard": false,
+    "smoked": false,
+    "has_debuff": false,
+    "items": {
+      "slot0": {"name": "item_power_treads", "purchaser": 0, "cooldown": 0, "passive": false},
+      "slot1": {"name": "item_bfury", "purchaser": 0, "cooldown": 0, "passive": false},
+      "slot2": {"name": "item_manta", "purchaser": 0, "cooldown": 0, "passive": false},
+      "slot3": {"name": "item_empty", "purchaser": 0, "cooldown": 0, "passive": false},
+      "neutral0": {"name": "item_occult_bracelet", "purchaser": 0, "cooldown": 0, "passive": true}
+    }
+  },
+  "draft": {
+    "team2": {
+      "pick_ids": [1, 2, 7],
+      "bans": [2]
+    },
+    "team3": {
+      "pick_ids": [11, 15],
+      "bans": [11]
+    }
+  }
+}
