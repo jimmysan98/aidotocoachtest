@@ -365,8 +365,8 @@ class Tts:
             str(piper_exe),
             "--model", str(model_path),
             "--output_file", "-",
-            "--sentence_silence", "0.05",
-            "--length_scale", "0.88",
+            "--sentence_silence", "0.15",
+            "--length_scale", "1.0",
         ]
 
         creationflags = 0
@@ -392,6 +392,45 @@ class Tts:
             self._phrase_cache[cache_key] = (data, samplerate)
         return data, samplerate
 
+    def _play_audio(self, data: Any, samplerate: int) -> None:
+        """Воспроизводит аудио без помех, клиппинга и артефактов частоты дискретизации."""
+        import numpy as np
+        import sounddevice as sd
+        from .audio import resolve_device
+
+        dev_id, _ = resolve_device(self.config.output_device, kind="output")
+
+        # 1. Защита от клиппинга / перегрузки ЦАП: запас по громкости до 0.88 (-1.1 dB)
+        arr = np.asarray(data, dtype=np.float32)
+        if arr.size > 0:
+            peak = float(np.max(np.abs(arr)))
+            if peak > 0.88:
+                arr = arr * (0.88 / peak)
+
+        # 2. Согласование частоты дискретизации с целевым устройством (устранение треска/помех WASAPI)
+        target_sr = samplerate
+        try:
+            dev_info = sd.query_devices(dev_id, kind="output")
+            native_sr = int(dev_info.get("default_samplerate", 0))
+            if native_sr in (44100, 48000, 96000) and native_sr != samplerate:
+                target_sr = native_sr
+        except Exception:
+            pass
+
+        if target_sr != samplerate and arr.size > 0:
+            num_target = int(round(len(arr) * target_sr / samplerate))
+            x_orig = np.linspace(0, 1, len(arr), endpoint=False)
+            x_target = np.linspace(0, 1, num_target, endpoint=False)
+            arr = np.interp(x_target, x_orig, arr).astype(np.float32)
+            samplerate = target_sr
+
+        # 3. Дублирование моно в стерео: предотвращает выпадение одного уха и фазовые искажения в гарнитурах
+        if arr.ndim == 1:
+            arr = np.column_stack([arr, arr])
+
+        sd.play(arr, samplerate, device=dev_id)
+        sd.wait()
+
     def _say(self, text: str) -> None:
         # 1. Приоритетный режим: нейросетевой голос Astra (edge-tts)
         if getattr(self.config, "provider", "edge") == "edge":
@@ -400,9 +439,7 @@ class Tts:
                 from .audio import resolve_device
                 import sounddevice as sd
 
-                dev_id, _ = resolve_device(self.config.output_device, kind="output")
-                sd.play(data, samplerate, device=dev_id)
-                sd.wait()
+                self._play_audio(data, samplerate)
                 self._backend = "Edge (нейросеть Astra)"
                 self._speak_failed = False
                 self._error = None
@@ -418,9 +455,7 @@ class Tts:
                 from .audio import resolve_device
                 import sounddevice as sd
 
-                dev_id, _ = resolve_device(self.config.output_device, kind="output")
-                sd.play(data, samplerate, device=dev_id)
-                sd.wait()
+                self._play_audio(data, samplerate)
                 self._backend = "Piper (офлайн-нейросеть)"
                 self._speak_failed = False
                 self._error = None
