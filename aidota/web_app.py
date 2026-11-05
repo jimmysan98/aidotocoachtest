@@ -24,6 +24,7 @@ from typing import Any
 from . import __version__
 from .app import Assistant
 from .audio import list_audio_devices
+from .rust_bridge import is_rust_available
 from .config import (
     DEFAULT_CONFIG_PATH,
     PROJECT_ROOT,
@@ -64,7 +65,7 @@ class AidotaWebApi:
     """Двусторонний API-мост между JavaScript веб-интерфейсом и ядром Python."""
 
     def __init__(self, app_controller: "WebGuiController"):
-        self.ctrl = app_controller
+        self._ctrl = app_controller
         # Кэши иконок живут в памяти: JS дёргает API при каждой смене героя/слота.
         self._hero_icon_cache: dict[str, str] = {}
         self._item_icon_cache: dict[str, str] = {}
@@ -77,14 +78,14 @@ class AidotaWebApi:
     # Общие источники живых данных
     # ------------------------------------------------------------------ #
     def _assistant_coach(self) -> Any | None:
-        return getattr(self.ctrl.assistant, "_coach", None) if self.ctrl.assistant else None
+        return getattr(self._ctrl.assistant, "_coach", None) if self._ctrl.assistant else None
 
     def _item_api(self) -> Any | None:
         """DotaApi живого ассистента (если он уже создан)."""
         coach = self._assistant_coach()
         api = getattr(coach, "api", None) if coach is not None else None
-        if api is None and self.ctrl.assistant is not None:
-            api = getattr(self.ctrl.assistant, "_api", None)
+        if api is None and self._ctrl.assistant is not None:
+            api = getattr(self._ctrl.assistant, "_api", None)
         return api
 
     def _heroes(self) -> list[dict]:
@@ -101,7 +102,7 @@ class AidotaWebApi:
         if not heroes:
             try:
                 data = json.loads(
-                    (self.ctrl.config.data_path / "heroes.json").read_text(encoding="utf-8")
+                    (self._ctrl.config.data_path / "heroes.json").read_text(encoding="utf-8")
                 )
                 if isinstance(data, list):
                     heroes = [h for h in data if isinstance(h, dict)]
@@ -127,7 +128,7 @@ class AidotaWebApi:
         if not result:
             try:
                 data = json.loads(
-                    (self.ctrl.config.data_path / "items.json").read_text(encoding="utf-8")
+                    (self._ctrl.config.data_path / "items.json").read_text(encoding="utf-8")
                 )
                 if isinstance(data, dict):
                     for key, value in data.items():
@@ -165,7 +166,7 @@ class AidotaWebApi:
         result = {}
         try:
             data = json.loads(
-                (self.ctrl.config.data_path / "items.json").read_text(encoding="utf-8")
+                (self._ctrl.config.data_path / "items.json").read_text(encoding="utf-8")
             )
             if isinstance(data, dict):
                 for value in data.values():
@@ -206,7 +207,7 @@ class AidotaWebApi:
     def _hero_icon_dirs(self) -> list[Path]:
         dirs: list[Path] = []
         try:
-            dirs.append(self.ctrl.config.path(self.ctrl.config.vision.icons_dir))
+            dirs.append(self._ctrl.config.path(self._ctrl.config.vision.icons_dir))
         except Exception:  # noqa: BLE001
             pass
         dirs.append(PROJECT_ROOT / "hero_icons")
@@ -302,7 +303,7 @@ class AidotaWebApi:
             if cached is not None:
                 return cached
             try:
-                cache_dir = self.ctrl.config.cache_path / "item_icons"
+                cache_dir = self._ctrl.config.cache_path / "item_icons"
             except Exception:  # noqa: BLE001
                 cache_dir = PROJECT_ROOT / ".cache" / "item_icons"
             path = cache_dir / f"{slug}.png"
@@ -327,14 +328,14 @@ class AidotaWebApi:
     def get_live_advice(self) -> list[dict[str, Any]]:
         """Свежие советы по закупке (build_item_advice) по текущему GSI."""
         try:
-            raw_state = self.ctrl.raw_gsi_payload()
+            raw_state = self._ctrl.raw_gsi_payload()
             if not isinstance(raw_state, dict) or not raw_state:
                 return []
             coach = self._assistant_coach()
             catalog = getattr(coach, "catalog", None) if coach is not None else None
-            if catalog is None and self.ctrl.assistant is not None:
-                catalog = getattr(self.ctrl.assistant, "_catalog", None)
-            position = int(self.ctrl.config.player_profile.default_position or 1)
+            if catalog is None and self._ctrl.assistant is not None:
+                catalog = getattr(self._ctrl.assistant, "_catalog", None)
+            position = int(self._ctrl.config.player_profile.default_position or 1)
             item_costs = self._item_costs_map()
             snapshot = get_live_gsi_snapshot(
                 raw_state,
@@ -402,11 +403,11 @@ class AidotaWebApi:
         возвращать безопасные значения и НИКОГДА не падать, иначе веб-UI
         перестаёт обновлять живые данные (герой, золото, KDA, таймеры).
         """
-        cfg = self.ctrl.config
+        cfg = self._ctrl.config
         coach_name = cfg.player_profile.coach_name or "Астра"
         pos = int(cfg.player_profile.default_position or 1)
 
-        coach = getattr(self.ctrl.assistant, "_coach", None) if self.ctrl.assistant else None
+        coach = getattr(self._ctrl.assistant, "_coach", None) if self._ctrl.assistant else None
         raw_state: dict | None = None
         gsi_age: float | None = None
         catalog = None
@@ -425,18 +426,18 @@ class AidotaWebApi:
                 items_map = coach.api.items() or {}
             except Exception:  # noqa: BLE001
                 items_map = {}
-        if catalog is None and self.ctrl.assistant is not None:
-            catalog = getattr(self.ctrl.assistant, "_catalog", None)
-        if not items_map and self.ctrl.assistant is not None:
-            api_obj = getattr(self.ctrl.assistant, "_api", None)
+        if catalog is None and self._ctrl.assistant is not None:
+            catalog = getattr(self._ctrl.assistant, "_catalog", None)
+        if not items_map and self._ctrl.assistant is not None:
+            api_obj = getattr(self._ctrl.assistant, "_api", None)
             if api_obj is not None:
                 try:
                     items_map = api_obj.items() or {}
                 except Exception:  # noqa: BLE001
                     items_map = {}
         item_api = getattr(coach, "api", None) if coach is not None else None
-        if item_api is None and self.ctrl.assistant is not None:
-            item_api = getattr(self.ctrl.assistant, "_api", None)
+        if item_api is None and self._ctrl.assistant is not None:
+            item_api = getattr(self._ctrl.assistant, "_api", None)
         item_costs_map: dict[str, int] = {}
         if item_api is not None:
             costs_getter = getattr(item_api, "item_costs", None)
@@ -455,7 +456,7 @@ class AidotaWebApi:
             # Контракт v1.2: оценка нетворса и цены советов по data/items.json.
             item_costs_map = self._item_costs_map()
         if raw_state is None:
-            gsi_server = getattr(self.ctrl.assistant, "_gsi", None) if self.ctrl.assistant else None
+            gsi_server = getattr(self._ctrl.assistant, "_gsi", None) if self._ctrl.assistant else None
             if gsi_server is not None:
                 try:
                     raw_state = gsi_server.snapshot()
@@ -565,65 +566,66 @@ class AidotaWebApi:
             "skill_level": normalize_skill_level(
                 getattr(cfg.player_profile, "skill_level", "beginner")
             ),
-            "assistant_running": self.ctrl.is_running,
+            "assistant_running": self._ctrl.is_running,
             "gsi": gsi_data,
-            "audio_devices": self.ctrl.audio_devices(),
+            "audio_devices": self._ctrl.audio_devices(),
+            "rust_active": is_rust_available(),
         }
 
     def toggle_assistant(self) -> bool:
         """Запускает или останавливает фонового голосового тренера."""
-        if self.ctrl.is_running:
-            self.ctrl.stop_assistant()
+        if self._ctrl.is_running:
+            self._ctrl.stop_assistant()
             return False
-        self.ctrl.start_assistant()
+        self._ctrl.start_assistant()
         return True
 
     def set_coach(self, coach_name: str) -> bool:
         """Переключает активного тренера (Астра / Джарвис)."""
         clean = (coach_name or "Астра").strip()
-        self.ctrl.config.player_profile.coach_name = clean
+        self._ctrl.config.player_profile.coach_name = clean
         # Синхронизируем голос
         if "джарвис" in clean.lower():
-            self.ctrl.config.tts.edge_voice = "ru-RU-DmitryNeural"
+            self._ctrl.config.tts.edge_voice = "ru-RU-DmitryNeural"
         else:
-            self.ctrl.config.tts.edge_voice = "ru-RU-SvetlanaNeural"
+            self._ctrl.config.tts.edge_voice = "ru-RU-SvetlanaNeural"
 
-        if self.ctrl.assistant:
-            self.ctrl.assistant.set_coach_name(clean)
-            if hasattr(self.ctrl.assistant, "_tts") and hasattr(self.ctrl.assistant._tts, "config"):
-                self.ctrl.assistant._tts.config.edge_voice = self.ctrl.config.tts.edge_voice
+        if self._ctrl.assistant:
+            self._ctrl.assistant.set_coach_name(clean)
+            if hasattr(self._ctrl.assistant, "_tts") and hasattr(self._ctrl.assistant._tts, "config"):
+                self._ctrl.assistant._tts.config.edge_voice = self._ctrl.config.tts.edge_voice
 
-        save_config(self.ctrl.config, self.ctrl.config_path)
-        self.ctrl.tray.update_menu()
+        save_config(self._ctrl.config, self._ctrl.config_path)
+        self._ctrl.tray.update_menu()
         return True
 
     def set_position(self, pos: int) -> bool:
         """Переключает позицию игрока (1–5)."""
         pos = max(1, min(5, int(pos or 1)))
-        self.ctrl.config.player_profile.default_position = pos
-        if self.ctrl.assistant:
-            self.ctrl.assistant.set_position(pos)
-        save_config(self.ctrl.config, self.ctrl.config_path)
-        self.ctrl.tray.update_menu()
+        self._ctrl.config.player_profile.default_position = pos
+        if self._ctrl.assistant:
+            self._ctrl.assistant.set_position(pos)
+        save_config(self._ctrl.config, self._ctrl.config_path)
+        self._ctrl.tray.update_menu()
         return True
 
     def test_voice(self, phrase: str) -> bool:
         """Воспроизводит проверочную фразу через TTS."""
         text = str(phrase or "Тест звуковой системы AIDOTA PRO").strip()
-        if self.ctrl.assistant and hasattr(self.ctrl.assistant, "_tts"):
-            self.ctrl.assistant._tts.speak(text)
+        if self._ctrl.assistant and hasattr(self._ctrl.assistant, "_tts"):
+            self._ctrl.assistant._tts.speak(text)
             return True
         from .tts import Tts
 
-        tts = Tts(self.ctrl.config.tts)
+        tts = Tts(self._ctrl.config.tts)
         tts.start()
         tts.speak(text)
         return True
 
     def toggle_overlay(self) -> bool:
         """Показывает или скрывает внутриигровой оверлей."""
-        if self.ctrl.assistant and getattr(self.ctrl.assistant, "_overlay", None):
-            self.ctrl.assistant._overlay.toggle()
+        if self._ctrl.assistant and getattr(self._ctrl.assistant, "_overlay", None):
+            self._ctrl.assistant._overlay.toggle()
             return True
         return False
 
@@ -632,24 +634,24 @@ class AidotaWebApi:
         query = str(text or "").strip()
         if not query:
             return "Да, я на связи. Что подсказать?"
-        if self.ctrl.assistant and hasattr(self.ctrl.assistant, "_coach"):
-            reply = self.ctrl.assistant._coach.coach_chat(query)
-            if hasattr(self.ctrl.assistant, "_tts"):
-                self.ctrl.assistant._tts.speak(reply)
+        if self._ctrl.assistant and hasattr(self._ctrl.assistant, "_coach"):
+            reply = self._ctrl.assistant._coach.coach_chat(query)
+            if hasattr(self._ctrl.assistant, "_tts"):
+                self._ctrl.assistant._tts.speak(reply)
             return reply
         from .coach import Coach
         from .dota_api import DotaApi
         from .heroes import HeroCatalog
 
-        api = DotaApi(self.ctrl.config.data_path)
+        api = DotaApi(self._ctrl.config.data_path)
         api.load_snapshots()
         coach = Coach(
             api,
             HeroCatalog([]),
             None,
-            self.ctrl.config.llm,
-            self.ctrl.config.player_profile,
-            coach_name=self.ctrl.config.player_profile.coach_name or "Астра",
+            self._ctrl.config.llm,
+            self._ctrl.config.player_profile,
+            coach_name=self._ctrl.config.player_profile.coach_name or "Астра",
         )
         return coach.coach_chat(query)
 
@@ -665,7 +667,7 @@ class AidotaWebApi:
     def save_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Сохраняет настройки пользователя в config.json."""
         try:
-            cfg = self.ctrl.config
+            cfg = self._ctrl.config
             if "llm_base_url" in payload:
                 cfg.llm.base_url = str(payload["llm_base_url"]).strip()
             if "llm_model" in payload:
@@ -687,14 +689,14 @@ class AidotaWebApi:
             if "skill_level" in payload:
                 cfg.player_profile.skill_level = normalize_skill_level(payload["skill_level"])
 
-            save_config(cfg, self.ctrl.config_path)
+            save_config(cfg, self._ctrl.config_path)
 
             # Обновляем инстанс ассистента на лету
-            if self.ctrl.assistant:
-                self.ctrl.assistant._coach.llm.base_url = cfg.llm.base_url
-                self.ctrl.assistant._coach.llm.model = cfg.llm.model
-                self.ctrl.assistant._coach.llm.api_key = cfg.llm.api_key
-                self.ctrl.assistant._agent.set_autonomy_level(cfg.player_profile.autonomy_level)
+            if self._ctrl.assistant:
+                self._ctrl.assistant._coach.llm.base_url = cfg.llm.base_url
+                self._ctrl.assistant._coach.llm.model = cfg.llm.model
+                self._ctrl.assistant._coach.llm.api_key = cfg.llm.api_key
+                self._ctrl.assistant._agent.set_autonomy_level(cfg.player_profile.autonomy_level)
                 self._apply_skill_level(cfg.player_profile.skill_level)
 
             return {"success": True, "message": "Настройки успешно сохранены!"}
@@ -710,7 +712,7 @@ class AidotaWebApi:
         поэтому используем ``getattr``/``hasattr`` и запасной путь через профиль.
         """
         level = normalize_skill_level(level)
-        assistant = self.ctrl.assistant
+        assistant = self._ctrl.assistant
         if not assistant:
             return
         for target_name in ("_coach", "_agent"):
@@ -736,7 +738,7 @@ class AidotaWebApi:
     def run_doctor(self) -> list[dict[str, Any]]:
         """Запускает 12 проверок окружения и возвращает структурированный отчёт."""
         try:
-            checks = get_checks(self.ctrl.config)
+            checks = get_checks(self._ctrl.config)
             return [
                 {
                     "name": getattr(c, "name", "Проверка"),
@@ -750,7 +752,7 @@ class AidotaWebApi:
 
     def install_gsi(self) -> dict[str, Any]:
         """Автоматическая установка конфига GSI в Dota 2."""
-        ok, msg = install_gsi_full(self.ctrl.config)
+        ok, msg = install_gsi_full(self._ctrl.config)
         return {"success": ok, "message": msg}
 
     def add_to_steam(self) -> dict[str, Any]:
@@ -760,9 +762,9 @@ class AidotaWebApi:
 
     def minimize_to_tray(self) -> bool:
         """Сворачивает окно приложения в системный трей."""
-        if self.ctrl.window:
+        if self._ctrl.window:
             try:
-                self.ctrl.window.minimize()
+                self._ctrl.window.minimize()
                 return True
             except Exception:  # noqa: BLE001
                 pass
@@ -773,7 +775,7 @@ class AidotaWebApi:
         from .meta_db import recommend_picks
         enemies = payload.get("enemies") or []
         allies = payload.get("allies") or []
-        role = int(payload.get("role") or self.ctrl.config.player_profile.default_position or 1)
+        role = int(payload.get("role") or self._ctrl.config.player_profile.default_position or 1)
         picks = recommend_picks(enemies, allies, role=role, top_k=5)
         return {"picks": picks}
 
@@ -781,7 +783,7 @@ class AidotaWebApi:
         """Возвращает детальный гайд по закупкам и прокачке героя."""
         from .meta_db import get_hero_build
         hero_name = str(payload.get("hero_name") or "Anti-Mage").strip()
-        role = int(payload.get("role") or self.ctrl.config.player_profile.default_position or 1)
+        role = int(payload.get("role") or self._ctrl.config.player_profile.default_position or 1)
         enemies = payload.get("enemies") or []
         build = get_hero_build(hero_name, role=role, enemy_heroes=enemies)
         return {"build": build}
@@ -802,11 +804,11 @@ class AidotaWebApi:
 
     def get_live_draft_heroes(self) -> dict[str, Any]:
         """Считывает текущих героев из матча Dota 2 (GSI)."""
-        raw_state = self.ctrl.raw_gsi_payload()
+        raw_state = self._ctrl.raw_gsi_payload()
         catalog = None
-        if self.ctrl.assistant:
-            coach = getattr(self.ctrl.assistant, "_coach", None)
-            catalog = getattr(coach, "catalog", None) or getattr(self.ctrl.assistant, "_catalog", None)
+        if self._ctrl.assistant:
+            coach = getattr(self._ctrl.assistant, "_coach", None)
+            catalog = getattr(coach, "catalog", None) or getattr(self._ctrl.assistant, "_catalog", None)
         from .context import collect_draft
 
         draft = collect_draft(raw_state, catalog)
@@ -850,7 +852,14 @@ class WebGuiController:
         if self.is_running:
             return
         try:
-            self.assistant = Assistant(self.config, text_mode=False, config_path=self.config_path)
+            import copy
+
+            cfg = copy.deepcopy(self.config)
+            # Отключаем старый оверлей Tkinter: веб-интерфейс сам является
+            # полноценным окном, два GUI-цикла в одном процессе вызывают
+            # конфликт очередей сообщений Windows и зависание окна.
+            cfg.overlay.enabled = False
+            self.assistant = Assistant(cfg, text_mode=False, config_path=self.config_path)
             # Кнопка/голос «Настройки» больше не открывает отдельное окно:
             # переключаем пользователя на вкладку настроек основного интерфейса.
             self.assistant.on_open_settings = self.open_settings_tab
@@ -891,7 +900,13 @@ class WebGuiController:
         if self._audio_cache is not None and now - self._audio_cache[0] < max_age:
             return self._audio_cache[1]
         try:
-            devices = list_audio_devices()
+            res = list_audio_devices()
+            if isinstance(res, tuple) and len(res) == 2:
+                devices = {"inputs": res[0], "outputs": res[1]}
+            elif isinstance(res, dict):
+                devices = res
+            else:
+                devices = {"inputs": [], "outputs": []}
         except Exception:  # noqa: BLE001
             devices = {"inputs": [], "outputs": []}
         self._audio_cache = (now, devices)
@@ -994,11 +1009,8 @@ def run_web_gui(config: Config, config_path: Path | None = None) -> int:
     )
     ctrl.window = window
 
-    # Автоматически стартуем ассистента в фоне
-    ctrl.start_assistant()
-
     try:
-        webview.start(debug=False)
+        webview.start(ctrl.start_assistant, debug=False)
     except Exception as exc:  # noqa: BLE001
         log.warning("pywebview завершился с ошибкой или прерван: %s", exc)
     finally:

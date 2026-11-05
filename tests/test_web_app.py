@@ -103,6 +103,34 @@ class TestWebApiController(unittest.TestCase):
         self.assertIn("enemies", draft)
         self.assertIn("allies", draft)
 
+    def test_api_has_no_public_ctrl_attribute(self):
+        """Проверяем, что js_api не содержит открытых ссылок на ctrl/window (защита от рекурсивной рефлексии pywebview)."""
+        self.assertFalse(hasattr(self.api, "ctrl"))
+        self.assertTrue(hasattr(self.api, "_ctrl"))
+        public_members = [m for m in dir(self.api) if not m.startswith("_")]
+        for m in public_members:
+            attr = getattr(self.api, m)
+            self.assertTrue(callable(attr), f"Публичный член {m} должен быть методом, а не объектом данных")
+
+    def test_audio_devices_normalizes_tuple(self):
+        import aidota.web_app as web_app_mod
+        orig = web_app_mod.list_audio_devices
+        try:
+            web_app_mod.list_audio_devices = lambda: ([{"id": 0, "name": "Mic"}], [{"id": 1, "name": "Spk"}])
+            self.ctrl._audio_cache = None
+            devs = self.ctrl.audio_devices()
+            self.assertIsInstance(devs, dict)
+            self.assertIn("inputs", devs)
+            self.assertIn("outputs", devs)
+            self.assertEqual(len(devs["inputs"]), 1)
+        finally:
+            web_app_mod.list_audio_devices = orig
+
+    def test_get_state_includes_rust_active(self):
+        state = self.api.get_state()
+        self.assertIn("rust_active", state)
+        self.assertIsInstance(state["rust_active"], bool)
+
 
 if __name__ == "__main__":
     unittest.main()
