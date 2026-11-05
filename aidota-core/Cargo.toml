@@ -5,6 +5,14 @@ edition = "2021"
 authors = ["AIDOTA Team"]
 description = "High-performance Rust core and GSI engine for AIDOTA"
 
+[lib]
+name = "aidota_rust"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "aidota-core"
+path = "src/main.rs"
+
 [dependencies]
 tokio = { version = "1.40", features = ["full"] }
 axum = { version = "0.7", features = ["ws"] }
