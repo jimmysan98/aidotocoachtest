@@ -1,0 +1,201 @@
+{
+  "gsi": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 3000,
+    "token": "aidota-local-token",
+    "stale_seconds": 45.0
+  },
+  "audio": {
+    "model_path": "vosk-model-small-ru-0.22",
+    "sample_rate": 16000,
+    "block_size": 8000,
+    "input_device": null,
+    "listen_timeout": 0.0,
+    "push_to_talk": true,
+    "ptt_key": "v"
+  },
+  "tts": {
+    "enabled": true,
+    "provider": "edge",
+    "edge_voice": "ru-RU-SvetlanaNeural",
+    "rate": 0,
+    "volume": 100,
+    "voice_hint": "Irina",
+    "max_chars": 700,
+    "output_device": null
+  },
+  "overlay": {
+    "enabled": true,
+    "width": 520,
+    "height": 300,
+    "alpha": 0.9,
+    "topmost": true,
+    "x": null,
+    "y": null,
+    "toggle_key": "alt+z"
+  },
+  "vision": {
+    "enabled": true,
+    "icons_dir": "hero_icons",
+    "auto_download": true,
+    "threshold": 0.78,
+    "search_radius": 90
+  },
+  "ollama": {
+    "host": "http://127.0.0.1:11434",
+    "model": "gemma3",
+    "timeout": 120.0,
+    "temperature": 0.4
+  },
+  "llm": {
+    "provider": "openai_compatible",
+    "base_url": "https://openrouter.ai/api/v1",
+    "api_key": "",
+    "model": "openai/gpt-4o-mini",
+    "temperature": 0.4,
+    "timeout": 60.0,
+    "max_tokens": 350,
+    "presets": {
+      "pollinations": {
+        "provider": "openai_compatible",
+        "base_url": "https://text.pollinations.ai/openai",
+        "api_key": "",
+        "model": "openai",
+        "temperature": 0.4,
+        "timeout": 60.0,
+        "max_tokens": 350
+      },
+      "pollinations_gemini": {
+        "provider": "openai_compatible",
+        "base_url": "https://text.pollinations.ai/openai",
+        "api_key": "",
+        "model": "gemini",
+        "temperature": 0.4,
+        "timeout": 60.0,
+        "max_tokens": 350
+      },
+      "pollinations_gemini_thinking": {
+        "provider": "openai_compatible",
+        "base_url": "https://text.pollinations.ai/openai",
+        "api_key": "",
+        "model": "gemini-thinking",
+        "temperature": 0.4,
+        "timeout": 60.0,
+        "max_tokens": 350
+      },
+      "google_gemini": {
+        "provider": "openai_compatible",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "api_key": "",
+        "model": "gemini-2.5-flash",
+        "temperature": 0.4,
+        "timeout": 60.0,
+        "max_tokens": 350
+      },
+      "gemini_pro": {
+        "provider": "openai_compatible",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "api_key": "",
+        "model": "gemini-2.5-pro",
+        "temperature": 0.4,
+        "timeout": 60.0,
+        "max_tokens": 350
+      },
+      "openrouter_free": {
+        "provider": "openai_compatible",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key": "",
+        "model": "google/gemini-2.0-flash-exp:free",
+        "temperature": 0.4,
+        "timeout": 60.0,
+        "max_tokens": 350
+      },
+      "deepseek": {
+        "provider": "openai_compatible",
+        "base_url": "https://api.deepseek.com/v1",
+        "api_key": "",
+        "model": "deepseek-chat",
+        "temperature": 0.4,
+        "timeout": 60.0
+      },
+      "openrouter": {
+        "provider": "openai_compatible",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key": "",
+        "model": "openai/gpt-4o-mini",
+        "temperature": 0.4,
+        "timeout": 60.0,
+        "max_tokens": 350
+      },
+      "groq": {
+        "provider": "openai_compatible",
+        "base_url": "https://api.groq.com/openai/v1",
+        "api_key": "",
+        "model": "llama-3.3-70b-versatile",
+        "temperature": 0.4,
+        "timeout": 60.0
+      },
+      "openai": {
+        "provider": "openai_compatible",
+        "base_url": "https://api.openai.com/v1",
+        "api_key": "",
+        "model": "gpt-4o-mini",
+        "temperature": 0.4,
+        "timeout": 60.0
+      },
+      "ollama": {
+        "provider": "ollama",
+        "base_url": "http://127.0.0.1:11434",
+        "api_key": "",
+        "model": "gemma3",
+        "temperature": 0.4,
+        "timeout": 120.0
+      }
+    }
+  },
+  "player_profile": {
+    "default_position": 1,
+    "mmr_bracket": "",
+    "hero_pool": {
+      "1": [
+        "Juggernaut",
+        "Slark",
+        "Sven"
+      ],
+      "2": [
+        "Queen of Pain",
+        "Puck"
+      ],
+      "3": [
+        "Axe",
+        "Centaur Warrunner",
+        "Mars"
+      ],
+      "4": [
+        "Hoodwink",
+        "Rubick"
+      ],
+      "5": [
+        "Crystal Maiden",
+        "Lich",
+        "Lion"
+      ]
+    },
+    "account_id": null,
+    "coach_name": "Астра",
+    "autonomy_level": "medium",
+    "skill_level": "beginner"
+  },
+  "dota": {
+    "cfg_dir": null,
+    "gsi_config_name": "gamestate_integration_aidota.cfg"
+  },
+  "minimize_to_tray": true,
+  "autostart": false,
+  "data_dir": "data",
+  "cache_dir": ".cache",
+  "logs_dir": "logs",
+  "memory_size": 20,
+  "log_level": "INFO"
+}

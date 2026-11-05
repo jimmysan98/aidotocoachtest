@@ -126,15 +126,31 @@ class HeroVision:
         return slug.replace("_", " ").title()
 
     # ------------------------------------------------------------------ #
-    def _grab(self, left: int, top: int, width: int, height: int):
-        import mss
+    def _get_sct(self):
+        if not hasattr(self, "_sct") or self._sct is None:
+            import mss
 
-        with mss.mss() as sct:
+            self._sct = mss.mss()
+        return self._sct
+
+    def _grab(self, left: int, top: int, width: int, height: int):
+        sct = self._get_sct()
+        try:
             monitor = sct.monitors[1]
             left = max(0, min(left, monitor["width"] - width - 1))
             top = max(0, min(top, monitor["height"] - height - 1))
             region = {"left": left, "top": top, "width": width, "height": height}
             return sct.grab(region)
+        except Exception:
+            # Recreate on error (e.g. resolution change)
+            import mss
+
+            self._sct = mss.mss()
+            monitor = self._sct.monitors[1]
+            left = max(0, min(left, monitor["width"] - width - 1))
+            top = max(0, min(top, monitor["height"] - height - 1))
+            region = {"left": left, "top": top, "width": width, "height": height}
+            return self._sct.grab(region)
 
     def detect_at(self, x: int, y: int) -> dict[str, Any] | None:
         if not self.load():

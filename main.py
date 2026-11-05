@@ -1,4 +1,4 @@
-"""AIDOTA — голосовой помощник по Dota 2.
+﻿"""AIDOTA — голосовой помощник по Dota 2.
 
 Запуск:            python main.py
 Текстовый режим:   python main.py --text
@@ -10,11 +10,12 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
 from aidota import __version__
-from aidota.config import Config, load_config, save_config
+from aidota.config import Config, PROJECT_ROOT, load_config, save_config
 from aidota.logging_setup import get_logger, setup_logging
 
 BANNER = r"""
@@ -62,11 +63,20 @@ def build_parser() -> argparse.ArgumentParser:
                         help="обновить снапшоты героев и предметов с OpenDota")
     parser.add_argument("--log-level", default=None,
                         help="DEBUG, INFO, WARNING (по умолчанию из config.json)")
+    parser.add_argument("--cli", action="store_true",
+                        help="консольный режим без графического интерфейса лаунчера")
+    parser.add_argument("--add-to-steam", action="store_true",
+                        help="добавить AIDOTA в библиотеку сторонних игр Steam")
     parser.add_argument("--version", action="version", version=f"aidota {__version__}")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        os.chdir(PROJECT_ROOT)
+    except Exception:
+        pass
+
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")
@@ -108,6 +118,24 @@ def main(argv: list[str] | None = None) -> int:
         return _update_data(config)
     if args.install_gsi:
         return _install_gsi(config)
+    if args.add_to_steam:
+        from aidota.dota_install import add_to_steam_library
+
+        ok, msg = add_to_steam_library()
+        print(msg)
+        return 0 if ok else 1
+    if not (args.cli or args.text):
+        from aidota.dota_install import acquire_single_instance, restore_existing_instance
+
+        has_mutex, mutex_handle = acquire_single_instance("Global\\AIDOTA_SingleInstance_Mutex")
+        if not has_mutex:
+            print("AIDOTA уже запущена. Разворачиваю существующее окно приложения из системного трея...")
+            restore_existing_instance("AIDOTA")
+            return 0
+
+        from aidota.gui_app import run_gui_app
+
+        return run_gui_app(config, args.config)
 
     from aidota.hotkeys import format_key_name
 

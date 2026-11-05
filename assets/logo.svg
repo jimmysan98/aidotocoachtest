@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="AIDOTA logo">
+  <defs>
+    <linearGradient id="aidota-border" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#d8b4fe"/>
+      <stop offset="0.34" stop-color="#a855f7"/>
+      <stop offset="0.68" stop-color="#7c3aed"/>
+      <stop offset="1" stop-color="#38bdf8"/>
+    </linearGradient>
+    <linearGradient id="aidota-letter" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f0d8ff"/>
+      <stop offset="0.42" stop-color="#d8b4fe"/>
+      <stop offset="0.78" stop-color="#a855f7"/>
+      <stop offset="1" stop-color="#38bdf8"/>
+    </linearGradient>
+    <linearGradient id="aidota-fill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#151129"/>
+      <stop offset="1" stop-color="#080d1a"/>
+    </linearGradient>
+    <linearGradient id="aidota-spark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#bae6fd"/>
+    </linearGradient>
+    <radialGradient id="aidota-glow" cx="0.32" cy="0.18" r="0.65">
+      <stop offset="0" stop-color="#a855f7" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#a855f7" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="aidota-soft-glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="9" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <g filter="url(#aidota-soft-glow)">
+    <polygon points="15.4,84.5 130.6,19.5 381.4,19.5 496.6,84.5 496.6,314.9 256.0,500.7 15.4,314.9" fill="url(#aidota-fill)" stroke="url(#aidota-border)" stroke-width="14" stroke-linejoin="round"/>
+    <polygon points="15.4,84.5 130.6,19.5 381.4,19.5 496.6,84.5 496.6,314.9 256.0,500.7 15.4,314.9" fill="url(#aidota-glow)" opacity="0.9"/>
+    <polygon points="256.0,74.2 363.3,425.0 298.3,425.0 277.1,316.8 234.9,316.8 213.7,425.0 148.7,425.0" fill="url(#aidota-letter)" stroke="url(#aidota-letter)" stroke-width="5" stroke-linejoin="round"/>
+    <polygon points="417.3,69.1 424.5,97.7 453.1,105.0 424.5,112.2 417.3,140.8 410.0,112.2 381.4,105.0 410.0,97.7" fill="url(#aidota-spark)"/>
+    <circle cx="395.3" cy="131.6" r="5.6" fill="#38bdf8"/>
+  </g>
+</svg>
