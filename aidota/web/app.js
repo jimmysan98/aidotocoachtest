@@ -1138,6 +1138,14 @@ async function syncStateLoop() {
       if (tipBadge && tipBadge.textContent !== label) tipBadge.textContent = label;
     }
 
+    // Rust Core indicator
+    if (data.rust_active !== undefined) {
+      const rustPill = document.getElementById("rust-status-pill");
+      if (rustPill) {
+        rustPill.style.display = data.rust_active ? "inline-flex" : "none";
+      }
+    }
+
     // 2. Assistant Status
     if (data.assistant_running !== undefined && data.assistant_running !== state.assistantRunning) {
       state.assistantRunning = data.assistant_running;

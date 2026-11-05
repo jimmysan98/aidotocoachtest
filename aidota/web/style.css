@@ -1806,3 +1806,14 @@ body {
   border-color: var(--color-cyan);
   background: rgba(56, 189, 248, 0.15);
 }
+
+.status-pill.rust-pill {
+  border-color: rgba(249, 115, 22, 0.45);
+  background: rgba(249, 115, 22, 0.12);
+  color: #fb923c;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  box-shadow: 0 0 10px rgba(249, 115, 22, 0.15);
+}
