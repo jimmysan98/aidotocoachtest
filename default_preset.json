@@ -17,7 +17,7 @@
   },
   "tts": {
     "enabled": true,
-    "provider": "edge",
+    "provider": "piper",
     "edge_voice": "ru-RU-SvetlanaNeural",
     "rate": 0,
     "volume": 100,
