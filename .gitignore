@@ -42,3 +42,7 @@ regen_items.py
 .vscode/
 .idea/
 *.swp
+
+# Piper TTS (локальные бинарники и модели)
+piper/
+
