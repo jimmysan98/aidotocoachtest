@@ -1,4 +1,4 @@
-"""Тесты конфигурации."""
+﻿"""Тесты конфигурации."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ class ConfigTests(unittest.TestCase):
         self.assertIsInstance(config, Config)
         self.assertTrue(path.is_file())
         self.assertEqual(config.gsi.port, 3000)
-        self.assertEqual(config.audio.model_path, "vosk-model-ru-0.22")
+        self.assertEqual(config.audio.model_path, "vosk-model-small-ru-0.22")
 
     def test_partial_override_keeps_defaults(self):
         path = self._write({"gsi": {"port": 3010}, "ollama": {"model": "llama3"}})
@@ -137,6 +137,12 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(raw["gsi"]["port"], 4011)  # не тронуто
         self.assertEqual(raw["tts"]["enabled"], False)  # не тронуто
 
+    def test_player_profile_account_id(self):
+        path = self._write({"player_profile": {"account_id": "70388657"}})
+        config = load_config(path)
+        self.assertEqual(config.player_profile.account_id, 70388657)
+
 
 if __name__ == "__main__":
     unittest.main()
+

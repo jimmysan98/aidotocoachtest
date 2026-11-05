@@ -46,7 +46,7 @@ RU_ALIASES: dict[str, tuple[str, ...]] = {
     "sven": ("свен",),
     "tiny": ("тини",),
     "vengefulspirit": ("венга", "венга", "венджфул"),
-    "windrunner": ("врка", "виндрейнджер", "виндрангер", "винд"),
+    "windrunner": ("врка", "врки", "врку", "врке", "вркой", "виндрейнджер", "виндрангер", "винд"),
     "zuus": ("зевс", "зус"),
     "kunkka": ("кунка", "кункка"),
     "lina": ("лина",),
@@ -151,12 +151,13 @@ RU_ALIASES: dict[str, tuple[str, ...]] = {
 
 # Служебные слова, которые не должны приниматься за имя героя.
 _STOPWORDS = {
-    "что", "чтобы", "как", "какой", "какие", "какую", "какого", "кого", "кем",
+    "что", "чтобы", "как", "какой", "какие", "какую", "какого", "каком", "какому", "каких", "какая", "какое",
+    "кого", "кем", "кому", "ком", "чем", "чему", "чего", "кто", "где", "куда", "когда", "откуда", "зачем", "почему", "сколько",
     "мне", "меня", "мой", "моя", "моего", "надо", "нужно", "можно", "дай",
     "скажи", "пожалуйста", "плиз", "пж", "ок", "окей", "да", "нет",
     "купить", "предмет", "предметы", "сборка", "сборку", "закуп", "билд",
     "собери", "посоветуй", "подскажи", "совет", "разбери", "анализ",
-    "герой", "героя", "герои", "героем", "героев", "играть", "играю",
+    "герой", "героя", "герои", "героем", "героев", "играть", "играю", "сыграть",
     "игра", "игре", "игру", "матч", "матче", "партия", "партию",
     "лучше", "сейчас", "потом", "тогда", "самый", "самые", "сильные",
     "мета", "топ", "драфт", "драфту", "пики", "пик", "баны", "бан",
@@ -168,7 +169,22 @@ _STOPWORDS = {
     "он", "она", "они", "оно", "про", "для", "от", "до", "при", "над",
     "под", "без", "если", "то", "так", "assistant", "dota", "дота", "доту",
     "доте", "дота2", "dota2",
+    # Игровые термины, скиллы, уровни, линии, отводы, чтобы не путать с героями
+    "скилл", "скиллы", "скилы", "скил", "скрил", "скрилы", "скилла", "скиллу", "скиллом", "скиллами", "скиллах",
+    "прокачать", "прокачай", "прокачка", "прокачки", "прокачке", "качать", "качай", "максить", "макси",
+    "способность", "способности", "способностей", "способностям", "способностями", "умение", "умения", "умений",
+    "лвл", "уровень", "уровня", "уровне", "уровнем",
+    "против", "противника", "враг", "врага", "враги", "врагов", "вражеский", "вражеского", "контр",
+    "линия", "линии", "линию", "лайн", "лайна", "лайне",
+    "отвод", "отводы", "отвода", "отводов", "отводе", "пулл", "стак", "стаки", "стакать", "стака", "стаков",
+    "мидер", "мидера", "мидеру", "мидере", "мидером", "мид", "миду", "шестой",
 }
+
+_STOPWORDS_NORMALIZED = {
+    re.sub(r"[^0-9a-z]+", "", "".join(_TRANSLIT.get(ch, ch) for ch in w.lower().replace("ё", "е")))
+    for w in _STOPWORDS
+}
+_STOPWORDS_NORMALIZED.discard("")
 
 
 def translit(text: str) -> str:
@@ -185,12 +201,31 @@ def normalize(text: str) -> str:
     return translit(cleaned)
 
 
+def _filter_tokens(text: str) -> list[str]:
+    """Разбивает текст на слова и отфильтровывает стоп-слова ДО и ПОСЛЕ транслитерации."""
+    raw_tokens = [t for t in re.split(r"[^0-9a-zа-яёіїєґ]+", text.lower()) if t]
+    filtered: list[str] = []
+    for t in raw_tokens:
+        if t in _STOPWORDS:
+            continue
+        norm_t = normalize(t)
+        if not norm_t or norm_t in _STOPWORDS or norm_t in _STOPWORDS_NORMALIZED:
+            continue
+        filtered.append(norm_t)
+    return filtered
+
+
 def _similarity(a: str, b: str) -> float:
     if not a or not b:
         return 0.0
     if a == b:
         return 1.0
-    return SequenceMatcher(None, a, b).ratio()
+    try:
+        from rapidfuzz import fuzz
+
+        return float(fuzz.ratio(a, b)) / 100.0
+    except ImportError:
+        return SequenceMatcher(None, a, b).ratio()
 
 
 @dataclass(frozen=True)
@@ -269,14 +304,15 @@ class HeroCatalog:
         if not text:
             return None
         norm = normalize(text)
-        if not norm:
+        if not norm or norm in _STOPWORDS or norm in _STOPWORDS_NORMALIZED:
             return None
 
-        tokens = [normalize(t) for t in re.split(r"[^0-9a-zа-яёіїєґ]+", text.lower())]
-        tokens = [t for t in tokens if t and t not in _STOPWORDS]
+        tokens = _filter_tokens(text)
 
         # 1) точное совпадение всего текста/токена с алиасом или именем
         for candidate in (norm, *tokens):
+            if candidate in _STOPWORDS or candidate in _STOPWORDS_NORMALIZED:
+                continue
             hero = self._aliases.get(candidate)
             if hero is not None:
                 return HeroMatch(hero, 1.0, "alias")
@@ -292,20 +328,24 @@ class HeroCatalog:
 
         # 3) нечёткое сравнение с именем и алиасами
         for key, hero in self._exact.items():
+            if len(key) <= 3:
+                continue
             score = _similarity(norm, key)
             if score >= threshold:
                 best = _better(best, HeroMatch(hero, score, "fuzzy-name"))
         for key, hero in self._aliases.items():
             if len(key) <= 2:
-                continue  # совсем короткие аббревиатуры сравниваем только точно
+                continue  # совсем короткие аббревиатуры (am, sf, cm, vk...) сравниваем только точно
             score = _similarity(norm, key)
             # Падежи и опечатки: «врки» -> «врка», «пуджа» -> «пудж».
             if (
                 len(key) >= 3
                 and len(norm) >= 3
+                and abs(len(norm) - len(key)) <= 1
+                and score >= 0.74
                 and (norm.startswith(key[:3]) or key.startswith(norm[:3]))
             ):
-                score = max(score, 0.84)
+                score = max(score, 0.85)
             if score >= threshold:
                 best = _better(best, HeroMatch(hero, score, "fuzzy-alias"))
 
@@ -313,15 +353,13 @@ class HeroCatalog:
 
     def find_in_tokens(self, text: str, threshold: float = 0.78) -> HeroMatch | None:
         """Ищет героя среди отдельных слов фразы (устойчивее к лишним словам)."""
-        tokens = [
-            normalize(t)
-            for t in re.split(r"[^0-9a-zа-яёіїєґ]+", text.lower())
-        ]
-        tokens = [t for t in tokens if t and t not in _STOPWORDS]
+        tokens = _filter_tokens(text)
         best: HeroMatch | None = None
         for token in tokens:
-            if len(token) < 3 and token not in self._aliases:
+            if len(token) < 2:
                 continue
+            if token in self._aliases:
+                return HeroMatch(self._aliases[token], 1.0, "alias-exact")
             match = self.find(token, threshold=threshold)
             if match is not None:
                 best = _better(best, match)

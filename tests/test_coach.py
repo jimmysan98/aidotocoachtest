@@ -248,6 +248,162 @@ class CoachTests(unittest.TestCase):
         self.assertEqual(coach.chat("привет"), "Ответ от DeepSeek")
         self.assertTrue(any("chat/completions" in call for call in self.session.calls))
 
+    def test_analyze_match_llm(self):
+        raw_match = {
+            "match_id": 77777,
+            "radiant_win": True,
+            "duration": 2100,
+            "radiant_score": 30,
+            "dire_score": 15,
+            "players": [
+                {
+                    "account_id": 123456,
+                    "player_slot": 0,
+                    "hero_id": 1,
+                    "kills": 10,
+                    "deaths": 1,
+                    "assists": 7,
+                    "gold_per_min": 700,
+                    "xp_per_min": 750,
+                    "item_0": 0,
+                    "benchmarks": {"gpm_pct": 0.9, "xp_per_min": {"pct": 0.88}},
+                }
+            ],
+        }
+        self.session.routes["/matches/77777"] = raw_match
+        self.session.routes["/api/chat"] = {"message": {"content": "Отличная игра на Антимаге."}}
+        coach = self.make_coach()
+        res = coach.analyze_match(match_id=77777, account_id=123456)
+        self.assertIn("РАЗБОР МАТЧА #77777", res)
+        self.assertIn("Anti-Mage", res)
+        self.assertIn("Отличная игра на Антимаге", res)
+
+    def test_analyze_match_fallback(self):
+        self.session.routes["/api/tags"] = RuntimeError("LLM offline")
+        raw_match = {
+            "match_id": 88888,
+            "radiant_win": False,
+            "duration": 2400,
+            "players": [
+                {
+                    "account_id": 123456,
+                    "player_slot": 0,
+                    "hero_id": 1,
+                    "kills": 2,
+                    "deaths": 9,
+                    "assists": 3,
+                    "gold_per_min": 350,
+                    "xp_per_min": 400,
+                    "tower_damage": 300,
+                    "benchmarks": {"gold_per_min": {"pct": 0.20}},
+                }
+            ],
+        }
+        self.session.routes["/matches/88888"] = raw_match
+        coach = self.make_coach()
+        res = coach.analyze_match(match_id=88888, account_id=123456)
+        self.assertIn("РАЗБОР МАТЧА #88888", res)
+        self.assertIn("LLM недоступна", res)
+        self.assertIn("Статистический разбор от AIDOTA", res)
+
+    def test_analyze_match_no_match_specified(self):
+        coach = Coach(self.api, HeroCatalog(FAKE_HEROES), None, LlmConfig(), PlayerProfile(), session=self.session)
+        res = coach.analyze_match()
+        self.assertIn("Не удалось определить матч для разбора", res)
+
+    def test_coach_chat_success(self):
+        coach = self.make_coach()
+        answer = coach.coach_chat("я купил стики на второй минуте это нормально?")
+        self.assertIn("Blink Dagger", answer)
+        self.assertEqual(len(coach._memory), 1)
+
+    def test_coach_chat_error_fallback(self):
+        self.session.routes["/api/tags"] = RuntimeError("LLM offline")
+        coach = self.make_coach()
+        answer = coach.coach_chat("что делать?")
+        self.assertIn("Не удалось связаться с ИИ", answer)
+
+    def test_start_items_success(self):
+        coach = self.make_coach()
+        hero = self.api.hero_by_id(1)
+        answer = coach.start_items(hero)
+        self.assertIn("Blink Dagger", answer)
+
+    def test_start_items_fallback(self):
+        self.session.routes["/api/tags"] = RuntimeError("LLM offline")
+        coach = self.make_coach()
+        hero = self.api.hero_by_id(1)
+        answer = coach.start_items(hero)
+        self.assertIn("На старте для", answer)
+        self.assertNotIn("лейт", answer.lower())
+
+    def test_build_messages_with_history(self):
+        coach = self.make_coach()
+        coach.remember("что купить на старте?", "Купи танго и цирклет.")
+        coach.remember("какой скилл качать?", "Качай первую способность.")
+        msgs = coach._build_messages("а против кого играть?", "system prompt")
+        self.assertEqual(msgs[0]["role"], "system")
+        self.assertEqual(msgs[1]["role"], "user")
+        self.assertEqual(msgs[1]["content"], "что купить на старте?")
+        self.assertEqual(msgs[2]["role"], "assistant")
+        self.assertEqual(msgs[2]["content"], "Купи танго и цирклет.")
+        self.assertEqual(msgs[-1]["role"], "user")
+        self.assertEqual(msgs[-1]["content"], "а против кого играть?")
+
+    def test_counter_faceless_void_no_bkb(self):
+        self.session.routes["/api/tags"] = RuntimeError("LLM offline")
+        coach = self.make_coach()
+        void_hero = {"id": 41, "name": "npc_dota_hero_faceless_void", "localized_name": "Faceless Void"}
+        answer = coach.counter_advice(void_hero)
+        self.assertIn("Aeon Disk", answer)
+        self.assertIn("Ghost Scepter", answer)
+        self.assertIn("БКБ от хроносферы не спасает", answer)
+
+    def test_skills_order_oracle_fallback(self):
+        self.session.routes["/api/tags"] = RuntimeError("LLM offline")
+        coach = self.make_coach()
+        oracle_hero = {"id": 111, "name": "npc_dota_hero_oracle", "localized_name": "Oracle"}
+        answer = coach.skills_order(oracle_hero)
+        self.assertIn("Oracle", answer)
+        self.assertIn("Purifying Flames", answer)
+
+    def test_coach_chat_expired_api_key(self):
+        from aidota.coach import OllamaError
+        coach = self.make_coach()
+        coach.chat = lambda *args, **kwargs: (_ for _ in ()).throw(OllamaError("API-ключ недействителен или истёк (HTTP 401)"))
+        answer = coach.coach_chat("что делать?")
+        self.assertIn("HTTP 401", answer)
+        self.assertIn("Настройках", answer)
+
+    def test_hero_intro_advice_chen(self):
+        self.session.routes["/api/tags"] = RuntimeError("LLM offline")
+        coach = self.make_coach(payload={})
+        chen_hero = {"id": 66, "name": "npc_dota_hero_chen", "localized_name": "Chen"}
+        answer = coach.hero_intro_advice(chen_hero)
+        self.assertIn("Chen", answer)
+        self.assertIn("Holy Persuasion", answer)
+        # Verify manual hero is now set in coach when GSI is empty
+        self.assertEqual(coach.current_hero(), chen_hero)
+
+    def test_hero_intro_advice_llm(self):
+        coach = self.make_coach()
+        chen_hero = {"id": 66, "name": "npc_dota_hero_chen", "localized_name": "Chen"}
+        answer = coach.hero_intro_advice(chen_hero)
+        self.assertIn("Blink Dagger", answer)
+        self.assertEqual(len(coach._memory), 1)
+
+    def test_tool_recommend_draft_picks(self):
+        coach = self.make_coach()
+        res = coach.execute_tool("recommend_draft_picks", {"enemy_heroes": ["medusa", "storm_spirit"], "role": 1})
+        self.assertIn("Антимаг", res)
+
+    def test_tool_get_hero_item_build(self):
+        coach = self.make_coach()
+        res = coach.execute_tool("get_hero_item_build", {"hero_name": "axe", "role": 3})
+        self.assertIn("Акс", res)
+        self.assertIn("Blink Dagger", res)
+
 
 if __name__ == "__main__":
     unittest.main()
+

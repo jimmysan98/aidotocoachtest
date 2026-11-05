@@ -13,8 +13,8 @@ class CommandParsingTests(unittest.TestCase):
     def setUpClass(cls):
         cls.catalog = catalog()
 
-    def parse(self, text):
-        return commands.parse_command(text, self.catalog)
+    def parse(self, text, active_trainer=None):
+        return commands.parse_command(text, self.catalog, active_trainer=active_trainer)
 
     def test_items_with_hero(self):
         intent = self.parse("что купить на антимаге")
@@ -160,7 +160,128 @@ class CommandParsingTests(unittest.TestCase):
         self.assertEqual(intent.kind, commands.TOGGLE_PTT)
         self.assertEqual(intent.arg, "off")
 
+    def test_match_analysis(self):
+        self.assertEqual(self.parse("разбор матча").kind, commands.MATCH_ANALYSIS)
+        self.assertEqual(self.parse("последний матч").kind, commands.MATCH_ANALYSIS)
+        self.assertEqual(self.parse("последняя игра").kind, commands.MATCH_ANALYSIS)
+        self.assertEqual(self.parse("как я сыграл").kind, commands.MATCH_ANALYSIS)
+        self.assertEqual(self.parse("статистика матча").kind, commands.MATCH_ANALYSIS)
+        self.assertEqual(self.parse("разбор последней игры").kind, commands.MATCH_ANALYSIS)
+
+    def test_match_analysis_with_id(self):
+        intent = self.parse("разбор матча 7900000000")
+        self.assertEqual(intent.kind, commands.MATCH_ANALYSIS)
+        self.assertEqual(intent.arg, "7900000000")
+
+    def test_astra_wakeword(self):
+        # Обращение по имени к Астре
+        intent = self.parse("астра привет")
+        self.assertEqual(intent.kind, commands.GREETING)
+
+        intent = self.parse("привет астра")
+        self.assertEqual(intent.kind, commands.GREETING)
+
+        intent = self.parse("астра")
+        self.assertEqual(intent.kind, commands.GREETING)
+
+        # Команды с именем «Астра»
+        intent = self.parse("астра что купить на пудже")
+        self.assertEqual(intent.kind, commands.ITEMS)
+        self.assertEqual(intent.hero_name, "Pudge")
+
+        intent = self.parse("астра последний матч")
+        self.assertEqual(intent.kind, commands.MATCH_ANALYSIS)
+
+        intent = self.parse("астра как играть за пуджа")
+        self.assertEqual(intent.kind, commands.ADVICE)
+        self.assertEqual(intent.hero_name, "Pudge")
+
+        intent = self.parse("астра покажи окно")
+        self.assertEqual(intent.kind, commands.OVERLAY_SHOW)
+
+        # Команды с именем «Джарвис»
+        intent = self.parse("джарвис")
+        self.assertEqual(intent.kind, commands.GREETING)
+
+        intent = self.parse("джарвис привет")
+        self.assertEqual(intent.kind, commands.GREETING)
+
+        intent = self.parse("джарвис что купить на пудже")
+        self.assertEqual(intent.kind, commands.ITEMS)
+        self.assertEqual(intent.hero_name, "Pudge")
+
+        intent = self.parse("джарвис последний матч")
+        self.assertEqual(intent.kind, commands.MATCH_ANALYSIS)
+
+    def test_start_items(self):
+        intent = self.parse("что купить на старте на пудже")
+        self.assertEqual(intent.kind, commands.START_ITEMS)
+        self.assertEqual(intent.hero_name, "Pudge")
+
+        intent = self.parse("стартовый закуп")
+        self.assertEqual(intent.kind, commands.START_ITEMS)
+
+    def test_skills_order(self):
+        intent = self.parse("что качать на пудже")
+        self.assertEqual(intent.kind, commands.SKILLS_ORDER)
+        self.assertEqual(intent.hero_name, "Pudge")
+
+        intent = self.parse("порядок прокачки")
+        self.assertEqual(intent.kind, commands.SKILLS_ORDER)
+
+        intent = self.parse("я на оракле какой скилл мне прокачать")
+        self.assertEqual(intent.kind, commands.SKILLS_ORDER)
+        self.assertEqual(intent.hero_name, "Oracle")
+
+        intent = self.parse("какой мне сейчас скрил прокачать")
+        self.assertEqual(intent.kind, commands.SKILLS_ORDER)
+
+    def test_counter_items(self):
+        intent = self.parse("астра что мне купить против джаггернаут", active_trainer="астра")
+        self.assertEqual(intent.kind, commands.COUNTER_ITEMS)
+        self.assertEqual(intent.hero_name, "Juggernaut")
+
+        intent = self.parse("что мне купить против зевса")
+        self.assertEqual(intent.kind, commands.COUNTER_ITEMS)
+        self.assertEqual(intent.hero_name, "Zeus")
+
+    def test_mid_six_and_pull_alerts(self):
+        intent = self.parse("астра у мидера 6", active_trainer="астра")
+        self.assertEqual(intent.kind, commands.MID_SIX)
+
+        intent = self.parse("астра когда отвод", active_trainer="астра")
+        self.assertEqual(intent.kind, commands.PULL_ALERT)
+
+        intent = self.parse("астра когда стакать", active_trainer="астра")
+        self.assertEqual(intent.kind, commands.STACK_ALERT)
+
+        intent = self.parse("астра руна мудрости", active_trainer="астра")
+        self.assertEqual(intent.kind, commands.WISDOM_ALERT)
+
+        intent = self.parse("астра когда терзатель", active_trainer="астра")
+        self.assertEqual(intent.kind, commands.TORMENTOR_ALERT)
+
+        intent = self.parse("астра когда нейтралки", active_trainer="астра")
+        self.assertEqual(intent.kind, commands.NEUTRALS_ALERT)
+
+    def test_how_to_play_and_chem_igrat(self):
+        # "как играть" — это совет, а НЕ выбор героя Chen
+        intent = self.parse("астра как играть", active_trainer="астра")
+        self.assertEqual(intent.kind, commands.ADVICE)
+        self.assertIsNone(intent.hero)
+
+        # "чем играть" — это совет по пику, а НЕ выбор героя Chen
+        intent = self.parse("астра чем играть", active_trainer="астра")
+        self.assertEqual(intent.kind, commands.PICK_ADVICE)
+        self.assertIsNone(intent.hero)
+
+        # "я на оракле какой скилл мне прокачать"
+        intent = self.parse("астра я на оракле какой скилл мне прокачать", active_trainer="астра")
+        self.assertEqual(intent.kind, commands.SKILLS_ORDER)
+        self.assertEqual(intent.hero_name, "Oracle")
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

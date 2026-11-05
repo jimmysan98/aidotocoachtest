@@ -1,19 +1,21 @@
-"""Скачивание иконок героев с CDN Steam (для определения героя под курсором)."""
+"""Иконки героев и предметов: CDN Steam, локальный кэш и data URI для веб-UI."""
 
 from __future__ import annotations
 
+import base64
 import logging
 import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from .dota_api import DotaApi, USER_AGENT
 
 log = logging.getLogger("aidota.icons")
 
 CDN = "https://cdn.cloudflare.steamstatic.com"
+ITEM_CDN_PATH = "/apps/dota2/images/dota_react/items"
 
 
 def count_icons(icons_dir: Path) -> int:
@@ -22,20 +24,57 @@ def count_icons(icons_dir: Path) -> int:
     return len([p for p in icons_dir.glob("*.png") if p.stat().st_size > 0])
 
 
-def _download(session, url: str, path: Path) -> bool:
+def create_session() -> Any | None:
+    """Сессия requests с User-Agent AIDOTA (None, если requests недоступен)."""
     try:
-        if path.is_file() and path.stat().st_size > 0:
+        import requests
+
+        session = requests.Session()
+        session.headers["User-Agent"] = USER_AGENT
+        return session
+    except Exception:  # noqa: BLE001 — без requests работаем без скачивания
+        return None
+
+
+def read_image_data_uri(path: Path | str) -> str:
+    """PNG-файл → ``data:image/png;base64,...``; пустая строка при любой ошибке."""
+    try:
+        file_path = Path(path)
+        if not file_path.is_file() or file_path.stat().st_size <= 0:
+            return ""
+        data = file_path.read_bytes()
+        if not data:
+            return ""
+        encoded = base64.b64encode(data).decode("ascii")
+        return f"data:image/png;base64,{encoded}"
+    except Exception as exc:  # noqa: BLE001 — битая иконка не повод падать
+        log.debug("Не удалось прочитать иконку %s: %s", path, exc)
+        return ""
+
+
+def download_image(session: Any, url: str, path: Path | str, *, timeout: float = 4.0) -> bool:
+    """Атомарно скачивает картинку в ``path``. Никогда не бросает исключение.
+
+    Возвращает ``True``, если файл на месте (уже был или успешно скачан).
+    """
+    try:
+        if session is None:
             return False
-        response = session.get(url, timeout=30)
-        if response.status_code != 200 or not response.content:
-            log.debug("Иконка не скачалась: %s (HTTP %s)", url, response.status_code)
+        file_path = Path(path)
+        if file_path.is_file() and file_path.stat().st_size > 0:
+            return True
+        response = session.get(url, timeout=timeout)
+        status = getattr(response, "status_code", 200)
+        content = getattr(response, "content", b"") or b""
+        if status != 200 or not content:
+            log.debug("Иконка не скачалась: %s (HTTP %s)", url, status)
             return False
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_name = tempfile.mkstemp(prefix=path.name, suffix=".part", dir=path.parent)
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(prefix=file_path.name, suffix=".part", dir=file_path.parent)
         try:
             with os.fdopen(fd, "wb") as fh:
-                fh.write(response.content)
-            os.replace(tmp_name, path)
+                fh.write(content)
+            os.replace(tmp_name, file_path)
         except BaseException:
             try:
                 os.unlink(tmp_name)
@@ -46,6 +85,23 @@ def _download(session, url: str, path: Path) -> bool:
     except Exception as exc:  # noqa: BLE001 — одна иконка не повод падать
         log.debug("Ошибка скачивания %s: %s", url, exc)
         return False
+
+
+def item_icon_url(slug: str) -> str:
+    """CDN-URL иконки предмета по слагу (``blink`` → .../blink.png)."""
+    clean = str(slug or "").strip()
+    if not clean:
+        return ""
+    return f"{CDN}{ITEM_CDN_PATH}/{clean}.png"
+
+
+def _download(session, url: str, path: Path) -> bool:
+    try:
+        if path.is_file() and path.stat().st_size > 0:
+            return False
+    except OSError:
+        return False
+    return download_image(session, url, path, timeout=30.0)
 
 
 def fetch_hero_icons(

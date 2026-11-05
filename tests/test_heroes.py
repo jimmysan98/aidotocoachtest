@@ -53,6 +53,24 @@ class HeroMatchingTests(unittest.TestCase):
         match = self.catalog.find_in_tokens("что мне купить в игре")
         self.assertIsNone(match)
 
+    def test_question_words_do_not_match_chen(self):
+        self.assertIsNone(self.catalog.find("чем играть"))
+        self.assertIsNone(self.catalog.find_in_tokens("чем играть"))
+        self.assertIsNone(self.catalog.find("как играть"))
+        self.assertIsNone(self.catalog.find_in_tokens("как играть"))
+        self.assertIsNone(self.catalog.find("с чем играть"))
+        self.assertIsNone(self.catalog.find_in_tokens("чем контрить"))
+        self.assertIsNone(self.catalog.find("чем"))
+
+    def test_chen_exact_matches(self):
+        m1 = self.catalog.find("чен")
+        self.assertIsNotNone(m1)
+        self.assertEqual(m1.name, "Chen")
+
+        m2 = self.catalog.find_in_tokens("я на чене")
+        self.assertIsNotNone(m2)
+        self.assertEqual(m2.name, "Chen")
+
     def test_empty_catalog(self):
         catalog = HeroCatalog([])
         self.assertFalse(catalog.available)

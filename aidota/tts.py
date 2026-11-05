@@ -1,12 +1,14 @@
-"""Синтез речи через Windows SAPI с запасным воспроизведением через sounddevice / pyttsx3.
+"""Синтез речи через нейросетевой Microsoft Edge TTS с автоматическим откатом на Windows SAPI / pyttsx3.
 
-Почему так сложно: SAPI иногда не видит устройство вывода (или оно занято),
-хотя умеет синтезировать звук в файл. Тогда синтезируем WAV и проигрываем
-его сами. Если не работает ничего — остаётся текст на экране.
+Голос «Астра» по умолчанию использует нейросеть Microsoft Edge (ru-RU-SvetlanaNeural),
+звучащую естественно и качественно, как в современных голосовых компаньонах (например, Astra / knice.tech).
+При отсутствии интернета или недоступности Edge TTS происходит автоматический откат на Windows SAPI / pyttsx3.
 """
 
 from __future__ import annotations
 
+import asyncio
+import io
 import logging
 import os
 import queue
@@ -15,6 +17,7 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
+from typing import Any
 
 from .config import TtsConfig
 
@@ -35,14 +38,37 @@ def _ensure_gen_py() -> None:
         pass
 
 
+_DOTA_PHONETIC_REPLACEMENTS: tuple[tuple[re.Pattern, str], ...] = (
+    (re.compile(r"\bBKB\b", re.IGNORECASE), "БКБ"),
+    (re.compile(r"\bPT\b", re.IGNORECASE), "ПТ"),
+    (re.compile(r"\bDPS\b", re.IGNORECASE), "ДПС"),
+    (re.compile(r"\bKDA\b", re.IGNORECASE), "КДА"),
+    (re.compile(r"\bMMR\b", re.IGNORECASE), "ММР"),
+    (re.compile(r"\bHP\b", re.IGNORECASE), "хп"),
+    (re.compile(r"\bMP\b", re.IGNORECASE), "мп"),
+    (re.compile(r"\bXP\b", re.IGNORECASE), "опыт"),
+    (re.compile(r"\bvs\.?\b", re.IGNORECASE), "против"),
+    (re.compile(r"\blvl\b", re.IGNORECASE), "уровень"),
+)
+
+
 def sanitize_for_speech(text: str, max_chars: int = 700) -> str:
-    """Убирает markdown/эмодзи и обрезает слишком длинный текст."""
-    cleaned = re.sub(r"[*_#`>]+", " ", text)
-    cleaned = re.sub(r"\[(.*?)\]\(.*?\)", r"\1", cleaned)
+    """Убирает markdown/эмодзи, нормализует аббревиатуры и делает текст естественным для нейросети."""
+    # Убираем ссылки и markdown
+    cleaned = re.sub(r"\[(.*?)\]\(.*?\)", r"\1", text)
+    cleaned = re.sub(r"[*_#`~>]+", " ", cleaned)
+    # Убираем списочные дефисы и маркеры в начале строк
+    cleaned = re.sub(r"(?:^|\n)\s*[-•–—*]\s*", "\n", cleaned)
+    cleaned = re.sub(r"(?:^|\n)\s*\d+[\.)]\s*", "\n", cleaned)
+    # Заменяем двоеточия после вводных слов на точки для естественной интонационной паузы
+    cleaned = re.sub(r":\s+", ". ", cleaned)
+    # Заменяем английские игровые сокращения на русские фонетические аналоги
+    for pattern, replacement in _DOTA_PHONETIC_REPLACEMENTS:
+        cleaned = pattern.sub(replacement, cleaned)
     cleaned = re.sub(r"[^\S\n]+", " ", cleaned)
-    cleaned = re.sub(r"\n{2,}", ". ", cleaned)
-    cleaned = cleaned.replace("\n", ". ")
+    cleaned = re.sub(r"\n+", ". ", cleaned)
     cleaned = re.sub(r"(\.\s*){2,}", ". ", cleaned)
+    cleaned = re.sub(r"\s+([,.:;?!])", r"\1", cleaned)
     cleaned = cleaned.strip()
     if len(cleaned) > max_chars:
         cut = cleaned[:max_chars].rsplit(" ", 1)[0]
@@ -51,7 +77,7 @@ def sanitize_for_speech(text: str, max_chars: int = 700) -> str:
 
 
 class Tts:
-    """Очередь фраз + один рабочий поток (COM требует инициализации в потоке)."""
+    """Очередь фраз + один рабочий поток."""
 
     def __init__(self, config: TtsConfig, cache_dir: Path | None = None):
         self.config = config
@@ -98,7 +124,7 @@ class Tts:
         self._queue.put((sanitize_for_speech(text, self.config.max_chars), done))
         if wait:
             done.wait(timeout)
-        return (self._engine is not None or self._pyttsx_engine is not None) and self._error is None
+        return self._error is None or self._backend is not None
 
     def _ensure_thread(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -136,8 +162,7 @@ class Tts:
                     break
                 text, done = item
                 try:
-                    if (self._engine is not None or self._pyttsx_engine is not None) and not self._error:
-                        self._say(text)
+                    self._say(text)
                 finally:
                     done.set()
         finally:
@@ -154,15 +179,6 @@ class Tts:
                 except Exception:  # noqa: BLE001
                     pass
 
-    def _drain(self) -> None:
-        while True:
-            try:
-                item = self._queue.get_nowait()
-            except queue.Empty:
-                return
-            if isinstance(item, tuple):
-                item[1].set()
-
     def _dispatch_sapi(self, prog_id: str = "SAPI.SpVoice"):
         import win32com.client  # type: ignore
 
@@ -174,7 +190,7 @@ class Tts:
     def _init_engine(self) -> None:
         _ensure_gen_py()
 
-        # 1. Попытка Windows SAPI через win32com
+        # 1. Попытка Windows SAPI через win32com (как локальный бэкенд)
         try:
             engine = self._dispatch_sapi("SAPI.SpVoice")
             voices = engine.GetVoices()
@@ -200,21 +216,17 @@ class Tts:
             except Exception:  # noqa: BLE001
                 pass
 
+            if self.config.output_device is not None:
+                self._apply_audio_output(engine, self.config.output_device)
+
             self._engine = engine
-            self._backend = "SAPI"
+            self._backend = "Edge (нейросеть Astra)" if getattr(self.config, "provider", "edge") == "edge" else "SAPI"
             self._error = None
             log.info(
-                "Озвучка готова (SAPI), голосов: %d, выбран: %s",
+                "Озвучка готова, бэкенд: %s, SAPI-голосов: %d",
+                self._backend,
                 len(self._voices),
-                str(engine.Voice.GetDescription()) if chosen is not None else "по умолчанию",
             )
-            # Также инициализируем pyttsx3 как резерв на случай сбоя SAPI
-            try:
-                import pyttsx3
-
-                self._pyttsx_engine = pyttsx3.init()
-            except Exception:  # noqa: BLE001
-                pass
             return
         except Exception as exc:  # noqa: BLE001
             log.warning("SAPI через win32com недоступен: %s. Пробую запасной вариант (pyttsx3)…", exc)
@@ -244,39 +256,126 @@ class Tts:
             log.info("Озвучка готова (pyttsx3), голосов: %d", len(self._voices))
             return
         except Exception as exc:  # noqa: BLE001
-            self._error = (
-                f"Системный синтез речи недоступен: {exc}. "
-                "Текст будет выводиться на экран; проверьте устройства вывода звука в Windows."
-            )
-            log.warning(self._error)
+            log.warning("Локальные SAPI/pyttsx3 недоступны: %s", exc)
+            if getattr(self.config, "provider", "edge") == "edge":
+                self._backend = "Edge (нейросеть Astra)"
+                self._error = None
+            else:
+                self._error = f"Системный синтез речи недоступен: {exc}."
+
+    def _apply_audio_output(self, engine: Any, device: int | str | None) -> bool:
+        if device is None or str(device).strip().lower() in ("default", "none", "null", ""):
+            return False
+        try:
+            outputs = engine.GetAudioOutputs()
+            from .audio import resolve_device
+
+            _, dev_name = resolve_device(device, kind="output")
+            target_str = (dev_name or str(device)).lower()
+
+            for index in range(outputs.Count):
+                try:
+                    item = outputs.Item(index)
+                    desc = str(item.GetDescription()).lower()
+                    if target_str in desc or desc in target_str:
+                        engine.AudioOutput = item
+                        log.info("SAPI устройство вывода установлено: %s", item.GetDescription())
+                        return True
+                except Exception:
+                    continue
+        except Exception as exc:
+            log.warning("Не удалось применить AudioOutput к SAPI: %s", exc)
+        return False
+
+    def set_output_device(self, device: int | str | None) -> None:
+        self.config.output_device = device
+        if self._engine is not None:
+            self._apply_audio_output(self._engine, device)
+        log.info("Устройство вывода TTS установлено: %s", device)
+
+    def _synthesize_edge_audio(self, text: str) -> tuple[Any, int]:
+        """Синтезирует речь через edge-tts и возвращает (numpy_data, samplerate)."""
+        import edge_tts
+        import soundfile as sf
+
+        voice = getattr(self.config, "edge_voice", "ru-RU-SvetlanaNeural") or "ru-RU-SvetlanaNeural"
+
+        async def _fetch():
+            comm = edge_tts.Communicate(text, voice)
+            buf = io.BytesIO()
+            async for chunk in comm.stream():
+                if chunk["type"] == "audio":
+                    buf.write(chunk["data"])
+            buf.seek(0)
+            return buf
+
+        # Создаём или получаем event loop в текущем потоке
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        audio_buf = loop.run_until_complete(_fetch())
+        data, samplerate = sf.read(audio_buf)
+        return data, samplerate
 
     def _say(self, text: str) -> None:
-        if self._engine is not None:
+        # 1. Приоритетный режим: нейросетевой голос Astra (edge-tts)
+        if getattr(self.config, "provider", "edge") == "edge":
             try:
-                self._engine.Speak(text, 0)  # 0 = синхронно
+                data, samplerate = self._synthesize_edge_audio(text)
+                from .audio import resolve_device
+                import sounddevice as sd
+
+                dev_id, _ = resolve_device(self.config.output_device, kind="output")
+                sd.play(data, samplerate, device=dev_id)
+                sd.wait()
+                self._backend = "Edge (нейросеть Astra)"
                 self._speak_failed = False
                 self._error = None
                 return
             except Exception as exc:  # noqa: BLE001
-                log.warning("Прямое озвучивание SAPI не удалось: %s", exc)
+                log.warning("Синтез через edge-tts не удался (%s), переключаюсь на локальный SAPI…", exc)
 
-            # Запасной путь 1: синтез в WAV + воспроизведение sounddevice / winsound
+        # 2. Локальный бэкенд SAPI
+        if self._engine is not None:
+            if self.config.output_device is None:
+                try:
+                    self._engine.Speak(text, 0)
+                    self._backend = "SAPI"
+                    self._speak_failed = False
+                    self._error = None
+                    return
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("Прямое озвучивание SAPI не удалось: %s", exc)
+            else:
+                try:
+                    self._apply_audio_output(self._engine, self.config.output_device)
+                    self._engine.Speak(text, 0)
+                    self._backend = "SAPI"
+                    self._speak_failed = False
+                    self._error = None
+                    return
+                except Exception as exc:  # noqa: BLE001
+                    log.debug("SAPI Speak с AudioOutput не удался: %s, пробую WAV", exc)
+
             try:
                 wav_path = self._synthesize_wav(text)
-                self._play_wav(wav_path)
-                if not self._speak_failed:
-                    self._backend = "SAPI->WAV"
-                    log.info("Использую запасной путь озвучки: SAPI -> WAV")
+                self._play_wav(wav_path, device=self.config.output_device)
+                self._backend = "SAPI->WAV"
                 self._speak_failed = False
                 self._error = None
                 return
             except Exception as exc:  # noqa: BLE001
                 log.warning("Синтез в WAV не удался: %s", exc)
 
+        # 3. Запасной бэкенд pyttsx3
         if self._pyttsx_engine is not None:
             try:
                 self._pyttsx_engine.say(text)
                 self._pyttsx_engine.runAndWait()
+                self._backend = "pyttsx3"
                 self._speak_failed = False
                 self._error = None
                 return
@@ -285,7 +384,7 @@ class Tts:
 
         if not self._speak_failed:
             self._error = (
-                "Не удалось воспроизвести речь. Проверьте устройство вывода; текст остаётся на экране."
+                "Не удалось воспроизвести речь. Проверьте подключение к сети и устройство вывода; текст остаётся на экране."
             )
             log.warning(self._error)
         self._speak_failed = True
@@ -324,13 +423,16 @@ class Tts:
         return path
 
     @staticmethod
-    def _play_wav(path: Path) -> None:
+    def _play_wav(path: Path, device: int | str | None = None) -> None:
         played = False
         try:
             import wave
 
             import numpy as np
             import sounddevice as sd
+            from .audio import resolve_device
+
+            dev_id, _ = resolve_device(device, kind="output")
 
             with wave.open(str(path), "rb") as wav:
                 rate = wav.getframerate()
@@ -339,7 +441,7 @@ class Tts:
             data = np.frombuffer(frames, dtype=np.int16)
             if channels > 1:
                 data = data.reshape(-1, channels)
-            sd.play(data, rate)
+            sd.play(data, rate, device=dev_id)
             sd.wait()
             played = True
         except Exception as exc:  # noqa: BLE001

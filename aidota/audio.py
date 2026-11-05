@@ -13,6 +13,7 @@ import os
 import queue
 import sys
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable
@@ -84,6 +85,163 @@ def safe_model_path_str(p: Path) -> str:
     return str(p_res)
 
 
+def resolve_device(spec: int | str | None, kind: str = "input") -> tuple[int | None, str]:
+    """Разрешает спецификацию устройства (int, str или None) в (device_id, device_name)."""
+    try:
+        import sounddevice as sd
+    except Exception:
+        return None, "по умолчанию"
+
+    if spec is None or spec == "" or str(spec).strip().lower() in ("default", "none", "null"):
+        try:
+            info = sd.query_devices(kind=kind)
+            name = str(info.get("name", "по умолчанию"))
+            return None, name
+        except Exception:
+            return None, "по умолчанию"
+
+    if isinstance(spec, int):
+        try:
+            info = sd.query_devices(spec)
+            return spec, str(info.get("name", f"устройство #{spec}"))
+        except Exception:
+            return spec, f"устройство #{spec}"
+
+    s = str(spec).strip()
+    if s.isdigit():
+        idx = int(s)
+        try:
+            info = sd.query_devices(idx)
+            return idx, str(info.get("name", f"устройство #{idx}"))
+        except Exception:
+            return idx, f"устройство #{idx}"
+
+    try:
+        devices = sd.query_devices()
+        target = s.lower()
+        for i, d in enumerate(devices):
+            if kind == "input" and d.get("max_input_channels", 0) <= 0:
+                continue
+            if kind == "output" and d.get("max_output_channels", 0) <= 0:
+                continue
+            name = str(d.get("name", ""))
+            if target == name.lower() or target in name.lower() or name.lower() in target:
+                return i, name
+    except Exception as exc:
+        log.debug("Ошибка поиска устройства «%s»: %s", spec, exc)
+
+    return None, str(spec)
+
+
+def list_audio_devices(kind: str | None = None) -> Any:
+    """Возвращает кортеж (inputs, outputs) или список устройств для kind ('input'/'output')."""
+    inputs: list[dict] = []
+    outputs: list[dict] = []
+    try:
+        import sounddevice as sd
+        devices = sd.query_devices()
+        hostapis = sd.query_hostapis()
+        default_in, default_out = sd.default.device
+
+        for i, d in enumerate(devices):
+            api_idx = d.get("hostapi", 0)
+            api_name = hostapis[api_idx]["name"] if api_idx < len(hostapis) else ""
+            name = str(d.get("name", f"Device #{i}"))
+            label = f"[{i}] {name} ({api_name})" if api_name else f"[{i}] {name}"
+
+            if d.get("max_input_channels", 0) > 0:
+                inputs.append({
+                    "id": i,
+                    "index": i,
+                    "name": name,
+                    "hostapi": api_name,
+                    "label": label,
+                    "is_default": (i == default_in),
+                })
+
+            if d.get("max_output_channels", 0) > 0:
+                outputs.append({
+                    "id": i,
+                    "index": i,
+                    "name": name,
+                    "hostapi": api_name,
+                    "label": label,
+                    "is_default": (i == default_out),
+                })
+    except Exception as exc:
+        log.warning("Не удалось получить список аудиоустройств: %s", exc)
+
+    if kind == "input":
+        return inputs
+    if kind == "output":
+        return outputs
+    return inputs, outputs
+
+
+
+def is_voice_active(chunk: bytes, sample_rate: int = 16000, rms_threshold: float = 300.0) -> bool:
+    """Фильтр активности голоса (VAD): webrtcvad или адаптивный RMS порог."""
+    if not chunk:
+        return False
+    try:
+        import webrtcvad
+
+        vad = webrtcvad.Vad(2)
+        frame_len = int(sample_rate * 0.02 * 2)  # 20ms in 16-bit PCM
+        if len(chunk) >= frame_len:
+            sub = chunk[:frame_len]
+            return vad.is_speech(sub, sample_rate)
+    except Exception:
+        pass
+
+    try:
+        import numpy as np
+
+        data = np.frombuffer(chunk, dtype=np.int16)
+        if len(data) == 0:
+            return False
+        rms = float(np.sqrt(np.mean(data.astype(np.float32) ** 2)))
+        return rms >= rms_threshold
+    except Exception:
+        return True
+
+
+def transcribe_groq_whisper(audio_bytes: bytes, api_key: str, sample_rate: int = 16000) -> str | None:
+    """Опциональный гибридный распознаватель речи через быстрый Groq Whisper API."""
+    if not api_key or not audio_bytes:
+        return None
+    try:
+        import io
+        import numpy as np
+        import requests
+        import soundfile as sf
+
+        data = np.frombuffer(audio_bytes, dtype=np.int16)
+        buf = io.BytesIO()
+        sf.write(buf, data, sample_rate, format="WAV", subtype="PCM_16")
+        buf.seek(0)
+
+        headers = {"Authorization": f"Bearer {api_key}"}
+        files = {"file": ("speech.wav", buf, "audio/wav")}
+        data_payload = {
+            "model": "whisper-large-v3-turbo",
+            "language": "ru",
+            "response_format": "json",
+        }
+        resp = requests.post(
+            "https://api.groq.com/openai/v1/audio/transcriptions",
+            headers=headers,
+            files=files,
+            data=data_payload,
+            timeout=8.0,
+        )
+        if resp.status_code == 200:
+            return (resp.json().get("text") or "").strip()
+    except Exception as exc:  # noqa: BLE001
+        log.debug("Groq Whisper error: %s", exc)
+    return None
+
+
 class VoiceInput:
     def __init__(self, config: AudioConfig, project_root: Path):
         self.config = config
@@ -101,6 +259,8 @@ class VoiceInput:
         self._device_name: str | None = None
         self._load_error: str | None = None
         self._is_muted = False
+        self.vad_enabled = True
+        self.groq_api_key: str | None = None
 
         # Push-to-talk
         self.push_to_talk_enabled = bool(getattr(config, "push_to_talk", True))
@@ -109,6 +269,8 @@ class VoiceInput:
         self._ptt_listener: HotkeyListener | None = None
         self.on_ptt_status: Callable[[bool], None] | None = None
         self.on_partial: Callable[[str], None] | None = None
+        self._recognizer_lock = threading.Lock()
+        self._last_partial: str = ""
 
     # ------------------------------------------------------------------ #
     @property
@@ -134,14 +296,22 @@ class VoiceInput:
     # ------------------------------------------------------------------ #
     def model_path(self) -> Path:
         raw = Path(self.config.model_path)
-        if raw.is_absolute():
+        if raw.is_absolute() and raw.is_dir() and (raw / "am" / "final.mdl").is_file():
             return raw
 
         candidates = [
             self.project_root / raw,
-            self.project_root.parent.parent / raw,
+            self.project_root / "vosk-model-small-ru-0.22",
+            self.project_root / "vosk-model-ru-0.22",
+            self.project_root.parent / raw,
+            self.project_root.parent / "vosk-model-small-ru-0.22",
+            self.project_root.parent / "vosk-model-ru-0.22",
             Path.cwd() / raw,
+            Path.cwd() / "vosk-model-small-ru-0.22",
+            Path.cwd() / "vosk-model-ru-0.22",
             Path(__file__).resolve().parent.parent / raw,
+            Path(__file__).resolve().parent.parent / "vosk-model-small-ru-0.22",
+            Path(__file__).resolve().parent.parent / "vosk-model-ru-0.22",
         ]
         for candidate in candidates:
             if candidate.is_dir() and (candidate / "am" / "final.mdl").is_file():
@@ -162,17 +332,34 @@ class VoiceInput:
             return False, f"Модель Vosk повреждена: нет файлов {', '.join(missing)}."
         return True, str(path)
 
-    def load_model(self, progress: Callable[[str], None] | None = None) -> None:
+    def load_model(self, progress: Callable[[str], None] | None = None, grammar: str | None = None) -> None:
         """Загружает модель. Блокирующая операция (десятки секунд)."""
         if self._status == "ready":
             return
         ok, detail = self.check_model()
         if not ok:
+            try:
+                from .doctor import download_vosk_model
+
+                if progress:
+                    progress("Модель речи не найдена. Скачиваю компактную русскую модель (~45 МБ)...")
+                dest = self.project_root
+                target = download_vosk_model(
+                    dest,
+                    model_name="vosk-model-small-ru-0.22",
+                    progress_callback=lambda p, msg: progress(msg) if progress else None,
+                )
+                self.config.model_path = target.name
+                ok, detail = self.check_model()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Автоматическое скачивание модели Vosk не удалось: %s", exc)
+
+        if not ok:
             self._status = "error"
             self._load_error = detail
             raise AudioError(detail)
         if progress:
-            progress("Загружаю модель Vosk (это может занять 1–2 минуты)…")
+            progress("Загружаю модель Vosk…")
         self._status = "loading"
         model_path_obj = self.model_path()
         model_safe_str = safe_model_path_str(model_path_obj)
@@ -186,7 +373,10 @@ class VoiceInput:
                 pass
             with _suppress_native_stderr():
                 self._model = vosk.Model(model_safe_str)
-            self._recognizer = vosk.KaldiRecognizer(self._model, self.config.sample_rate)
+            if grammar:
+                self._recognizer = vosk.KaldiRecognizer(self._model, self.config.sample_rate, grammar)
+            else:
+                self._recognizer = vosk.KaldiRecognizer(self._model, self.config.sample_rate)
             self._status = "ready"
             self._load_error = None
             log.info("Модель Vosk успешно загружена: %s", model_path_obj)
@@ -208,41 +398,54 @@ class VoiceInput:
         except Exception as exc:  # noqa: BLE001
             raise AudioError(f"Модуль sounddevice недоступен: {exc}") from exc
 
-        device = self.config.input_device
-        try:
-            if device is None:
-                info = sd.query_devices(kind="input")
-            else:
-                info = sd.query_devices(device)
-            self._device_name = str(info.get("name", "микрофон"))
-        except Exception as exc:  # noqa: BLE001
-            raise AudioError(
-                f"Не удалось найти микрофон: {exc}. Проверьте, что микрофон подключён "
-                "и разрешён в параметрах Windows."
-            ) from exc
+        dev_id, dev_name = resolve_device(self.config.input_device, kind="input")
+        self._device_name = dev_name
 
         def callback(indata, frames, time_info, status):  # noqa: ANN001
             if status:
                 log.debug("sounddevice status: %s", status)
             if self._capture.is_set():
-                self._queue.put(bytes(indata))
+                raw_bytes = bytes(indata)
+                self._queue.put(raw_bytes)
 
         try:
             self._stream = sd.RawInputStream(
                 samplerate=self.config.sample_rate,
                 blocksize=self.config.block_size,
-                device=device,
+                device=dev_id,
                 dtype="int16",
                 channels=1,
                 callback=callback,
             )
             self._stream.start()
         except Exception as exc:  # noqa: BLE001
-            self._stream = None
-            raise AudioError(
-                f"Не удалось открыть микрофон «{self._device_name}»: {exc}. "
-                "Попробуйте указать audio.input_device в config.json."
-            ) from exc
+            if dev_id is not None:
+                log.warning("Не удалось открыть микрофон «%s» (id=%s): %s. Пробую микрофон по умолчанию...", self._device_name, dev_id, exc)
+                try:
+                    dev_id, dev_name = resolve_device(None, kind="input")
+                    self._device_name = dev_name
+                    self._stream = sd.RawInputStream(
+                        samplerate=self.config.sample_rate,
+                        blocksize=self.config.block_size,
+                        device=dev_id,
+                        dtype="int16",
+                        channels=1,
+                        callback=callback,
+                    )
+                    self._stream.start()
+                    log.info("Успешно открыт микрофон по умолчанию: %s", dev_name)
+                except Exception as fallback_exc:
+                    self._stream = None
+                    raise AudioError(
+                        f"Не удалось открыть микрофон: {fallback_exc}. "
+                        "Попробуйте выбрать другое устройство ввода в Настройках."
+                    ) from fallback_exc
+            else:
+                self._stream = None
+                raise AudioError(
+                    f"Не удалось открыть микрофон «{self._device_name}»: {exc}. "
+                    "Попробуйте выбрать другое устройство ввода в Настройках."
+                ) from exc
 
         # Push-to-talk
         if self.push_to_talk_enabled:
@@ -251,7 +454,27 @@ class VoiceInput:
         else:
             self._capture.set()
 
-        log.info("Микрофон открыт: %s (PTT: %s)", self._device_name, self.push_to_talk_enabled)
+        log.info("Микрофон открыт: %s (id=%s, PTT: %s)", self._device_name, dev_id, self.push_to_talk_enabled)
+
+    def set_input_device(self, device: int | str | None) -> str:
+        """Переключает микрофон на лету без повторной загрузки модели Vosk."""
+        self.config.input_device = device
+        was_running = self._stream is not None
+        if self._stream is not None:
+            try:
+                self._stream.stop()
+                self._stream.close()
+            except Exception:
+                pass
+            self._stream = None
+        self._drain_queue()
+        if was_running and self._recognizer is not None:
+            self.start()
+        else:
+            _, name = resolve_device(device, kind="input")
+            self._device_name = name
+        log.info("Устройство ввода переключено: %s (id: %s)", self._device_name, device)
+        return self._device_name or str(device)
 
     # ------------------------------------------------------------------ #
     def _start_ptt_listener(self) -> None:
@@ -275,11 +498,13 @@ class VoiceInput:
         self._ptt_active.set()
         self._capture.set()
         self._drain_queue()
-        if self._recognizer is not None:
-            try:
-                self._recognizer.Reset()
-            except Exception:  # noqa: BLE001
-                pass
+        with self._recognizer_lock:
+            if self._recognizer is not None:
+                try:
+                    self._recognizer.Reset()
+                except Exception:  # noqa: BLE001
+                    pass
+        self._last_partial = ""
         if self.on_ptt_status is not None:
             try:
                 self.on_ptt_status(True)
@@ -299,27 +524,31 @@ class VoiceInput:
         if self._recognizer is None:
             return
 
-        # Прокачиваем накопившиеся порции звука из очереди
-        while True:
-            try:
-                chunk = self._queue.get_nowait()
-                self._recognizer.AcceptWaveform(chunk)
-            except queue.Empty:
-                break
-            except Exception:  # noqa: BLE001
-                break
+        with self._recognizer_lock:
+            # Прокачиваем накопившиеся порции звука из очереди
+            while True:
+                try:
+                    chunk = self._queue.get_nowait()
+                    self._recognizer.AcceptWaveform(chunk)
+                except queue.Empty:
+                    break
+                except Exception:  # noqa: BLE001
+                    break
 
-        try:
-            res = json.loads(self._recognizer.Result())
-            text = (res.get("text") or "").strip().lower()
-            if not text:
-                res_final = json.loads(self._recognizer.FinalResult())
-                text = (res_final.get("text") or "").strip().lower()
-            if text:
-                log.info("Распознано по клавише PTT: %s", text)
-                self.phrase_queue.put(text)
-        except Exception as exc:  # noqa: BLE001
-            log.debug("Ошибка извлечения фразы PTT: %s", exc)
+            try:
+                res = json.loads(self._recognizer.Result())
+                text = (res.get("text") or "").strip().lower()
+                if not text:
+                    res_final = json.loads(self._recognizer.FinalResult())
+                    text = (res_final.get("text") or "").strip().lower()
+                if not text and self._last_partial:
+                    text = self._last_partial
+                if text:
+                    log.info("Распознано по клавише PTT: %s", text)
+                    self.phrase_queue.put(text)
+                self._last_partial = ""
+            except Exception as exc:  # noqa: BLE001
+                log.debug("Ошибка извлечения фразы PTT: %s", exc)
 
     def set_ptt_key(self, key: str) -> str:
         """Переключает клавишу push-to-talk и возвращает её форматированное имя."""
@@ -373,9 +602,16 @@ class VoiceInput:
                 self.phrase_queue.get_nowait()
             except queue.Empty:
                 break
-        if self._recognizer is not None:
+        with self._recognizer_lock:
+            if self._recognizer is not None:
+                try:
+                    self._recognizer.Reset()
+                except Exception:  # noqa: BLE001
+                    pass
+        self._last_partial = ""
+        if self.on_partial is not None:
             try:
-                self._recognizer.Reset()
+                self.on_partial("")
             except Exception:  # noqa: BLE001
                 pass
 
@@ -386,20 +622,60 @@ class VoiceInput:
             except queue.Empty:
                 return
 
-    def listen(self) -> str | None:
+    def listen(self, external_queue: queue.Queue | None = None) -> str | None:
         """Блокирующе ждёт распознанную фразу. None — если ввод остановлен."""
         if self._recognizer is None:
             return None
+
+        last_partial = ""
+        last_change_time = 0.0
+        silence_timeout = getattr(self.config, "listen_timeout", 0.0)
+        if silence_timeout <= 0.1:
+            silence_timeout = 1.6
+
         while not self._stop.is_set():
+            if external_queue is not None:
+                try:
+                    ext_text = external_queue.get_nowait()
+                    if ext_text:
+                        if self.on_partial is not None:
+                            self.on_partial("")
+                        return ext_text
+                except queue.Empty:
+                    pass
+
             # Если есть готовая фраза (из PTT on_up)
             try:
-                return self.phrase_queue.get_nowait()
+                text = self.phrase_queue.get_nowait()
+                if self.on_partial is not None:
+                    self.on_partial("")
+                return text
             except queue.Empty:
                 pass
 
             try:
-                data = self._queue.get(timeout=0.2)
+                data = self._queue.get(timeout=0.1)
             except queue.Empty:
+                now = time.monotonic()
+                if last_partial and last_change_time > 0 and (now - last_change_time) >= silence_timeout:
+                    log.info("Таймаут тишины (очередь пуста, %.2fs), финализирую: %s", now - last_change_time, last_partial)
+                    text = ""
+                    with self._recognizer_lock:
+                        try:
+                            res = json.loads(self._recognizer.Result())
+                            text = (res.get("text") or "").strip().lower()
+                        except Exception:  # noqa: BLE001
+                            pass
+                        if not text:
+                            text = last_partial
+                        try:
+                            self._recognizer.Reset()
+                        except Exception:  # noqa: BLE001
+                            pass
+                    self._last_partial = ""
+                    if self.on_partial is not None:
+                        self.on_partial("")
+                    return text
                 continue
 
             if self._is_muted:
@@ -409,19 +685,53 @@ class VoiceInput:
                 continue
 
             try:
-                if self._recognizer.AcceptWaveform(data):
-                    result = json.loads(self._recognizer.Result())
-                    text = (result.get("text") or "").strip().lower()
-                    if text:
-                        log.info("Распознано: %s", text)
-                        return text
-                else:
-                    partial = json.loads(self._recognizer.PartialResult()).get("partial", "")
-                    if partial:
+                with self._recognizer_lock:
+                    if self._recognizer.AcceptWaveform(data):
+                        result = json.loads(self._recognizer.Result())
+                        text = (result.get("text") or "").strip().lower()
+                        last_partial = ""
+                        self._last_partial = ""
+                        last_change_time = 0.0
                         if self.on_partial is not None:
-                            self.on_partial(partial)
-                        else:
-                            print(f"\r🎤 Слушаю: {partial[:70]:<70}", end="", flush=True)
+                            self.on_partial("")
+                        if text:
+                            log.info("Распознано: %s", text)
+                            return text
+                    else:
+                        partial = (json.loads(self._recognizer.PartialResult()).get("partial") or "").strip().lower()
+                        if partial:
+                            self._last_partial = partial
+                            now = time.monotonic()
+                            if partial != last_partial:
+                                last_partial = partial
+                                last_change_time = now
+                                if self.on_partial is not None:
+                                    self.on_partial(partial)
+                                else:
+                                    print(f"\r🎤 Слушаю: {partial[:70]:<70}", end="", flush=True)
+                            else:
+                                # Фраза не меняется: пользователь сделал паузу
+                                if last_change_time > 0 and (now - last_change_time) >= silence_timeout:
+                                    log.info("Таймаут тишины (%.2fs), финализирую: %s", now - last_change_time, last_partial)
+                                    text = ""
+                                    try:
+                                        res = json.loads(self._recognizer.Result())
+                                        text = (res.get("text") or "").strip().lower()
+                                    except Exception:  # noqa: BLE001
+                                        pass
+                                    if not text:
+                                        text = last_partial
+                                    try:
+                                        self._recognizer.Reset()
+                                    except Exception:  # noqa: BLE001
+                                        pass
+                                    if self.on_partial is not None:
+                                        self.on_partial("")
+                                    last_partial = ""
+                                    self._last_partial = ""
+                                    last_change_time = 0.0
+                                    if text:
+                                        return text
             except Exception as exc:  # noqa: BLE001
                 log.debug("Ошибка распознавания: %s", exc)
         return None

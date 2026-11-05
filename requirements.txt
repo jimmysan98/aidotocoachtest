@@ -1,12 +1,29 @@
-# AIDOTA — минимальный набор зависимостей для Windows.
+# AIDOTA — зависимости для ПК-приложения Windows
 # Установка: python -m venv .venv && .venv\Scripts\python.exe -m pip install -r requirements.txt
+# Для сборки установщика дополнительно: pip install -r requirements-dev.txt
 
-vosk==0.3.45
-srt==3.5.3               # импортируется внутри vosk (субтитры, нужен даже без transcriber)
-sounddevice==0.5.5
-numpy==2.4.6
-opencv-python==4.13.0.92
-mss==10.2.0
-requests==2.34.2
-# Озвучка через Windows SAPI (pywin32) и COM:
-pywin32==311; sys_platform == "win32"
+# --- Распознавание речи (офлайн, Vosk) ---
+vosk>=0.3.45
+srt>=3.5.3               # импортируется внутри vosk
+
+# --- Звук и микрофон ---
+sounddevice>=0.5.5
+soundfile>=0.12.0
+# webrtcvad-wheels>=2.0.14  # опционально: точный VAD; без него используется RMS-fallback.
+#                           # У пакета нет wheel для Python 3.15 — включайте на 3.10–3.13.
+edge-tts>=7.0.0          # нейросетевые голоса Астра / Джарвис
+pyttsx3>=2.90            # офлайн-откат на системный Windows SAPI
+pywin32>=311; sys_platform == "win32"
+
+# --- Игра, экран, данные ---
+numpy>=2.0.0
+opencv-python>=4.10.0
+mss>=10.0.0
+requests>=2.31.0
+rapidfuzz>=3.0.0         # нечёткий поиск героев и команд
+
+# --- Интерфейс ---
+customtkinter>=6.0.0
+Pillow>=10.0.0
+pystray>=0.19.5          # иконка в системном трее
+pywebview>=5.0           # веб-дашборд и настройки

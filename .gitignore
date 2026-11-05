@@ -1,4 +1,4 @@
-# Виртуальное окружение и мусор разработки
+﻿# Виртуальное окружение и мусор разработки
 .venv/
 __pycache__/
 *.pyc
@@ -11,12 +11,26 @@ logs/
 test-output.txt
 doctor-output.txt
 
-# Сборка PyInstaller
+# Пользовательская конфигурация и рантайм-данные (не коммитятся!)
+config.json
+data/coach_memory.json
+data/player_profile.json
+data/.coach_memory_*.json
+
+# Инструменты локального агента разработки
+.agent/
+
+# Сборка PyInstaller и артефакты релиза
 build/
 dist/
+AIDOTA_Setup.exe
 
-# Большая локальная модель Vosk (скачивается отдельно)
+# Локальные модели Vosk (скачиваются отдельно или кладутся в установщик при сборке)
 vosk-model-ru-0.22/
+vosk-model-small-ru-0.22/
+
+# Временные логи разработки
+*.log
 
 # Временные файлы диагностики
 probe_*.py

@@ -1,0 +1,857 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#070a12">
+  <title>AIDOTA — голосовой ИИ-тренер Dota 2</title>
+  <link rel="icon" type="image/png" href="../../assets/icon.png">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style-modern.css">
+</head>
+<body>
+  <!-- Ambient Dota 2 Glow Background -->
+  <div class="ambient-glow glow-top-left"></div>
+  <div class="ambient-glow glow-top-right"></div>
+  <div class="ambient-glow glow-bottom-center"></div>
+  <div class="bg-grid" aria-hidden="true"></div>
+
+  <!-- Анимированный splash-экран при загрузке -->
+  <div class="ui-splash" id="ui-splash" aria-hidden="true">
+    <div class="ui-splash-inner">
+      <div class="ui-splash-mark">
+        <svg viewBox="0 0 512 512" width="92" height="92" role="img" aria-label="AIDOTA">
+          <defs>
+            <linearGradient id="splash-border" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#d8b4fe"/><stop offset="0.34" stop-color="#a855f7"/>
+              <stop offset="0.68" stop-color="#7c3aed"/><stop offset="1" stop-color="#38bdf8"/>
+            </linearGradient>
+            <linearGradient id="splash-letter" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#f0d8ff"/><stop offset="0.45" stop-color="#d8b4fe"/>
+              <stop offset="0.8" stop-color="#a855f7"/><stop offset="1" stop-color="#38bdf8"/>
+            </linearGradient>
+            <linearGradient id="splash-fill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#151129"/><stop offset="1" stop-color="#080d1a"/>
+            </linearGradient>
+          </defs>
+          <polygon points="15.4,84.5 130.6,19.5 381.4,19.5 496.6,84.5 496.6,314.9 256.0,500.7 15.4,314.9" fill="url(#splash-fill)" stroke="url(#splash-border)" stroke-width="16" stroke-linejoin="round"/>
+          <polygon points="256.0,74.2 363.3,425.0 298.3,425.0 277.1,316.8 234.9,316.8 213.7,425.0 148.7,425.0" fill="url(#splash-letter)"/>
+        </svg>
+        <span class="ui-splash-shimmer"></span>
+      </div>
+      <div class="ui-splash-title">AIDOTA</div>
+      <div class="ui-splash-subtitle">голосовой ИИ-тренер Dota 2</div>
+      <div class="ui-splash-bar"><span></span></div>
+    </div>
+  </div>
+
+  <!-- Стек всплывающих уведомлений -->
+  <div class="toast-stack" id="toast-stack" aria-live="polite" aria-atomic="true"></div>
+
+  <div class="app-container">
+    <!-- Top Bar Header -->
+    <header class="app-header">
+      <div class="header-left">
+        <div class="brand">
+          <div class="brand-icon">
+            <svg viewBox="0 0 512 512" width="44" height="44" role="img" aria-label="AIDOTA">
+              <defs>
+                <linearGradient id="brand-border" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0" stop-color="#d8b4fe"/><stop offset="0.34" stop-color="#a855f7"/>
+                  <stop offset="0.68" stop-color="#7c3aed"/><stop offset="1" stop-color="#38bdf8"/>
+                </linearGradient>
+                <linearGradient id="brand-letter" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0" stop-color="#f0d8ff"/><stop offset="0.45" stop-color="#d8b4fe"/>
+                  <stop offset="0.8" stop-color="#a855f7"/><stop offset="1" stop-color="#38bdf8"/>
+                </linearGradient>
+                <linearGradient id="brand-fill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stop-color="#151129"/><stop offset="1" stop-color="#080d1a"/>
+                </linearGradient>
+              </defs>
+              <polygon points="15.4,84.5 130.6,19.5 381.4,19.5 496.6,84.5 496.6,314.9 256.0,500.7 15.4,314.9" fill="url(#brand-fill)" stroke="url(#brand-border)" stroke-width="18" stroke-linejoin="round"/>
+              <polygon points="256.0,74.2 363.3,425.0 298.3,425.0 277.1,316.8 234.9,316.8 213.7,425.0 148.7,425.0" fill="url(#brand-letter)"/>
+              <polygon points="417.3,69.1 424.5,97.7 453.1,105.0 424.5,112.2 417.3,140.8 410.0,112.2 381.4,105.0 410.0,97.7" fill="#ffffff"/>
+            </svg>
+          </div>
+          <div class="brand-text">
+            <h1 class="brand-title">AIDOTA</h1>
+            <span class="brand-subtitle">ИИ-ТРЕНЕР DOTA 2</span>
+          </div>
+        </div>
+
+        <!-- Coach Persona Toggle -->
+        <div class="coach-switcher" role="radiogroup" aria-label="Выбор тренера">
+          <button class="coach-btn active" id="coach-astra-btn" data-coach="Астра" title="Астра — аналитический, уверенный 7000+ MMR тренер">
+            <span class="coach-dot astra-dot"></span>
+            <span class="coach-name">Астра</span>
+            <span class="coach-tag">PRO</span>
+          </button>
+          <button class="coach-btn" id="coach-jarvis-btn" data-coach="Джарвис" title="Джарвис — боевой тактический кибернетический ассистент">
+            <span class="coach-dot jarvis-dot"></span>
+            <span class="coach-name">Джарвис</span>
+            <span class="coach-tag">TAC</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Center: Role Selector -->
+      <div class="role-selector" role="radiogroup" aria-label="Позиция в матче">
+        <button class="role-btn" data-pos="1" title="Позиция 1: Керри (Safe lane core)"><span class="role-num">1</span> <span class="role-lbl">Carry</span></button>
+        <button class="role-btn" data-pos="2" title="Позиция 2: Мидер (Mid lane core)"><span class="role-num">2</span> <span class="role-lbl">Mid</span></button>
+        <button class="role-btn" data-pos="3" title="Позиция 3: Оффлейнер (Hard lane core)"><span class="role-num">3</span> <span class="role-lbl">Offlane</span></button>
+        <button class="role-btn" data-pos="4" title="Позиция 4: Частичная поддержка (Soft support)"><span class="role-num">4</span> <span class="role-lbl">Soft Sup</span></button>
+        <button class="role-btn" data-pos="5" title="Позиция 5: Полная поддержка (Hard support)"><span class="role-num">5</span> <span class="role-lbl">Hard Sup</span></button>
+      </div>
+
+      <!-- Right: Status Badges & Controls -->
+      <div class="header-right">
+        <div class="status-pill" id="gsi-status-pill" title="Статус интеграции GSI Dota 2">
+          <span class="pulse-dot gsi-dot"></span>
+          <span class="status-text" id="gsi-status-text">Ожидание Dota 2</span>
+        </div>
+        <div class="status-pill" id="assistant-status-pill" title="Состояние фонового тренера">
+          <span class="pulse-dot coach-dot-status"></span>
+          <span class="status-text" id="coach-status-text">Остановлен</span>
+        </div>
+        <div class="status-pill skill-pill" id="skill-level-pill" title="Уровень игры, под который подстраивается тренер">
+          <span class="badge-icon">🎓</span>
+          <span class="status-text" id="skill-level-text">Новичок</span>
+        </div>
+        <div class="hotkey-badge" id="ptt-badge" title="Клавиша голосового ввода Push-to-Talk">
+          <span class="badge-icon">🎙</span>
+          <span class="badge-key" id="ptt-key-display">V</span>
+        </div>
+        <button class="icon-btn" id="btn-minimize-tray" title="Свернуть в системный трей">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Navigation Bar -->
+    <nav class="app-nav" aria-label="Основная навигация">
+      <button class="nav-tab active" data-tab="dashboard">
+        <span class="tab-icon">⚡</span>
+        <span class="tab-label">Дашборд</span>
+      </button>
+      <button class="nav-tab" data-tab="chat">
+        <span class="tab-icon">💬</span>
+        <span class="tab-label">ИИ-Чат</span>
+        <span class="tab-badge" id="chat-count-badge" style="display:none;">0</span>
+      </button>
+      <button class="nav-tab" data-tab="timers">
+        <span class="tab-icon">⏱</span>
+        <span class="tab-label">Тайминги & Радар</span>
+      </button>
+      <button class="nav-tab" data-tab="meta">
+        <span class="tab-icon">🎯</span>
+        <span class="tab-label">Драфт & База знаний</span>
+      </button>
+      <button class="nav-tab" data-tab="settings">
+        <span class="tab-icon">⚙</span>
+        <span class="tab-label">Настройки</span>
+      </button>
+      <button class="nav-tab" data-tab="doctor">
+        <span class="tab-icon">🩺</span>
+        <span class="tab-label">Диагностика</span>
+      </button>
+    </nav>
+
+    <!-- Content Sections -->
+    <main class="app-content">
+
+      <!-- ======================================================== -->
+      <!-- TAB 1: DASHBOARD -->
+      <!-- ======================================================== -->
+      <section class="tab-pane active" id="tab-dashboard">
+        <div class="dashboard-grid">
+          <!-- Hero HUD Banner -->
+          <div class="card hero-banner-card">
+            <div class="hero-main-row">
+              <div class="hero-portrait-frame">
+                <img id="dashboard-hero-img" src="" alt="Hero Avatar" class="hero-avatar" style="display:none;">
+                <div id="hero-placeholder" class="hero-avatar-placeholder">
+                  <span class="hero-ph-icon">🛡</span>
+                  <span class="hero-ph-text">Вне матча</span>
+                </div>
+                <div class="hero-level-badge" id="hero-level-badge">LVL 1</div>
+              </div>
+
+              <div class="hero-info-body">
+                <div class="hero-title-row">
+                  <h2 class="hero-name" id="hero-name-display">Герой не выбран</h2>
+                  <div class="hero-tags">
+                    <span class="badge badge-pos" id="hero-pos-badge">Позиция 1</span>
+                    <span class="badge badge-mode" id="game-mode-badge">All Pick</span>
+                    <span class="badge badge-time" id="game-clock-badge">00:00</span>
+                  </div>
+                </div>
+
+                <!-- Live Match Stats Grid -->
+                <div class="live-stats-row">
+                  <div class="stat-box">
+                    <span class="stat-label">K / D / A</span>
+                    <span class="stat-value kda-val" id="stat-kda">0 / 0 / 0</span>
+                  </div>
+                  <div class="stat-box">
+                    <span class="stat-label">Нетворс</span>
+                    <span class="stat-value nw-val" id="stat-networth">0 💰</span>
+                  </div>
+                  <div class="stat-box">
+                    <span class="stat-label">Золото</span>
+                    <span class="stat-value gold-val" id="stat-gold">0</span>
+                  </div>
+                  <div class="stat-box">
+                    <span class="stat-label">Крипы (CS/D)</span>
+                    <span class="stat-value cs-val" id="stat-cs">0 / 0</span>
+                  </div>
+                  <div class="stat-box">
+                    <span class="stat-label">Счёт матча</span>
+                    <span class="stat-value score-val" id="stat-score">0 : 0</span>
+                  </div>
+                  <div class="stat-box">
+                    <span class="stat-label">Ульт (КД)</span>
+                    <span class="stat-value ult-val" id="stat-ult">—</span>
+                  </div>
+                </div>
+
+                <!-- Hero Items Bar + отдельный слот нейтрального предмета -->
+                <div class="inventory-row">
+                  <div class="inventory-bar" id="inventory-bar">
+                    <div class="item-slot" title="Слот 1"><span class="item-empty">-</span></div>
+                    <div class="item-slot" title="Слот 2"><span class="item-empty">-</span></div>
+                    <div class="item-slot" title="Слот 3"><span class="item-empty">-</span></div>
+                    <div class="item-slot" title="Слот 4"><span class="item-empty">-</span></div>
+                    <div class="item-slot" title="Слот 5"><span class="item-empty">-</span></div>
+                    <div class="item-slot" title="Слот 6"><span class="item-empty">-</span></div>
+                  </div>
+                  <div class="item-slot neutral-item-slot" id="neutral-item-slot" style="display:none;" title="Нейтральный предмет">
+                    <span class="item-empty">-</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- v1.2: живые советы «Что купить дальше» (gsi.item_advice) -->
+            <div class="hero-advice-block" id="hero-advice-block" aria-live="polite">
+              <div class="hero-advice-head">
+                <span class="hero-advice-title">🛒 Что купить дальше</span>
+                <span class="hero-advice-hint" id="hero-advice-hint">живые советы ИИ-тренера</span>
+              </div>
+              <div class="item-advice-list" id="item-advice-list">
+                <div class="advice-empty" id="item-advice-empty">Свежих советов по закупу пока нет — начните матч, и тренер подскажет следующий предмет.</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Controls & Audio Wave Card -->
+          <div class="card controls-card">
+            <div class="card-header">
+              <h3 class="card-title">Управление тренером</h3>
+              <span class="card-badge" id="coach-engine-badge">Готов к запуску</span>
+            </div>
+
+            <!-- Wave Visualizer Canvas -->
+            <div class="visualizer-container">
+              <canvas id="audio-wave-canvas" width="450" height="70"></canvas>
+              <div class="visualizer-status" id="visualizer-status">Озвучка готова (Edge Neural)</div>
+            </div>
+
+            <!-- Main Big Action Buttons -->
+            <div class="action-buttons-grid">
+              <button class="btn btn-primary btn-large" id="btn-toggle-assistant">
+                <span class="btn-icon">🚀</span>
+                <span class="btn-text" id="btn-toggle-assistant-text">Запустить ассистента</span>
+              </button>
+              <button class="btn btn-secondary" id="btn-test-voice">
+                <span class="btn-icon">🔊</span>
+                <span class="btn-text">Проверить голос</span>
+              </button>
+              <button class="btn btn-secondary" id="btn-toggle-overlay">
+                <span class="btn-icon">🎯</span>
+                <span class="btn-text">Вкл/Выкл оверлей</span>
+              </button>
+              <button class="btn btn-secondary" id="btn-install-gsi-quick">
+                <span class="btn-icon">🎮</span>
+                <span class="btn-text">Интеграция Dota 2</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Live Coach Advice & Alerts Feed -->
+          <div class="card advice-feed-card">
+            <div class="card-header">
+              <h3 class="card-title">Лента оперативных подсказок ИИ</h3>
+              <button class="btn-link" id="btn-clear-feed">Очистить</button>
+            </div>
+            <div class="feed-container" id="advice-feed-list">
+              <div class="feed-item welcome-feed-item">
+                <div class="feed-icon">✦</div>
+                <div class="feed-content">
+                  <div class="feed-title">Добро пожаловать в AIDOTA PRO!</div>
+                  <div class="feed-body">Запустите Dota 2 или выберите героя вручную. Нажмите «Запустить ассистента» или зажмите клавишу [V] для голосового запроса.</div>
+                  <div class="feed-time">Только что</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Совет тренера: живые рекомендации под уровень игры -->
+          <div class="card tip-card">
+            <div class="card-header">
+              <h3 class="card-title">💡 Совет тренера</h3>
+              <span class="card-badge" id="tip-level-badge">Новичок</span>
+            </div>
+            <div class="tip-body">
+              <p class="tip-text" id="tip-text">Загрузка совета…</p>
+              <div class="tip-actions">
+                <button class="pill-btn tip-chip" data-query="Что такое БКБ?">📖 Что такое БКБ?</button>
+                <button class="pill-btn tip-chip" data-query="Что купить на старте?">🎒 Стартовый закуп</button>
+                <button class="pill-btn tip-chip" data-query="Кого пикнуть против врагов?">🎯 Кого пикнуть</button>
+                <button class="pill-btn tip-chip" data-query="Что делать на линии?">⚔ План на линию</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======================================================== -->
+      <!-- TAB 2: INTERACTIVE AI CHAT -->
+      <!-- ======================================================== -->
+      <section class="tab-pane" id="tab-chat">
+        <div class="chat-layout">
+          <!-- Quick Suggestion Pills -->
+          <div class="prompt-suggestions-bar">
+            <span class="suggestions-label">Быстрые вопросы:</span>
+            <button class="pill-btn" data-query="Что купить на первые 600 золота?">🎒 Стартовый закуп</button>
+            <button class="pill-btn" data-query="Что собирать следующим слотом?">⚡ Что купить дальше?</button>
+            <button class="pill-btn" data-query="Как правильно стоять эту линию?">⚔ Лайнинг и позиционка</button>
+            <button class="pill-btn" data-query="Когда делать отводы и стакать?">🌲 Отводы и стаки</button>
+            <button class="pill-btn" data-query="Кто контрит вражеских героев?">🛡 Контрпики и враги</button>
+            <button class="pill-btn" data-query="Кого первого фокусить в драке?">💥 Фокус в тимфайте</button>
+            <button class="pill-btn" data-query="Когда идти на Рошана?">👑 Тайминг Рошана</button>
+          </div>
+
+          <!-- Messages Container -->
+          <div class="chat-messages-container" id="chat-messages-container">
+            <div class="chat-msg coach-msg">
+              <div class="msg-avatar astra-avatar">✦</div>
+              <div class="msg-bubble">
+                <div class="msg-header">
+                  <span class="msg-author" id="chat-welcome-author">Астра</span>
+                  <span class="msg-badge">PRO COACH</span>
+                  <span class="msg-time" id="chat-welcome-time">12:00</span>
+                </div>
+                <div class="msg-text">
+                  Привет! Я на связи. Задавай любой вопрос по текущему матчу, предметам, тактике или таймингам — отвечу мгновенно голосом и текстом.
+                </div>
+                <div class="msg-actions">
+                  <button class="msg-action-btn btn-speak-msg" title="Озвучить голосом">🔊 Озвучить</button>
+                  <button class="msg-action-btn btn-copy-msg" title="Копировать текст">📋 Копировать</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Chat Input Row -->
+          <form class="chat-input-row" id="chat-input-form">
+            <div class="input-wrapper">
+              <input type="text" id="chat-text-input" placeholder="Спросите что угодно у Астры/Джарвиса (нажмите Enter)..." autocomplete="off">
+              <button type="button" class="btn-mic-input" id="btn-mic-input" title="Голосовой ввод (Push-to-Talk)">
+                🎙
+              </button>
+            </div>
+            <button type="submit" class="btn btn-primary btn-send" id="btn-send-chat">
+              <span>Отправить</span>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg>
+            </button>
+          </form>
+        </div>
+      </section>
+
+      <!-- ======================================================== -->
+      <!-- TAB 3: TIMERS & RADAR -->
+      <!-- ======================================================== -->
+      <section class="tab-pane" id="tab-timers">
+        <div class="timers-dashboard">
+          <div class="timers-header-row">
+            <div>
+              <h2 class="section-title">Макро-радар и тактические тайминги</h2>
+              <p class="section-desc">Автоматическое звуковое и визуальное отслеживание ключевых событий карты Dota 2.</p>
+            </div>
+            <div class="roshan-quick-action">
+              <button class="btn btn-danger" id="btn-roshan-killed">
+                <span class="btn-icon">🐉</span>
+                <span>Зафиксировать смерть Рошана</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Visual Timers Grid -->
+          <div class="timers-cards-grid">
+            <!-- Wisdom Runes -->
+            <div class="timer-card active-card">
+              <div class="timer-card-top">
+                <span class="timer-badge">Каждые 7 минут</span>
+                <span class="timer-icon">📜</span>
+              </div>
+              <h4 class="timer-title">Руна мудрости</h4>
+              <div class="timer-countdown" id="timer-val-wisdom">07:00</div>
+              <div class="timer-progress-track">
+                <div class="timer-progress-bar" id="bar-wisdom" style="width: 100%;"></div>
+              </div>
+              <p class="timer-hint">Саппортам 4 и 5: смещайтесь к пруду за 25 сек, чтобы забрать свою или украсть чужую.</p>
+            </div>
+
+            <!-- River Active Runes -->
+            <div class="timer-card active-card">
+              <div class="timer-card-top">
+                <span class="timer-badge">Каждые 2 мин (6:00+)</span>
+                <span class="timer-icon">🔥</span>
+              </div>
+              <h4 class="timer-title">Активная руна реки</h4>
+              <div class="timer-countdown" id="timer-val-active-rune">06:00</div>
+              <div class="timer-progress-track">
+                <div class="timer-progress-bar" id="bar-active-rune" style="width: 100%;"></div>
+              </div>
+              <p class="timer-hint">Контролируйте спавны на 6:00, 8:00, 10:00. Саппорт 4 должен помочь мидеру.</p>
+            </div>
+
+            <!-- Tormentor -->
+            <div class="timer-card">
+              <div class="timer-card-top">
+                <span class="timer-badge">20:00 / +10 мин</span>
+                <span class="timer-icon">👾</span>
+              </div>
+              <h4 class="timer-title">Терзатель (Tormentor)</h4>
+              <div class="timer-countdown" id="timer-val-tormentor">20:00</div>
+              <div class="timer-progress-track">
+                <div class="timer-progress-bar" id="bar-tormentor" style="width: 100%;"></div>
+              </div>
+              <p class="timer-hint">Даёт бесплатный Аghanim's Shard одному из двух отстающих союзников.</p>
+            </div>
+
+            <!-- Lotus Pool -->
+            <div class="timer-card">
+              <div class="timer-card-top">
+                <span class="timer-badge">Каждые 3 минуты</span>
+                <span class="timer-icon">🌸</span>
+              </div>
+              <h4 class="timer-title">Пруд лотосов</h4>
+              <div class="timer-countdown" id="timer-val-lotus">03:00</div>
+              <div class="timer-progress-track">
+                <div class="timer-progress-bar" id="bar-lotus" style="width: 100%;"></div>
+              </div>
+              <p class="timer-hint">3 лотуса дают Большой Лотос с барьером на 400 урона и мгновенным хилом.</p>
+            </div>
+
+            <!-- Stacks & Pulls -->
+            <div class="timer-card">
+              <div class="timer-card-top">
+                <span class="timer-badge">Каждую минуту</span>
+                <span class="timer-icon">🌲</span>
+              </div>
+              <h4 class="timer-title">Стаки & Отводы</h4>
+              <div class="timer-countdown" id="timer-val-stack">00:53</div>
+              <div class="timer-progress-track">
+                <div class="timer-progress-bar" id="bar-stack" style="width: 88%;"></div>
+              </div>
+              <p class="timer-hint">Отвод: :17 и :47 секунды. Стак нейтралов: бейте на :53–:55 и уводите.</p>
+            </div>
+
+            <!-- Neutral Items Tiers -->
+            <div class="timer-card">
+              <div class="timer-card-top">
+                <span class="timer-badge">7:00 / 17:00 / 27:00...</span>
+                <span class="timer-icon">🛡</span>
+              </div>
+              <h4 class="timer-title">Нейтральные предметы</h4>
+              <div class="timer-countdown" id="timer-val-neutral">07:00 (Тир 1)</div>
+              <div class="timer-progress-track">
+                <div class="timer-progress-bar" id="bar-neutral" style="width: 100%;"></div>
+              </div>
+              <p class="timer-hint">Тир 1 (7:00), Тир 2 (17:00), Тир 3 (27:00), Тир 4 (37:00), Тир 5 (60:00).</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======================================================== -->
+      <!-- TAB: META DB & DRAFT COACH -->
+      <!-- ======================================================== -->
+      <section class="tab-pane" id="tab-meta">
+        <div class="meta-layout">
+          <!-- Sub-view navigation switcher -->
+          <div class="meta-subnav">
+            <button class="meta-subnav-btn active" data-subtab="draft-picker">
+              <span>⚔ Подбор контрпиков к драфту</span>
+            </button>
+            <button class="meta-subnav-btn" data-subtab="hero-builds">
+              <span>📖 Энциклопедия закупа & Билды</span>
+            </button>
+          </div>
+
+          <!-- SUB-VIEW 1: DRAFT & COUNTER-PICK ASSISTANT -->
+          <div class="meta-subpane active" id="subpane-draft-picker">
+            <div class="card meta-control-card">
+              <div class="meta-card-header">
+                <div class="meta-card-title-group">
+                  <h3 class="card-title">🎯 Анализ вражеского драфта и подбор контрпиков</h3>
+                  <p class="card-subtitle">Укажите вражеских героев и свою позицию — ИИ-тренер рассчитает наивысший % эффективности и синергии.</p>
+                </div>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-sync-gsi-draft" title="Подтянуть героев из текущей игры">
+                  <span>⚡ Взять героев из матча GSI</span>
+                </button>
+              </div>
+
+              <!-- Enemy Heroes Input Row -->
+              <div class="draft-selection-grid">
+                <div class="draft-input-group">
+                  <label class="input-label">Вражеские герои (до 5):</label>
+                  <div class="chips-container" id="enemy-chips-container">
+                    <!-- Clickable chips populated here -->
+                  </div>
+                  <div class="hero-search-wrapper">
+                    <input type="text" id="enemy-hero-search" class="hero-search-input" placeholder="Введите имя героя (напр. Сларк, Pudge, Морф)...">
+                    <div class="hero-autocomplete-dropdown" id="enemy-autocomplete" style="display:none;"></div>
+                  </div>
+                </div>
+
+                <!-- Position Selector for Drafting -->
+                <div class="draft-pos-group">
+                  <label class="input-label">Ваша позиция в игре:</label>
+                  <div class="pos-pills-row" id="draft-pos-selector">
+                    <button type="button" class="pos-pill active" data-pos="1">1: Керри</button>
+                    <button type="button" class="pos-pill" data-pos="2">2: Мид</button>
+                    <button type="button" class="pos-pill" data-pos="3">3: Оффлейн</button>
+                    <button type="button" class="pos-pill" data-pos="4">4: Софт</button>
+                    <button type="button" class="pos-pill" data-pos="5">5: Хард</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="draft-actions-bar">
+                <button type="button" class="btn btn-primary btn-glow" id="btn-calculate-draft">
+                  <span>🚀 Рассчитать лучшие контрпики</span>
+                </button>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-clear-draft">
+                  <span>Очистить</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Recommendations Grid -->
+            <div class="draft-results-section" id="draft-results-section">
+              <h4 class="results-header" id="draft-results-header">Рекомендуемые герои для победы:</h4>
+              <div class="draft-cards-grid" id="draft-cards-grid">
+                <div class="empty-draft-placeholder">
+                  <span class="empty-icon">🛡</span>
+                  <p>Добавьте вражеских героев выше или нажмите «Взять героев из матча GSI», чтобы получить персональные контрпики с объяснением.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- SUB-VIEW 2: HERO BUILDS & META ENCYCLOPEDIA -->
+          <div class="meta-subpane" id="subpane-hero-builds" style="display:none;">
+            <div class="card meta-control-card">
+              <div class="meta-card-header">
+                <div class="meta-card-title-group">
+                  <h3 class="card-title">📖 Гайд по закупам и сборкам артефактов</h3>
+                  <p class="card-subtitle">Стартовый закуп, лайнинг, ключевые кор-предметы с таймингами, ситуативные контр-артефакты и советы.</p>
+                </div>
+              </div>
+
+              <div class="build-selection-row">
+                <div class="form-group hero-select-fg">
+                  <label for="build-hero-select">Герой:</label>
+                  <select id="build-hero-select" class="styled-select">
+                    <!-- Populated dynamically -->
+                  </select>
+                </div>
+
+                <div class="form-group role-select-fg">
+                  <label for="build-role-select">Позиция:</label>
+                  <select id="build-role-select" class="styled-select">
+                    <option value="1">Позиция 1: Керри (Safe Lane)</option>
+                    <option value="2">Позиция 2: Мидер (Mid Lane)</option>
+                    <option value="3">Позиция 3: Оффлейнер (Offlane)</option>
+                    <option value="4">Позиция 4: Софт-саппорт (4-ка)</option>
+                    <option value="5">Позиция 5: Хард-саппорт (5-ка)</option>
+                  </select>
+                </div>
+
+                <div class="form-group action-fg">
+                  <button type="button" class="btn btn-primary" id="btn-load-build">
+                    <span>Показать билд</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Build Details Container -->
+            <div class="build-details-container" id="build-details-container">
+              <!-- Rendered dynamically -->
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======================================================== -->
+      <!-- TAB 4: SETTINGS -->
+      <!-- ======================================================== -->
+      <section class="tab-pane" id="tab-settings">
+        <div class="settings-layout">
+          <div class="settings-section">
+            <h3 class="section-title">🌟 Выбор ИИ-модели (Пресеты в 1 клик)</h3>
+            <p class="section-desc">Выберите удобный готовый пресет или введите собственный OpenAI-совместимый API.</p>
+
+            <div class="presets-cards-grid">
+              <div class="preset-card active" data-preset="pollinations">
+                <div class="preset-header">
+                  <span class="preset-icon">🌟</span>
+                  <span class="preset-badge free-badge">100% БЕСПЛАТНО</span>
+                </div>
+                <h4 class="preset-name">Бесплатный ИИ (Без ключа)</h4>
+                <p class="preset-desc">Работает сразу из коробки без регистрации, оплаты и ключей через нейросеть Pollinations AI.</p>
+              </div>
+
+              <div class="preset-card" data-preset="google_gemini">
+                <div class="preset-header">
+                  <span class="preset-icon">💎</span>
+                  <span class="preset-badge">GOOGLE AI</span>
+                </div>
+                <h4 class="preset-name">Google Gemini 2.5 Flash</h4>
+                <p class="preset-desc">Официальный сверхбыстрый API от Google: скорость 150+ токенов/сек, бесплатный ключ в Google AI Studio.</p>
+              </div>
+
+              <div class="preset-card" data-preset="pollinations_gemini">
+                <div class="preset-header">
+                  <span class="preset-icon">🔮</span>
+                  <span class="preset-badge free-badge">100% БЕСПЛАТНО</span>
+                </div>
+                <h4 class="preset-name">Gemini Free (Без ключа)</h4>
+                <p class="preset-desc">Нейросеть Gemini без API-ключей, регистрации и оплаты через шлюз Pollinations AI.</p>
+              </div>
+
+              <div class="preset-card" data-preset="pollinations_gemini_thinking">
+                <div class="preset-header">
+                  <span class="preset-icon">🧠</span>
+                  <span class="preset-badge">РАССУЖДЕНИЯ</span>
+                </div>
+                <h4 class="preset-name">Gemini Thinking Free</h4>
+                <p class="preset-desc">Бесплатная рассуждающая модель Gemini Thinking с глубоким анализом ситуации.</p>
+              </div>
+
+              <div class="preset-card" data-preset="openrouter_free">
+                <div class="preset-header">
+                  <span class="preset-icon">🆓</span>
+                  <span class="preset-badge">БЕСПЛАТНО</span>
+                </div>
+                <h4 class="preset-name">OpenRouter Free</h4>
+                <p class="preset-desc">Бесплатные модели Google Gemini 2.0 Flash и Meta Llama 3.3 с нулевой стоимостью.</p>
+              </div>
+
+              <div class="preset-card" data-preset="deepseek">
+                <div class="preset-header">
+                  <span class="preset-icon">⚡</span>
+                  <span class="preset-badge">ВЫСОКАЯ СКОРОСТЬ</span>
+                </div>
+                <h4 class="preset-name">DeepSeek Chat / R1</h4>
+                <p class="preset-desc">Мощный китайский ИИ: молниеносные ответы и глубокое понимание киберспортивной меты.</p>
+              </div>
+
+              <div class="preset-card" data-preset="groq">
+                <div class="preset-header">
+                  <span class="preset-icon">🚀</span>
+                  <span class="preset-badge">ULTRA FAST</span>
+                </div>
+                <h4 class="preset-name">Groq Llama 3.3</h4>
+                <p class="preset-desc">Сверхбыстрый чиповый LPU вывод (до 300 токенов/сек) с бесплатным стартовым лимитом.</p>
+              </div>
+
+              <div class="preset-card" data-preset="ollama">
+                <div class="preset-header">
+                  <span class="preset-icon">🖥</span>
+                  <span class="preset-badge">ОФФЛАЙН</span>
+                </div>
+                <h4 class="preset-name">Ollama (Локальный сервер)</h4>
+                <p class="preset-desc">Работает прямо на вашем ПК без интернета через локальный сервер Ollama (gemma3 / llama3).</p>
+              </div>
+            </div>
+
+            <!-- API Configuration Form -->
+            <div class="settings-form-grid">
+              <div class="form-group">
+                <label for="cfg-base-url">API Base URL:</label>
+                <input type="text" id="cfg-base-url" placeholder="https://text.pollinations.ai/openai">
+              </div>
+
+              <div class="form-group">
+                <label for="cfg-model">Название модели (Model):</label>
+                <input type="text" id="cfg-model" placeholder="openai">
+              </div>
+
+              <div class="form-group full-width">
+                <label>⚡ Быстрый выбор популярной модели:</label>
+                <div class="quick-model-chips">
+                  <button type="button" class="model-chip" data-model="gemini-2.5-flash">💎 gemini-2.5-flash</button>
+                  <button type="button" class="model-chip" data-model="gemini-2.5-pro">💎 gemini-2.5-pro</button>
+                  <button type="button" class="model-chip" data-model="gemini-2.0-flash">💎 gemini-2.0-flash</button>
+                  <button type="button" class="model-chip" data-model="gemini">🔮 gemini (Free)</button>
+                  <button type="button" class="model-chip" data-model="gemini-thinking">🧠 gemini-thinking (Free)</button>
+                  <button type="button" class="model-chip" data-model="openai">🌟 openai (Free)</button>
+                  <button type="button" class="model-chip" data-model="deepseek-chat">⚡ deepseek-chat</button>
+                  <button type="button" class="model-chip" data-model="llama-3.3-70b-versatile">🚀 llama-3.3-70b</button>
+                </div>
+              </div>
+
+              <div class="form-group full-width">
+                <label for="cfg-api-key">API-ключ (для платных/приватных моделей):</label>
+                <div class="password-wrapper">
+                  <input type="password" id="cfg-api-key" placeholder="Оставьте пустым для бесплатного ИИ или введите sk-...">
+                  <button type="button" class="btn-toggle-pw" id="btn-toggle-pw" title="Показать/скрыть ключ">👁</button>
+                </div>
+                <span class="field-hint" id="cfg-key-hint">Для бесплатного пресета Pollinations ключ не требуется.</span>
+              </div>
+
+              <div class="form-actions">
+                <button type="button" class="btn btn-secondary" id="btn-test-llm">
+                  <span>⚡ Проверить связь с ИИ</span>
+                </button>
+                <span class="test-result-text" id="test-llm-result"></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Voice & Audio Settings -->
+          <div class="settings-section">
+            <h3 class="section-title">🔊 Голосовые модели и синтез речи (TTS)</h3>
+
+            <div class="settings-form-grid">
+              <div class="form-group">
+                <label for="cfg-tts-provider">Движок озвучки:</label>
+                <select id="cfg-tts-provider">
+                  <option value="edge">Нейросеть Microsoft Edge Neural (Рекомендуется, реалистично)</option>
+                  <option value="sapi">Локальный Windows SAPI (Оффлайн без интернета)</option>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label for="cfg-edge-voice">Голосовая модель нейросети:</label>
+                <select id="cfg-edge-voice">
+                  <option value="ru-RU-SvetlanaNeural">Астра: Светлана (ru-RU-SvetlanaNeural) — уверенный, четкий</option>
+                  <option value="ru-RU-DmitryNeural">Джарвис: Дмитрий (ru-RU-DmitryNeural) — кибернетический, тактик</option>
+                  <option value="ru-RU-DariyaNeural">Дария: Дария (ru-RU-DariyaNeural) — мягкий естественный тембр</option>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label for="cfg-input-device">Микрофон (Ввод речи):</label>
+                <select id="cfg-input-device">
+                  <option value="">По умолчанию (Системный микрофон)</option>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label for="cfg-output-device">Динамики / Наушники (Вывод звука):</label>
+                <select id="cfg-output-device">
+                  <option value="">По умолчанию (Системные динамики)</option>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label for="cfg-ptt-key">Клавиша Push-to-Talk:</label>
+                <div class="ptt-input-wrapper">
+                  <input type="text" id="cfg-ptt-key" value="v" readonly>
+                  <button type="button" class="btn btn-secondary btn-small" id="btn-record-hotkey">Задать клавишу</button>
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label for="cfg-skill-level">🎓 Уровень игры (стиль тренера):</label>
+                <select id="cfg-skill-level">
+                  <option value="beginner">Новичок — тренер объясняет термины и даёт простые шаги</option>
+                  <option value="amateur">Любитель — баланс объяснений и тактики</option>
+                  <option value="advanced">Опытный — тактика, тайминги и меньше основ</option>
+                  <option value="expert">Профи — глубокая аналитика, темп карты и окна драфта</option>
+                </select>
+                <span class="field-hint" id="cfg-skill-hint">Новичкам тренер объясняет термины (БКБ, байбек, вижн) и даёт один простой шаг.</span>
+              </div>
+
+              <div class="form-group">
+                <label for="cfg-autonomy-level">Уровень автономности тренера:</label>
+                <select id="cfg-autonomy-level">
+                  <option value="high">Высокая (Частые подсказки, Power Spikes, Рошан, Терзатель)</option>
+                  <option value="medium" selected>Средняя (Только важные тайминги, руны и камбэк)</option>
+                  <option value="off">Только по запросу (Тишина, пока не спросите)</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- Save Settings Button -->
+            <div class="save-bar">
+              <button type="button" class="btn btn-primary btn-large" id="btn-save-settings">
+                <span>💾 Сохранить все настройки</span>
+              </button>
+              <span class="save-indicator" id="save-settings-indicator"></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======================================================== -->
+      <!-- TAB 5: SYSTEM DOCTOR -->
+      <!-- ======================================================== -->
+      <section class="tab-pane" id="tab-doctor">
+        <div class="doctor-layout">
+          <div class="doctor-header-card">
+            <div>
+              <h2 class="section-title">Самодиагностика окружения AIDOTA</h2>
+              <p class="section-desc">Автоматическая проверка микрофона, озвучки, моделей Vosk, GSI портов и файлов Dota 2.</p>
+            </div>
+            <button class="btn btn-secondary" id="btn-rerun-doctor">
+              <span>🔄 Перепроверить систему</span>
+            </button>
+          </div>
+
+          <div class="doctor-checks-grid" id="doctor-checks-grid">
+            <!-- Dynamically populated checks -->
+            <div class="check-item ok-item">
+              <span class="check-badge ok-badge">OK</span>
+              <div class="check-info">
+                <span class="check-name">Python 3.15</span>
+                <span class="check-desc">Интерпретатор работает в 64-битном режиме</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Quick Action Utility Cards -->
+          <div class="doctor-utilities-grid">
+            <div class="util-card">
+              <div class="util-icon">🎮</div>
+              <div class="util-body">
+                <h4>Установить конфиг GSI в Dota 2</h4>
+                <p>Автоматически находит каталог Steam и прописывает конфиг gamestate_integration_aidota.cfg.</p>
+                <button class="btn btn-primary" id="btn-doctor-install-gsi">Установить GSI</button>
+              </div>
+            </div>
+
+            <div class="util-card">
+              <div class="util-icon">🚀</div>
+              <div class="util-body">
+                <h4>Добавить AIDOTA в Steam</h4>
+                <p>Добавляет ярлык приложения в вашу библиотеку игр Steam для быстрого запуска из оверлея.</p>
+                <button class="btn btn-secondary" id="btn-doctor-add-steam">Добавить в Steam</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

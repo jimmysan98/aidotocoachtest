@@ -147,7 +147,14 @@ def _check_llm(config: Config) -> Check:
     base = llm.base_url.rstrip("/")
 
     if provider == "openai_compatible":
-        headers = {"Authorization": f"Bearer {llm.api_key}"} if llm.api_key else {}
+        if not (llm.api_key or "").strip():
+            return Check(
+                "LLM",
+                "WARN",
+                f"модель {llm.model}, но API-ключ не указан",
+                "Откройте Настройки (⚙) в окне AIDOTA или укажите llm.api_key в config.json.",
+            )
+        headers = {"Authorization": f"Bearer {llm.api_key}"}
         try:
             response = requests.get(f"{base}/models", headers=headers, timeout=6)
             response.raise_for_status()
@@ -157,7 +164,7 @@ def _check_llm(config: Config) -> Check:
                 "LLM",
                 "WARN",
                 f"{base} не отвечает: {exc}",
-                "Проверьте llm.base_url и llm.api_key в config.json.",
+                "Проверьте llm.base_url и llm.api_key в config.json или окне Настроек.",
             )
         if not llm.model:
             return Check("LLM", "WARN", "модель не задана", "Укажите llm.model в config.json.")
@@ -297,8 +304,8 @@ def _check_overlay(config: Config) -> Check:
     return Check("Оверлей", "OK", "Tkinter работает")
 
 
-def run_doctor(config: Config, *, online: bool = False) -> int:
-    checks: list[Check] = [
+def get_checks(config: Config, *, online: bool = False) -> list[Check]:
+    return [
         _check_python(config),
         _check_dependencies(config),
         _check_model(config),
@@ -312,6 +319,10 @@ def run_doctor(config: Config, *, online: bool = False) -> int:
         _check_overlay(config),
         _check_opendota(config, quick=not online),
     ]
+
+
+def run_doctor(config: Config, *, online: bool = False) -> int:
+    checks = get_checks(config, online=online)
     print("AIDOTA — самодиагностика\n" + "=" * 64)
     for check in checks:
         label = STATUS_LABEL.get(check.status, check.status)
@@ -344,3 +355,56 @@ def _wrap(text: str, width: int) -> list[str]:
     if current:
         lines.append(current)
     return lines
+
+
+def download_vosk_model(
+    dest_dir: Path,
+    model_name: str = "vosk-model-small-ru-0.22",
+    progress_callback: Callable[[float, str], None] | None = None,
+) -> Path:
+    """Скачивает и распаковывает русскую модель Vosk."""
+    import io
+    import urllib.request
+    import zipfile
+
+    url = f"https://alphacephei.com/vosk/models/{model_name}.zip"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    target_dir = dest_dir / model_name
+
+    if (target_dir / "am" / "final.mdl").is_file():
+        if progress_callback:
+            progress_callback(1.0, f"Модель {model_name} уже установлена!")
+        return target_dir
+
+    if progress_callback:
+        progress_callback(0.01, f"Подключение к серверу моделей Vosk...")
+
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 AIDOTA"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        total = int(resp.headers.get("Content-Length") or 0)
+        downloaded = 0
+        buf = io.BytesIO()
+        chunk_size = 1024 * 64
+        while True:
+            chunk = resp.read(chunk_size)
+            if not chunk:
+                break
+            buf.write(chunk)
+            downloaded += len(chunk)
+            if progress_callback and total > 0:
+                pct = downloaded / total
+                mb = downloaded / (1024 * 1024)
+                tot_mb = total / (1024 * 1024)
+                progress_callback(pct * 0.85, f"Скачивание: {mb:.1f} / {tot_mb:.1f} МБ ({int(pct*100)}%)")
+
+    if progress_callback:
+        progress_callback(0.90, "Распаковка архива модели...")
+
+    buf.seek(0)
+    with zipfile.ZipFile(buf) as zf:
+        zf.extractall(dest_dir)
+
+    if progress_callback:
+        progress_callback(1.0, f"Модель {model_name} успешно установлена!")
+    return target_dir
+
