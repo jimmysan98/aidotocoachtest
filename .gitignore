@@ -46,3 +46,7 @@ regen_items.py
 # Piper TTS (локальные бинарники и модели)
 piper/
 
+
+# Rust build target
+aidota-core/target/
+
