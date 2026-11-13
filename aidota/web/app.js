@@ -30,9 +30,15 @@ const state = {
 const PRESETS = {
   pollinations: {
     base_url: "https://text.pollinations.ai/openai",
+    model: "openai",
+    api_key: "",
+    hint: "100% бесплатно! Ключ не требуется, работает сразу без ограничений через Pollinations AI.",
+  },
+  pollinations_gemini: {
+    base_url: "https://text.pollinations.ai/openai",
     model: "gemini",
     api_key: "",
-    hint: "100% бесплатно! Ключ не требуется, работает сразу через Pollinations AI (Gemini Flash).",
+    hint: "Бесплатный Gemini через Pollinations AI (может иметь лимит 1 запрос в 45 сек).",
   },
   google_gemini: {
     base_url: "https://generativelanguage.googleapis.com/v1beta/openai",

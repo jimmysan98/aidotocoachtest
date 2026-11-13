@@ -1350,7 +1350,7 @@ class Coach:
     ) -> str:
         """Бесплатный резервный ИИ без необходимости вводить API-ключ."""
         messages = self._build_messages(user_prompt, system, include_dynamic=include_dynamic)
-        for model in ("gemini", "openai"):
+        for model in ("openai", "gemini"):
             payload = {
                 "model": model,
                 "messages": messages,
@@ -1365,9 +1365,11 @@ class Coach:
                 )
                 if getattr(resp, "status_code", 0) == 200:
                     data = resp.json()
-                    text = (data["choices"][0]["message"]["content"] or "").strip()
-                    if text:
-                        return text
+                    choices = data.get("choices") or []
+                    if choices:
+                        text = (choices[0].get("message", {}).get("content") or "").strip()
+                        if text:
+                            return text
             except Exception as exc:  # noqa: BLE001
                 log.warning("Pollinations failover exception (%s): %s", model, exc)
         raise OllamaError("Бесплатный ИИ временно недоступен")
@@ -1454,7 +1456,10 @@ class Coach:
                 raise OllamaError(f"API вернул HTTP {status_code}{err_detail}")
             try:
                 data = response.json()
-                msg = data["choices"][0]["message"]
+                choices = data.get("choices") or []
+                if not choices:
+                    raise OllamaError("API вернул ответ без choices")
+                msg = choices[0].get("message") or {}
             except Exception as exc:  # noqa: BLE001
                 raise OllamaError(f"Некорректный ответ API: {exc}") from exc
 

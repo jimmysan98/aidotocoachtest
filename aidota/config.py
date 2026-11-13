@@ -241,7 +241,7 @@ DEFAULT_LLM_PRESETS: dict[str, dict] = {
         "provider": "openai_compatible",
         "base_url": "https://text.pollinations.ai/openai",
         "api_key": "",
-        "model": "gemini",
+        "model": "openai",
         "temperature": 0.4,
         "timeout": 60.0,
         "max_tokens": 350,
@@ -681,7 +681,7 @@ def load_config(path: str | Path | None = None, *, create_if_missing: bool = Tru
         if not (config.llm.base_url or "").strip():
             config.llm.base_url = "https://text.pollinations.ai/openai"
         if not (config.llm.model or "").strip():
-            config.llm.model = "gemini"
+            config.llm.model = "openai"
         if not (config.llm.provider or "").strip():
             config.llm.provider = "openai_compatible"
 

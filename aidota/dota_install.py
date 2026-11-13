@@ -436,6 +436,7 @@ def add_to_steam_library(
             candidates = [
                 PROJECT_ROOT / "dist" / "AIDOTA" / "AIDOTA.exe",
                 PROJECT_ROOT / "AIDOTA.exe",
+                PROJECT_ROOT / "run.bat",
             ]
             target_exe = next((c for c in candidates if c.is_file()), candidates[0])
     else:

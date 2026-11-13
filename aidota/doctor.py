@@ -147,6 +147,11 @@ def _check_llm(config: Config) -> Check:
     base = llm.base_url.rstrip("/")
 
     if provider == "openai_compatible":
+        base_url_lower = (llm.base_url or "").lower()
+        is_keyless = "pollinations" in base_url_lower
+        if is_keyless:
+            model_name = llm.model or "gemini"
+            return Check("LLM", "OK", f"бесплатный ИИ Pollinations ({model_name})")
         if not (llm.api_key or "").strip():
             return Check(
                 "LLM",
