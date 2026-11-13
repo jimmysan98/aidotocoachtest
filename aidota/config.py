@@ -241,7 +241,7 @@ DEFAULT_LLM_PRESETS: dict[str, dict] = {
         "provider": "openai_compatible",
         "base_url": "https://text.pollinations.ai/openai",
         "api_key": "",
-        "model": "openai",
+        "model": "gemini",
         "temperature": 0.4,
         "timeout": 60.0,
         "max_tokens": 350,
@@ -251,6 +251,15 @@ DEFAULT_LLM_PRESETS: dict[str, dict] = {
         "base_url": "https://text.pollinations.ai/openai",
         "api_key": "",
         "model": "gemini",
+        "temperature": 0.4,
+        "timeout": 60.0,
+        "max_tokens": 350,
+    },
+    "pollinations_deepseek": {
+        "provider": "openai_compatible",
+        "base_url": "https://text.pollinations.ai/openai",
+        "api_key": "",
+        "model": "deepseek",
         "temperature": 0.4,
         "timeout": 60.0,
         "max_tokens": 350,
@@ -273,11 +282,65 @@ DEFAULT_LLM_PRESETS: dict[str, dict] = {
         "timeout": 60.0,
         "max_tokens": 350,
     },
+    "google_gemini_lite": {
+        "provider": "openai_compatible",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "api_key": "",
+        "model": "gemini-2.5-flash-lite",
+        "temperature": 0.4,
+        "timeout": 60.0,
+        "max_tokens": 350,
+    },
     "gemini_pro": {
         "provider": "openai_compatible",
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
         "api_key": "",
         "model": "gemini-2.5-pro",
+        "temperature": 0.4,
+        "timeout": 60.0,
+        "max_tokens": 350,
+    },
+    "deepseek": {
+        "provider": "openai_compatible",
+        "base_url": "https://api.deepseek.com/v1",
+        "api_key": "",
+        "model": "deepseek-chat",
+        "temperature": 0.4,
+        "timeout": 60.0,
+        "max_tokens": 350,
+    },
+    "deepseek_r1": {
+        "provider": "openai_compatible",
+        "base_url": "https://api.deepseek.com/v1",
+        "api_key": "",
+        "model": "deepseek-reasoner",
+        "temperature": 0.4,
+        "timeout": 60.0,
+        "max_tokens": 450,
+    },
+    "groq": {
+        "provider": "openai_compatible",
+        "base_url": "https://api.groq.com/openai/v1",
+        "api_key": "",
+        "model": "llama-3.3-70b-versatile",
+        "temperature": 0.4,
+        "timeout": 60.0,
+        "max_tokens": 350,
+    },
+    "groq_fast": {
+        "provider": "openai_compatible",
+        "base_url": "https://api.groq.com/openai/v1",
+        "api_key": "",
+        "model": "llama-3.1-8b-instant",
+        "temperature": 0.4,
+        "timeout": 45.0,
+        "max_tokens": 300,
+    },
+    "openrouter": {
+        "provider": "openai_compatible",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key": "",
+        "model": "deepseek/deepseek-chat",
         "temperature": 0.4,
         "timeout": 60.0,
         "max_tokens": 350,
@@ -291,31 +354,6 @@ DEFAULT_LLM_PRESETS: dict[str, dict] = {
         "timeout": 60.0,
         "max_tokens": 350,
     },
-    "deepseek": {
-        "provider": "openai_compatible",
-        "base_url": "https://api.deepseek.com/v1",
-        "api_key": "",
-        "model": "deepseek-chat",
-        "temperature": 0.4,
-        "timeout": 60.0,
-    },
-    "openrouter": {
-        "provider": "openai_compatible",
-        "base_url": "https://openrouter.ai/api/v1",
-        "api_key": "",
-        "model": "openai/gpt-4o-mini",
-        "temperature": 0.4,
-        "timeout": 60.0,
-        "max_tokens": 350,
-    },
-    "groq": {
-        "provider": "openai_compatible",
-        "base_url": "https://api.groq.com/openai/v1",
-        "api_key": "",
-        "model": "llama-3.3-70b-versatile",
-        "temperature": 0.4,
-        "timeout": 60.0,
-    },
     "openai": {
         "provider": "openai_compatible",
         "base_url": "https://api.openai.com/v1",
@@ -323,6 +361,7 @@ DEFAULT_LLM_PRESETS: dict[str, dict] = {
         "model": "gpt-4o-mini",
         "temperature": 0.4,
         "timeout": 60.0,
+        "max_tokens": 350,
     },
     "ollama": {
         "provider": "ollama",
@@ -331,6 +370,7 @@ DEFAULT_LLM_PRESETS: dict[str, dict] = {
         "model": "gemma3",
         "temperature": 0.4,
         "timeout": 120.0,
+        "max_tokens": 350,
     },
 }
 
@@ -340,7 +380,7 @@ class LlmConfig:
     """Единый интерфейс для локальных (Ollama) и облачных LLM.
 
     provider: "ollama" | "openai_compatible"
-    Для OpenAI-совместимых провайдеров (DeepSeek, OpenRouter, Groq, ...)
+    Для OpenAI-совместимых провайдеров (DeepSeek, OpenRouter, Groq, Gemini...)
     задаются base_url, api_key и model.
     presets — именованные наборы настроек для быстрого переключения голосом.
     """
@@ -635,6 +675,15 @@ def load_config(path: str | Path | None = None, *, create_if_missing: bool = Tru
     # Деобфусцируем ключ, если он сохранён с префиксом enc:
     if config.llm.api_key and config.llm.api_key.startswith("enc:"):
         config.llm.api_key = deobfuscate_api_key(config.llm.api_key)
+
+    # Защита от пустых настроек LLM: если в конфиге был пустой блок llm
+    if "llm" in raw:
+        if not (config.llm.base_url or "").strip():
+            config.llm.base_url = "https://text.pollinations.ai/openai"
+        if not (config.llm.model or "").strip():
+            config.llm.model = "gemini"
+        if not (config.llm.provider or "").strip():
+            config.llm.provider = "openai_compatible"
 
     _validate_profile(config)
     validate_audio_devices(config)

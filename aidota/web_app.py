@@ -73,6 +73,8 @@ class AidotaWebApi:
         self._heroes_cache: list[dict] | None = None
         self._items_cache: dict[str, str] | None = None
         self._item_costs_cache: dict[str, int] | None = None
+        self._advice_cache_key: Any = None
+        self._advice_cached_data: list[dict[str, Any]] = []
 
     # ------------------------------------------------------------------ #
     # Общие источники живых данных
@@ -517,17 +519,29 @@ class AidotaWebApi:
         enemy_picks = list(gsi_snap.get("enemy_picks") or [])
         item_advice: list[dict[str, Any]] = []
         if gsi_snap.get("available"):
-            try:
-                item_advice = build_item_advice(
-                    gsi_snap,
-                    hero_name=gsi_snap.get("hero_name") or "",
-                    position=pos,
-                    enemy_heroes=enemy_picks,
-                    item_costs=item_costs_map,
-                )
-            except Exception:  # noqa: BLE001 — советы не должны ломать UI
-                log.debug("build_item_advice в get_state не удался", exc_info=True)
-                item_advice = []
+            advice_key = (
+                gsi_snap.get("hero_name") or "",
+                pos,
+                tuple(inventory_keys),
+                tuple(enemy_picks),
+                int(clock_seconds or 0) // 20,
+            )
+            if advice_key == self._advice_cache_key and self._advice_cached_data:
+                item_advice = self._advice_cached_data
+            else:
+                try:
+                    item_advice = build_item_advice(
+                        gsi_snap,
+                        hero_name=gsi_snap.get("hero_name") or "",
+                        position=pos,
+                        enemy_heroes=enemy_picks,
+                        item_costs=item_costs_map,
+                    )
+                    self._advice_cache_key = advice_key
+                    self._advice_cached_data = item_advice
+                except Exception:  # noqa: BLE001 — советы не должны ломать UI
+                    log.debug("build_item_advice в get_state не удался", exc_info=True)
+                    item_advice = []
         gsi_data = {
             "connected": gsi_connected,
             "age": round(float(gsi_age), 1) if gsi_age is not None else None,
@@ -570,6 +584,25 @@ class AidotaWebApi:
             "gsi": gsi_data,
             "audio_devices": self._ctrl.audio_devices(),
             "rust_active": is_rust_available(),
+            "settings": self.get_settings(),
+        }
+
+    def get_settings(self) -> dict[str, Any]:
+        """Возвращает текущую конфигурацию приложения для веб-интерфейса."""
+        cfg = self._ctrl.config
+        return {
+            "llm_provider": cfg.llm.provider or "openai_compatible",
+            "llm_base_url": cfg.llm.base_url or "https://text.pollinations.ai/openai",
+            "llm_model": cfg.llm.model or "gemini",
+            "llm_api_key": cfg.llm.api_key or "",
+            "tts_provider": cfg.tts.provider or "piper",
+            "edge_voice": cfg.tts.edge_voice or "ru-RU-SvetlanaNeural",
+            "input_device": cfg.audio.input_device,
+            "output_device": cfg.tts.output_device,
+            "ptt_key": cfg.audio.ptt_key or "v",
+            "autonomy_level": cfg.player_profile.autonomy_level or "medium",
+            "skill_level": normalize_skill_level(getattr(cfg.player_profile, "skill_level", "beginner")),
+            "audio_devices": self._ctrl.audio_devices(),
         }
 
     def toggle_assistant(self) -> bool:
@@ -661,6 +694,11 @@ class AidotaWebApi:
         model = str(payload.get("model") or "").strip()
         api_key = str(payload.get("api_key") or "").strip()
 
+        if not base_url:
+            base_url = "https://text.pollinations.ai/openai"
+        if not model:
+            model = "gemini"
+
         ok, msg = test_llm_connection("openai_compatible", base_url, api_key, model)
         return {"success": ok, "message": msg}
 
@@ -669,14 +707,22 @@ class AidotaWebApi:
         try:
             cfg = self._ctrl.config
             if "llm_base_url" in payload:
-                cfg.llm.base_url = str(payload["llm_base_url"]).strip()
+                val = str(payload["llm_base_url"]).strip()
+                if val:
+                    cfg.llm.base_url = val
+                elif not cfg.llm.base_url:
+                    cfg.llm.base_url = "https://text.pollinations.ai/openai"
             if "llm_model" in payload:
-                cfg.llm.model = str(payload["llm_model"]).strip()
+                val = str(payload["llm_model"]).strip()
+                if val:
+                    cfg.llm.model = val
+                elif not cfg.llm.model:
+                    cfg.llm.model = "gemini"
             if "llm_api_key" in payload:
                 cfg.llm.api_key = str(payload["llm_api_key"]).strip()
-            if "tts_provider" in payload:
+            if "tts_provider" in payload and payload["tts_provider"]:
                 cfg.tts.provider = str(payload["tts_provider"]).strip()
-            if "edge_voice" in payload:
+            if "edge_voice" in payload and payload["edge_voice"]:
                 cfg.tts.edge_voice = str(payload["edge_voice"]).strip()
             if "input_device" in payload:
                 cfg.audio.input_device = payload["input_device"]
@@ -684,9 +730,9 @@ class AidotaWebApi:
                 cfg.tts.output_device = payload["output_device"]
             if "ptt_key" in payload and payload["ptt_key"]:
                 cfg.audio.ptt_key = str(payload["ptt_key"]).strip()
-            if "autonomy_level" in payload:
+            if "autonomy_level" in payload and payload["autonomy_level"]:
                 cfg.player_profile.autonomy_level = str(payload["autonomy_level"]).strip()
-            if "skill_level" in payload:
+            if "skill_level" in payload and payload["skill_level"]:
                 cfg.player_profile.skill_level = normalize_skill_level(payload["skill_level"])
 
             save_config(cfg, self._ctrl.config_path)

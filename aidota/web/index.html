@@ -309,10 +309,10 @@
             <div class="tip-body">
               <p class="tip-text" id="tip-text">Загрузка совета…</p>
               <div class="tip-actions">
-                <button class="pill-btn tip-chip" data-query="Что такое БКБ?">📖 Что такое БКБ?</button>
-                <button class="pill-btn tip-chip" data-query="Что купить на старте?">🎒 Стартовый закуп</button>
-                <button class="pill-btn tip-chip" data-query="Кого пикнуть против врагов?">🎯 Кого пикнуть</button>
-                <button class="pill-btn tip-chip" data-query="Что делать на линии?">⚔ План на линию</button>
+                <button type="button" class="pill-btn tip-chip" data-query="Что такое БКБ?">📖 Что такое БКБ?</button>
+                <button type="button" class="pill-btn tip-chip" data-query="Что купить на старте?">🎒 Стартовый закуп</button>
+                <button type="button" class="pill-btn tip-chip" data-query="Кого пикнуть против врагов?">🎯 Кого пикнуть</button>
+                <button type="button" class="pill-btn tip-chip" data-query="Что делать на линии?">⚔ План на линию</button>
               </div>
             </div>
           </div>
@@ -327,13 +327,13 @@
           <!-- Quick Suggestion Pills -->
           <div class="prompt-suggestions-bar">
             <span class="suggestions-label">Быстрые вопросы:</span>
-            <button class="pill-btn" data-query="Что купить на первые 600 золота?">🎒 Стартовый закуп</button>
-            <button class="pill-btn" data-query="Что собирать следующим слотом?">⚡ Что купить дальше?</button>
-            <button class="pill-btn" data-query="Как правильно стоять эту линию?">⚔ Лайнинг и позиционка</button>
-            <button class="pill-btn" data-query="Когда делать отводы и стакать?">🌲 Отводы и стаки</button>
-            <button class="pill-btn" data-query="Кто контрит вражеских героев?">🛡 Контрпики и враги</button>
-            <button class="pill-btn" data-query="Кого первого фокусить в драке?">💥 Фокус в тимфайте</button>
-            <button class="pill-btn" data-query="Когда идти на Рошана?">👑 Тайминг Рошана</button>
+            <button type="button" class="pill-btn" data-query="Что купить на первые 600 золота?">🎒 Стартовый закуп</button>
+            <button type="button" class="pill-btn" data-query="Что собирать следующим слотом?">⚡ Что купить дальше?</button>
+            <button type="button" class="pill-btn" data-query="Как правильно стоять эту линию?">⚔ Лайнинг и позиционка</button>
+            <button type="button" class="pill-btn" data-query="Когда делать отводы и стакать?">🌲 Отводы и стаки</button>
+            <button type="button" class="pill-btn" data-query="Кто контрит вражеских героев?">🛡 Контрпики и враги</button>
+            <button type="button" class="pill-btn" data-query="Кого первого фокусить в драке?">💥 Фокус в тимфайте</button>
+            <button type="button" class="pill-btn" data-query="Когда идти на Рошана?">👑 Тайминг Рошана</button>
           </div>
 
           <!-- Messages Container -->
@@ -611,70 +611,88 @@
             <p class="section-desc">Выберите удобный готовый пресет или введите собственный OpenAI-совместимый API.</p>
 
             <div class="presets-cards-grid">
-              <div class="preset-card active" data-preset="pollinations">
+              <div class="preset-card active" data-preset="pollinations" role="button" tabindex="0" aria-label="Бесплатный ИИ Gemini Free">
                 <div class="preset-header">
                   <span class="preset-icon">🌟</span>
                   <span class="preset-badge free-badge">100% БЕСПЛАТНО</span>
                 </div>
-                <h4 class="preset-name">Бесплатный ИИ (Без ключа)</h4>
-                <p class="preset-desc">Работает сразу из коробки без регистрации, оплаты и ключей через нейросеть Pollinations AI.</p>
+                <h4 class="preset-name">Бесплатный ИИ (Gemini Free)</h4>
+                <p class="preset-desc">Работает сразу без регистрации, оплаты и ключей через нейросеть Pollinations AI.</p>
               </div>
 
-              <div class="preset-card" data-preset="google_gemini">
+              <div class="preset-card" data-preset="google_gemini" role="button" tabindex="0" aria-label="Google Gemini 2.5 Flash">
                 <div class="preset-header">
                   <span class="preset-icon">💎</span>
-                  <span class="preset-badge">GOOGLE AI</span>
+                  <span class="preset-badge">GOOGLE AI • 150+ tok/s</span>
                 </div>
                 <h4 class="preset-name">Google Gemini 2.5 Flash</h4>
-                <p class="preset-desc">Официальный сверхбыстрый API от Google: скорость 150+ токенов/сек, бесплатный ключ в Google AI Studio.</p>
+                <p class="preset-desc">Официальный сверхбыстрый и умный API от Google с бесплатной квотой в Google AI Studio.</p>
               </div>
 
-              <div class="preset-card" data-preset="pollinations_gemini">
+              <div class="preset-card" data-preset="google_gemini_lite" role="button" tabindex="0" aria-label="Gemini 2.5 Flash-Lite">
+                <div class="preset-header">
+                  <span class="preset-icon">⚡</span>
+                  <span class="preset-badge">УЛЬТРА-СКОРОСТЬ</span>
+                </div>
+                <h4 class="preset-name">Gemini 2.5 Flash-Lite</h4>
+                <p class="preset-desc">Самая дешёвая и быстрая модель Google с минимальным откликом для живого матча.</p>
+              </div>
+
+              <div class="preset-card" data-preset="deepseek" role="button" tabindex="0" aria-label="DeepSeek-V3 Chat">
+                <div class="preset-header">
+                  <span class="preset-icon">🧠</span>
+                  <span class="preset-badge">САМЫЙ УМНЫЙ • $0.14/1M</span>
+                </div>
+                <h4 class="preset-name">DeepSeek-V3 Chat</h4>
+                <p class="preset-desc">671B флагманский ИИ: превосходит многие топ-модели, глубокое знание Dota 2 и меты.</p>
+              </div>
+
+              <div class="preset-card" data-preset="deepseek_r1" role="button" tabindex="0" aria-label="DeepSeek-R1 Reasoner">
+                <div class="preset-header">
+                  <span class="preset-icon">🧩</span>
+                  <span class="preset-badge">РАССУЖДЕНИЯ R1</span>
+                </div>
+                <h4 class="preset-name">DeepSeek-R1 (Reasoner)</h4>
+                <p class="preset-desc">Пошаговое тактическое мышление: глубокий драфт, макро-планирование и разбор ошибок.</p>
+              </div>
+
+              <div class="preset-card" data-preset="groq" role="button" tabindex="0" aria-label="Groq Llama 3.3 70B">
+                <div class="preset-header">
+                  <span class="preset-icon">🚀</span>
+                  <span class="preset-badge">GROQ LPU • 300+ tok/s</span>
+                </div>
+                <h4 class="preset-name">Groq Llama 3.3 70B</h4>
+                <p class="preset-desc">Молниеносный вывод на чипах LPU (300+ токенов/сек) с бесплатным лимитом на console.groq.com.</p>
+              </div>
+
+              <div class="preset-card" data-preset="groq_fast" role="button" tabindex="0" aria-label="Groq Llama 3.1 8B Instant">
+                <div class="preset-header">
+                  <span class="preset-icon">⚡</span>
+                  <span class="preset-badge">800+ tok/s • МГНОВЕННО</span>
+                </div>
+                <h4 class="preset-name">Groq Llama 3.1 8B Instant</h4>
+                <p class="preset-desc">Суб-секундная озвучка советов прямо во время драки без малейших задержек.</p>
+              </div>
+
+              <div class="preset-card" data-preset="pollinations_deepseek" role="button" tabindex="0" aria-label="DeepSeek Free Без ключа">
                 <div class="preset-header">
                   <span class="preset-icon">🔮</span>
                   <span class="preset-badge free-badge">100% БЕСПЛАТНО</span>
                 </div>
-                <h4 class="preset-name">Gemini Free (Без ключа)</h4>
-                <p class="preset-desc">Нейросеть Gemini без API-ключей, регистрации и оплаты через шлюз Pollinations AI.</p>
+                <h4 class="preset-name">DeepSeek Free (Без ключа)</h4>
+                <p class="preset-desc">Умный DeepSeek без регистрации и оплаты через шлюз Pollinations AI.</p>
               </div>
 
-              <div class="preset-card" data-preset="pollinations_gemini_thinking">
+              <div class="preset-card" data-preset="openrouter" role="button" tabindex="0" aria-label="OpenRouter DeepSeek Gemini">
                 <div class="preset-header">
-                  <span class="preset-icon">🧠</span>
-                  <span class="preset-badge">РАССУЖДЕНИЯ</span>
+                  <span class="preset-icon">🌐</span>
+                  <span class="preset-badge">OPENROUTER</span>
                 </div>
-                <h4 class="preset-name">Gemini Thinking Free</h4>
-                <p class="preset-desc">Бесплатная рассуждающая модель Gemini Thinking с глубоким анализом ситуации.</p>
+                <h4 class="preset-name">OpenRouter (DeepSeek / Gemini)</h4>
+                <p class="preset-desc">Единый доступ к сотням моделей: DeepSeek-V3, Llama 3.3, Gemini с бесплатным ключом.</p>
               </div>
 
-              <div class="preset-card" data-preset="openrouter_free">
-                <div class="preset-header">
-                  <span class="preset-icon">🆓</span>
-                  <span class="preset-badge">БЕСПЛАТНО</span>
-                </div>
-                <h4 class="preset-name">OpenRouter Free</h4>
-                <p class="preset-desc">Бесплатные модели Google Gemini 2.0 Flash и Meta Llama 3.3 с нулевой стоимостью.</p>
-              </div>
-
-              <div class="preset-card" data-preset="deepseek">
-                <div class="preset-header">
-                  <span class="preset-icon">⚡</span>
-                  <span class="preset-badge">ВЫСОКАЯ СКОРОСТЬ</span>
-                </div>
-                <h4 class="preset-name">DeepSeek Chat / R1</h4>
-                <p class="preset-desc">Мощный китайский ИИ: молниеносные ответы и глубокое понимание киберспортивной меты.</p>
-              </div>
-
-              <div class="preset-card" data-preset="groq">
-                <div class="preset-header">
-                  <span class="preset-icon">🚀</span>
-                  <span class="preset-badge">ULTRA FAST</span>
-                </div>
-                <h4 class="preset-name">Groq Llama 3.3</h4>
-                <p class="preset-desc">Сверхбыстрый чиповый LPU вывод (до 300 токенов/сек) с бесплатным стартовым лимитом.</p>
-              </div>
-
-              <div class="preset-card" data-preset="ollama">
+              <div class="preset-card" data-preset="ollama" role="button" tabindex="0" aria-label="Ollama Локальный сервер">
                 <div class="preset-header">
                   <span class="preset-icon">🖥</span>
                   <span class="preset-badge">ОФФЛАЙН</span>
@@ -693,20 +711,22 @@
 
               <div class="form-group">
                 <label for="cfg-model">Название модели (Model):</label>
-                <input type="text" id="cfg-model" placeholder="openai">
+                <input type="text" id="cfg-model" placeholder="gemini">
               </div>
 
               <div class="form-group full-width">
                 <label>⚡ Быстрый выбор популярной модели:</label>
                 <div class="quick-model-chips">
                   <button type="button" class="model-chip" data-model="gemini-2.5-flash">💎 gemini-2.5-flash</button>
+                  <button type="button" class="model-chip" data-model="gemini-2.5-flash-lite">⚡ gemini-2.5-flash-lite</button>
                   <button type="button" class="model-chip" data-model="gemini-2.5-pro">💎 gemini-2.5-pro</button>
-                  <button type="button" class="model-chip" data-model="gemini-2.0-flash">💎 gemini-2.0-flash</button>
+                  <button type="button" class="model-chip" data-model="deepseek-chat">🧠 deepseek-chat (V3)</button>
+                  <button type="button" class="model-chip" data-model="deepseek-reasoner">🧩 deepseek-reasoner (R1)</button>
+                  <button type="button" class="model-chip" data-model="llama-3.3-70b-versatile">🚀 llama-3.3-70b (Groq)</button>
+                  <button type="button" class="model-chip" data-model="llama-3.1-8b-instant">⚡ llama-3.1-8b (Groq)</button>
                   <button type="button" class="model-chip" data-model="gemini">🔮 gemini (Free)</button>
-                  <button type="button" class="model-chip" data-model="gemini-thinking">🧠 gemini-thinking (Free)</button>
+                  <button type="button" class="model-chip" data-model="deepseek">🌟 deepseek (Free)</button>
                   <button type="button" class="model-chip" data-model="openai">🌟 openai (Free)</button>
-                  <button type="button" class="model-chip" data-model="deepseek-chat">⚡ deepseek-chat</button>
-                  <button type="button" class="model-chip" data-model="llama-3.3-70b-versatile">🚀 llama-3.3-70b</button>
                 </div>
               </div>
 
@@ -736,8 +756,9 @@
               <div class="form-group">
                 <label for="cfg-tts-provider">Движок озвучки:</label>
                 <select id="cfg-tts-provider">
-                  <option value="edge">Нейросеть Microsoft Edge Neural (Рекомендуется, реалистично)</option>
-                  <option value="sapi">Локальный Windows SAPI (Оффлайн без интернета)</option>
+                  <option value="piper">Оффлайн Piper TTS (Быстрая локальная нейросеть Irina на ПК)</option>
+                  <option value="edge">Нейросеть Microsoft Edge Neural (Онлайн, реалистично)</option>
+                  <option value="sapi">Локальный Windows SAPI (Системный синтезатор Windows)</option>
                 </select>
               </div>
 

@@ -566,12 +566,24 @@ body::before {
   transform: translateY(0) scale(0.985);
 }
 
+.btn:disabled,
+button:disabled,
+.btn[disabled] {
+  opacity: 0.55;
+  cursor: not-allowed !important;
+  transform: none !important;
+  box-shadow: none !important;
+  pointer-events: none;
+}
+
 .btn:focus-visible,
 .icon-btn:focus-visible,
 .nav-tab:focus-visible,
 .coach-btn:focus-visible,
 .role-btn:focus-visible,
 .styled-select:focus-visible,
+.preset-card:focus-visible,
+.model-chip:focus-visible,
 input:focus-visible,
 select:focus-visible {
   outline: 2px solid rgba(56, 189, 248, 0.75);

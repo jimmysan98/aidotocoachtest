@@ -52,35 +52,47 @@ PROVIDER_PRESETS: dict[str, dict[str, str]] = {
         "model": "gemini-thinking",
         "hint": "100% бесплатно, рассуждающая модель Gemini Thinking через Pollinations",
     },
-    "Google Gemini (Официальный)": {
+    "Google Gemini 2.5 Flash": {
         "provider": "openai_compatible",
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
         "model": "gemini-2.5-flash",
-        "hint": "Бесплатный ключ на https://aistudio.google.com/app/apikey (Google AI Studio)",
+        "hint": "Бесплатный ключ на https://aistudio.google.com/app/apikey (Google AI Studio, скорость 150+ ток/с)",
     },
-    "OpenRouter Free (Бесплатные)": {
+    "Google Gemini 2.5 Flash-Lite": {
         "provider": "openai_compatible",
-        "base_url": "https://openrouter.ai/api/v1",
-        "model": "google/gemini-2.0-flash-exp:free",
-        "hint": "Бесплатные модели на OpenRouter (нужен бесплатный ключ c openrouter.ai/keys)",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "model": "gemini-2.5-flash-lite",
+        "hint": "Сверхбыстрый и самый дешёвый Gemini с минимальной задержкой ответа",
     },
-    "DeepSeek": {
+    "DeepSeek-V3": {
         "provider": "openai_compatible",
         "base_url": "https://api.deepseek.com/v1",
         "model": "deepseek-chat",
-        "hint": "Ключ на https://platform.deepseek.com",
+        "hint": "Самый умный и дешёвый ИИ ($0.14/1M): https://platform.deepseek.com",
     },
-    "OpenRouter": {
+    "DeepSeek-R1 (Рассуждения)": {
         "provider": "openai_compatible",
-        "base_url": "https://openrouter.ai/api/v1",
-        "model": "openai/gpt-4o-mini",
-        "hint": "Ключ на https://openrouter.ai/keys",
+        "base_url": "https://api.deepseek.com/v1",
+        "model": "deepseek-reasoner",
+        "hint": "Глубокий анализ драфта и матча: https://platform.deepseek.com",
     },
-    "Groq (быстрый/бесплатный)": {
+    "Groq (Llama 3.3 70B, 300+ tok/s)": {
         "provider": "openai_compatible",
         "base_url": "https://api.groq.com/openai/v1",
         "model": "llama-3.3-70b-versatile",
-        "hint": "Ключ на https://console.groq.com/keys",
+        "hint": "Сверхбыстрый вывод LPU: https://console.groq.com/keys",
+    },
+    "Groq (Llama 3.1 8B Instant, 800+ tok/s)": {
+        "provider": "openai_compatible",
+        "base_url": "https://api.groq.com/openai/v1",
+        "model": "llama-3.1-8b-instant",
+        "hint": "Молниеносный ответ голосом: https://console.groq.com/keys",
+    },
+    "OpenRouter (DeepSeek / Gemini)": {
+        "provider": "openai_compatible",
+        "base_url": "https://openrouter.ai/api/v1",
+        "model": "deepseek/deepseek-chat",
+        "hint": "Ключ на https://openrouter.ai/keys",
     },
     "OpenAI (ChatGPT)": {
         "provider": "openai_compatible",
@@ -132,6 +144,8 @@ def test_llm_connection(
             "messages": [{"role": "user", "content": "ping"}],
             "max_tokens": 5,
         }
+        import time
+        t_start = time.perf_counter()
         try:
             resp = requests.post(
                 f"{base}/chat/completions",
@@ -139,8 +153,9 @@ def test_llm_connection(
                 json=payload,
                 timeout=timeout,
             )
+            latency_ms = int((time.perf_counter() - t_start) * 1000)
             if resp.status_code == 200:
-                return True, f"Подключение успешно! Модель «{model}» отвечает."
+                return True, f"Подключение успешно ({latency_ms} мс)! Модель «{model}» отвечает."
             if resp.status_code in (401, 403):
                 return False, f"Ошибка авторизации (HTTP {resp.status_code}): неверный API-ключ."
             if resp.status_code == 404:

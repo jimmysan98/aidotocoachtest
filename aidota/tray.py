@@ -7,8 +7,14 @@ import threading
 from pathlib import Path
 from typing import Callable
 
-import pystray
-from PIL import Image
+try:
+    import pystray
+    from PIL import Image
+    _PYSTRAY_AVAILABLE = True
+except ImportError:
+    pystray = None
+    Image = None
+    _PYSTRAY_AVAILABLE = False
 
 from .config import PROJECT_ROOT
 
@@ -17,6 +23,11 @@ log = logging.getLogger("aidota.tray")
 
 class AidotaTray:
     """Управление иконкой AIDOTA в системном трее Windows."""
+
+    @staticmethod
+    def is_available() -> bool:
+        """Проверяет доступность библиотеки pystray."""
+        return _PYSTRAY_AVAILABLE
 
     def __init__(
         self,
@@ -54,7 +65,9 @@ class AidotaTray:
         self._icon: pystray.Icon | None = None
         self._lock = threading.Lock()
 
-    def _load_image(self) -> Image.Image:
+    def _load_image(self) -> Any | None:
+        if not _PYSTRAY_AVAILABLE or Image is None:
+            return None
         try:
             if self._icon_path.is_file():
                 return Image.open(self._icon_path)
@@ -62,14 +75,19 @@ class AidotaTray:
             log.warning("Не удалось загрузить иконку из %s: %s", self._icon_path, exc)
 
         # Fallback: генерация сине-красной иконки AIDOTA
-        img = Image.new("RGBA", (64, 64), (17, 22, 28, 255))
-        from PIL import ImageDraw
+        try:
+            img = Image.new("RGBA", (64, 64), (17, 22, 28, 255))
+            from PIL import ImageDraw
 
-        draw = ImageDraw.Draw(img)
-        draw.ellipse([8, 8, 56, 56], fill=(194, 60, 42, 255), outline=(89, 208, 107, 255), width=2)
-        return img
+            draw = ImageDraw.Draw(img)
+            draw.ellipse([8, 8, 56, 56], fill=(194, 60, 42, 255), outline=(89, 208, 107, 255), width=2)
+            return img
+        except Exception:
+            return None
 
-    def _build_menu(self) -> pystray.Menu:
+    def _build_menu(self) -> Any | None:
+        if not _PYSTRAY_AVAILABLE or pystray is None:
+            return None
         from pystray import Menu, MenuItem as item
 
         def _action_show(icon, item) -> None:
@@ -167,6 +185,9 @@ class AidotaTray:
 
     def start(self) -> bool:
         """Запускает иконку в трее в фоновом потоке."""
+        if not _PYSTRAY_AVAILABLE or pystray is None:
+            log.info("Системный трей недоступен (pystray не установлен)")
+            return False
         with self._lock:
             if self._icon is not None:
                 return True

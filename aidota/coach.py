@@ -890,28 +890,66 @@ class Coach:
 
     def resolve_model(self) -> str | None:
         if self.provider == "openai_compatible":
-            base_url_lower = (self.llm.base_url or "").lower()
+            base_url = (self.llm.base_url or "").strip()
+            if not base_url:
+                base_url = "https://text.pollinations.ai/openai"
+                self.llm.base_url = base_url
+            base_url_lower = base_url.lower()
             is_keyless = "pollinations" in base_url_lower
-            if not is_keyless and not (self.llm.api_key or "").strip():
+            api_key = (self.llm.api_key or "").strip()
+
+            # Умное автоопределение провайдера по формату ключа
+            if api_key and is_keyless:
+                if api_key.startswith("AIzaSy"):
+                    base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+                    self.llm.base_url = base_url
+                    base_url_lower = base_url.lower()
+                    is_keyless = False
+                    if not self.llm.model or self.llm.model in ("openai", "gemini"):
+                        self.llm.model = "gemini-2.5-flash"
+                elif api_key.startswith("gsk_"):
+                    base_url = "https://api.groq.com/openai/v1"
+                    self.llm.base_url = base_url
+                    base_url_lower = base_url.lower()
+                    is_keyless = False
+                    if not self.llm.model or self.llm.model in ("openai", "gemini"):
+                        self.llm.model = "llama-3.3-70b-versatile"
+                elif api_key.startswith("sk-or-"):
+                    base_url = "https://openrouter.ai/api/v1"
+                    self.llm.base_url = base_url
+                    base_url_lower = base_url.lower()
+                    is_keyless = False
+                    if not self.llm.model or self.llm.model in ("openai", "gemini"):
+                        self.llm.model = "deepseek/deepseek-chat"
+
+            if not is_keyless and not api_key:
                 self.last_error = (
-                    "API-ключ не указан. Откройте Настройки (кнопка ⚙ вверху окна) и введите API-ключ."
+                    "API-ключ не указан. Откройте Настройки (кнопка ⚙ вверху окна) и введите API-ключ или переключитесь на Бесплатный ИИ."
                 )
                 return None
             model = (self.llm.model or "").strip()
             if "openrouter.ai" in base_url_lower:
                 if not model or model.lower() in ("openai", "default", "gpt", "") or "/" not in model:
-                    model = "openai/gpt-4o-mini"
+                    model = "deepseek/deepseek-chat"
                     self.llm.model = model
             elif "generativelanguage.googleapis.com" in base_url_lower:
                 if not model:
                     model = "gemini-2.5-flash"
                     self.llm.model = model
+            elif "api.deepseek.com" in base_url_lower:
+                if not model:
+                    model = "deepseek-chat"
+                    self.llm.model = model
+            elif "api.groq.com" in base_url_lower:
+                if not model:
+                    model = "llama-3.3-70b-versatile"
+                    self.llm.model = model
             elif is_keyless and not model:
                 model = "gemini" if "gemini" in base_url_lower else "openai"
                 self.llm.model = model
             if not model:
-                self.last_error = "Для openai_compatible укажите llm.model в config.json"
-                return None
+                model = "gemini"
+                self.llm.model = model
             return model
         return self._resolve_ollama_model()
 
@@ -1312,25 +1350,26 @@ class Coach:
     ) -> str:
         """Бесплатный резервный ИИ без необходимости вводить API-ключ."""
         messages = self._build_messages(user_prompt, system, include_dynamic=include_dynamic)
-        payload = {
-            "model": "openai",
-            "messages": messages,
-            "temperature": 0.4,
-            "max_tokens": 300,
-        }
-        try:
-            resp = self._session.post(
-                "https://text.pollinations.ai/openai/chat/completions",
-                json=payload,
-                timeout=25.0,
-            )
-            if getattr(resp, "status_code", 0) == 200:
-                data = resp.json()
-                text = (data["choices"][0]["message"]["content"] or "").strip()
-                if text:
-                    return text
-        except Exception as exc:  # noqa: BLE001
-            log.warning("Pollinations failover exception: %s", exc)
+        for model in ("gemini", "openai"):
+            payload = {
+                "model": model,
+                "messages": messages,
+                "temperature": 0.4,
+                "max_tokens": 300,
+            }
+            try:
+                resp = self._session.post(
+                    "https://text.pollinations.ai/openai/chat/completions",
+                    json=payload,
+                    timeout=25.0,
+                )
+                if getattr(resp, "status_code", 0) == 200:
+                    data = resp.json()
+                    text = (data["choices"][0]["message"]["content"] or "").strip()
+                    if text:
+                        return text
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Pollinations failover exception (%s): %s", model, exc)
         raise OllamaError("Бесплатный ИИ временно недоступен")
 
     @staticmethod
@@ -1359,9 +1398,11 @@ class Coach:
         tools: list[dict[str, Any]] | None = None,
     ) -> str:
         base_url = (self.llm.base_url or "").rstrip("/")
+        if not base_url:
+            base_url = "https://text.pollinations.ai/openai"
         if "openrouter.ai" in base_url.lower():
             if not model or model.strip().lower() in ("openai", "default", "gpt", "") or "/" not in model:
-                model = "openai/gpt-4o-mini"
+                model = "deepseek/deepseek-chat"
         temp = float(temperature) if temperature is not None else float(getattr(self.llm, "temperature", 0.4) or 0.4)
         temp = max(0.05, min(0.95, temp))
         configured_tokens = int(getattr(self.llm, "max_tokens", 350) or 350)

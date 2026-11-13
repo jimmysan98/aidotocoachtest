@@ -637,6 +637,16 @@ body {
   transition: all 0.2s ease;
 }
 
+.btn:disabled,
+button:disabled,
+.btn[disabled] {
+  opacity: 0.55;
+  cursor: not-allowed !important;
+  transform: none !important;
+  box-shadow: none !important;
+  pointer-events: none;
+}
+
 .btn-primary {
   background: linear-gradient(135deg, #2563eb, #3b82f6);
   color: white;

@@ -59,6 +59,8 @@ class TestWindowsIntegration(unittest.TestCase):
 class TestTrayStructure(unittest.TestCase):
     def test_tray_menu_construction(self) -> None:
         """Проверка корректной сборки меню системного трея."""
+        if not AidotaTray.is_available():
+            self.skipTest("pystray not installed in environment")
         coach_val = "Астра"
         pos_val = 1
         mic_val = True

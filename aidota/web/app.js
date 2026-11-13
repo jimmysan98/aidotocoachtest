@@ -23,51 +23,64 @@ const state = {
   neutralItemSignature: null,
   adviceSignature: null,
   adviceFeedSignature: null,
+  settingsLoaded: false,
 };
 
 // Preset configurations
 const PRESETS = {
   pollinations: {
     base_url: "https://text.pollinations.ai/openai",
-    model: "openai",
+    model: "gemini",
     api_key: "",
-    hint: "100% бесплатно! Ключ не требуется, работает сразу через Pollinations AI.",
+    hint: "100% бесплатно! Ключ не требуется, работает сразу через Pollinations AI (Gemini Flash).",
   },
   google_gemini: {
     base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
     model: "gemini-2.5-flash",
     api_key: "",
-    hint: "Бесплатный ключ на https://aistudio.google.com/app/apikey (Google AI Studio).",
+    hint: "Бесплатный ключ на https://aistudio.google.com/app/apikey (Google AI Studio, скорость 150+ токенов/сек).",
   },
-  pollinations_gemini: {
-    base_url: "https://text.pollinations.ai/openai",
-    model: "gemini",
+  google_gemini_lite: {
+    base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
+    model: "gemini-2.5-flash-lite",
     api_key: "",
-    hint: "100% бесплатно! Модель Gemini без регистрации и ключей через Pollinations AI.",
-  },
-  pollinations_gemini_thinking: {
-    base_url: "https://text.pollinations.ai/openai",
-    model: "gemini-thinking",
-    api_key: "",
-    hint: "100% бесплатно! Рассуждающая модель Gemini Thinking через Pollinations AI.",
-  },
-  openrouter_free: {
-    base_url: "https://openrouter.ai/api/v1",
-    model: "google/gemini-2.0-flash-exp:free",
-    api_key: "",
-    hint: "Бесплатные модели на OpenRouter (требуется бесплатный ключ с openrouter.ai/keys).",
+    hint: "Самая быстрая и экономичная модель Google с минимальной задержкой ответа.",
   },
   deepseek: {
     base_url: "https://api.deepseek.com/v1",
     model: "deepseek-chat",
     api_key: "",
-    hint: "Ключ на https://platform.deepseek.com.",
+    hint: "Самый умный и дешёвый ИИ ($0.14/1M): https://platform.deepseek.com (DeepSeek-V3).",
+  },
+  deepseek_r1: {
+    base_url: "https://api.deepseek.com/v1",
+    model: "deepseek-reasoner",
+    api_key: "",
+    hint: "Рассуждающая модель DeepSeek-R1 для глубокого тактического разбора: https://platform.deepseek.com",
   },
   groq: {
     base_url: "https://api.groq.com/openai/v1",
     model: "llama-3.3-70b-versatile",
     api_key: "",
-    hint: "Ключ на https://console.groq.com/keys.",
+    hint: "Сверхбыстрый чиповый LPU вывод (300+ токенов/сек): https://console.groq.com/keys",
+  },
+  groq_fast: {
+    base_url: "https://api.groq.com/openai/v1",
+    model: "llama-3.1-8b-instant",
+    api_key: "",
+    hint: "Мгновенный ответ голосом (800+ токенов/сек): https://console.groq.com/keys",
+  },
+  pollinations_deepseek: {
+    base_url: "https://text.pollinations.ai/openai",
+    model: "deepseek",
+    api_key: "",
+    hint: "100% бесплатно! Модель DeepSeek без регистрации и ключей через Pollinations AI.",
+  },
+  openrouter: {
+    base_url: "https://openrouter.ai/api/v1",
+    model: "deepseek/deepseek-chat",
+    api_key: "",
+    hint: "Ключ на https://openrouter.ai/keys (доступ к DeepSeek-V3, Llama 3.3, Gemini).",
   },
   ollama: {
     base_url: "http://127.0.0.1:11434",
@@ -652,6 +665,16 @@ elements.navTabs.forEach((tab) => {
     if (target === "doctor") {
       refreshDoctorChecks();
     }
+    if (target === "settings") {
+      if (!state.settingsLoaded) {
+        callApi("get_settings").then((s) => {
+          if (s) {
+            applySettingsToUi(s);
+            state.settingsLoaded = true;
+          }
+        });
+      }
+    }
   });
 });
 
@@ -796,6 +819,10 @@ document.querySelectorAll(".pill-btn").forEach((pill) => {
 async function handleUserMessage(text) {
   appendChatMessage("user", "Вы", text);
 
+  const submitBtn = elements.chatInputForm ? elements.chatInputForm.querySelector("button[type='submit'], .btn-send") : null;
+  if (elements.chatTextInput) elements.chatTextInput.disabled = true;
+  if (submitBtn) submitBtn.disabled = true;
+
   // Animated typing indicator
   const typingId = appendChatMessage("coach", state.coach, "");
   const typingElem = document.getElementById(typingId);
@@ -811,9 +838,29 @@ async function handleUserMessage(text) {
     if (actions) actions.style.display = "none";
   }
 
+  // Scroll to bottom
+  if (elements.chatMessagesContainer) {
+    elements.chatMessagesContainer.scrollTo({
+      top: elements.chatMessagesContainer.scrollHeight,
+      behavior: "smooth",
+    });
+  }
+
   state.isSpeaking = true;
-  const reply = await callApi("send_chat", text);
-  state.isSpeaking = false;
+  let reply = "";
+  try {
+    reply = await callApi("send_chat", text);
+  } catch (err) {
+    console.error("send_chat error:", err);
+    reply = "Ошибка при запросе к модели ИИ.";
+  } finally {
+    state.isSpeaking = false;
+    if (elements.chatTextInput) {
+      elements.chatTextInput.disabled = false;
+      elements.chatTextInput.focus();
+    }
+    if (submitBtn) submitBtn.disabled = false;
+  }
 
   if (typingElem) {
     typingElem.classList.remove("is-typing");
@@ -826,7 +873,12 @@ async function handleUserMessage(text) {
   }
 
   // Scroll to bottom
-  elements.chatMessagesContainer.scrollTop = elements.chatMessagesContainer.scrollHeight;
+  if (elements.chatMessagesContainer) {
+    elements.chatMessagesContainer.scrollTo({
+      top: elements.chatMessagesContainer.scrollHeight,
+      behavior: "smooth",
+    });
+  }
 }
 
 function appendChatMessage(role, author, text) {
@@ -954,23 +1006,170 @@ function updateMacroTimersDisplay(gameTime) {
 // ---------------------------------------------------------------------------
 // Settings & Presets
 // ---------------------------------------------------------------------------
-elements.presetCards.forEach((card) => {
-  card.addEventListener("click", () => {
-    const presetKey = card.getAttribute("data-preset");
-    const preset = PRESETS[presetKey];
-    if (!preset) return;
+function highlightMatchingPreset(baseUrl, model) {
+  const b = String(baseUrl || "").trim().replace(/\/+$/, "").toLowerCase();
+  const m = String(model || "").trim().toLowerCase();
 
-    elements.presetCards.forEach((c) => c.classList.remove("active"));
-    card.classList.add("active");
+  let matchedKey = null;
 
-    elements.cfgBaseUrl.value = preset.base_url;
-    elements.cfgModel.value = preset.model;
-    if (preset.api_key !== undefined) {
-      elements.cfgApiKey.value = preset.api_key;
+  for (const [key, preset] of Object.entries(PRESETS)) {
+    const pb = String(preset.base_url || "").trim().replace(/\/+$/, "").toLowerCase();
+    const pm = String(preset.model || "").trim().toLowerCase();
+    if (b === pb && m === pm) {
+      matchedKey = key;
+      break;
     }
-    elements.cfgKeyHint.textContent = preset.hint;
+  }
+
+  if (!matchedKey) {
+    if (b.includes("pollinations")) {
+      matchedKey = m.includes("deepseek") ? "pollinations_deepseek" : "pollinations";
+    } else if (b.includes("generativelanguage")) {
+      matchedKey = m.includes("lite") ? "google_gemini_lite" : "google_gemini";
+    } else if (b.includes("deepseek.com")) {
+      matchedKey = m.includes("reasoner") ? "deepseek_r1" : "deepseek";
+    } else if (b.includes("groq.com")) {
+      matchedKey = m.includes("8b") ? "groq_fast" : "groq";
+    } else if (b.includes("openrouter.ai")) {
+      matchedKey = "openrouter";
+    } else if (b.includes("11434")) {
+      matchedKey = "ollama";
+    }
+  }
+
+  elements.presetCards.forEach((c) => {
+    const isMatch = Boolean(matchedKey && c.getAttribute("data-preset") === matchedKey);
+    c.classList.toggle("active", isMatch);
+    c.setAttribute("aria-pressed", isMatch ? "true" : "false");
+  });
+
+  if (matchedKey && PRESETS[matchedKey] && elements.cfgKeyHint) {
+    elements.cfgKeyHint.textContent = PRESETS[matchedKey].hint;
+  }
+}
+
+function applySettingsToUi(settings) {
+  if (!settings || typeof settings !== "object") return;
+
+  if (elements.cfgBaseUrl && (settings.llm_base_url || !elements.cfgBaseUrl.value)) {
+    elements.cfgBaseUrl.value = settings.llm_base_url || "https://text.pollinations.ai/openai";
+  }
+  if (elements.cfgModel && (settings.llm_model || !elements.cfgModel.value)) {
+    elements.cfgModel.value = settings.llm_model || "gemini";
+  }
+  if (elements.cfgApiKey && settings.llm_api_key !== undefined) {
+    elements.cfgApiKey.value = settings.llm_api_key || "";
+  }
+  if (elements.cfgTtsProvider && settings.tts_provider) {
+    elements.cfgTtsProvider.value = settings.tts_provider;
+  }
+  if (elements.cfgEdgeVoice && settings.edge_voice) {
+    elements.cfgEdgeVoice.value = settings.edge_voice;
+  }
+  if (elements.cfgPttKey && settings.ptt_key) {
+    elements.cfgPttKey.value = settings.ptt_key;
+    const pttDisplay = document.getElementById("ptt-key-display");
+    if (pttDisplay) pttDisplay.textContent = settings.ptt_key.toUpperCase();
+  }
+  if (elements.cfgAutonomyLevel && settings.autonomy_level) {
+    elements.cfgAutonomyLevel.value = settings.autonomy_level;
+  }
+  if (elements.cfgSkillLevel && settings.skill_level) {
+    elements.cfgSkillLevel.value = settings.skill_level;
+    if (typeof updateSkillLevelHint === "function") {
+      updateSkillLevelHint(settings.skill_level);
+    }
+  }
+  if (elements.cfgInputDevice && settings.input_device) {
+    elements.cfgInputDevice.value = settings.input_device;
+  }
+  if (elements.cfgOutputDevice && settings.output_device) {
+    elements.cfgOutputDevice.value = settings.output_device;
+  }
+
+  highlightMatchingPreset(elements.cfgBaseUrl?.value, elements.cfgModel?.value);
+}
+
+function selectPresetCard(card) {
+  if (!card) return;
+  const presetKey = card.getAttribute("data-preset");
+  const preset = PRESETS[presetKey];
+  if (!preset) return;
+
+  elements.presetCards.forEach((c) => {
+    c.classList.remove("active");
+    c.setAttribute("aria-pressed", "false");
+  });
+  card.classList.add("active");
+  card.setAttribute("aria-pressed", "true");
+
+  elements.cfgBaseUrl.value = preset.base_url;
+  elements.cfgModel.value = preset.model;
+  if (preset.api_key !== undefined && preset.api_key !== "") {
+    elements.cfgApiKey.value = preset.api_key;
+  }
+  elements.cfgKeyHint.textContent = preset.hint;
+}
+
+elements.presetCards.forEach((card) => {
+  card.addEventListener("click", () => selectPresetCard(card));
+  card.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      selectPresetCard(card);
+    }
   });
 });
+
+if (elements.cfgApiKey) {
+  elements.cfgApiKey.addEventListener("input", () => {
+    const key = elements.cfgApiKey.value.trim();
+    if (!key) return;
+
+    if (key.startsWith("AIzaSy")) {
+      if (!elements.cfgBaseUrl.value.includes("generativelanguage")) {
+        elements.cfgBaseUrl.value = "https://generativelanguage.googleapis.com/v1beta/openai";
+        if (!elements.cfgModel.value.startsWith("gemini")) {
+          elements.cfgModel.value = "gemini-2.5-flash";
+        }
+        highlightMatchingPreset(elements.cfgBaseUrl.value, elements.cfgModel.value);
+        showToast("Обнаружен ключ Google AI Studio — выбран Gemini 2.5 Flash!", "info");
+      }
+    } else if (key.startsWith("gsk_")) {
+      if (!elements.cfgBaseUrl.value.includes("groq.com")) {
+        elements.cfgBaseUrl.value = "https://api.groq.com/openai/v1";
+        elements.cfgModel.value = "llama-3.3-70b-versatile";
+        highlightMatchingPreset(elements.cfgBaseUrl.value, elements.cfgModel.value);
+        showToast("Обнаружен ключ Groq LPU — выбран Llama 3.3 70B!", "info");
+      }
+    } else if (key.startsWith("sk-or-")) {
+      if (!elements.cfgBaseUrl.value.includes("openrouter.ai")) {
+        elements.cfgBaseUrl.value = "https://openrouter.ai/api/v1";
+        elements.cfgModel.value = "deepseek/deepseek-chat";
+        highlightMatchingPreset(elements.cfgBaseUrl.value, elements.cfgModel.value);
+        showToast("Обнаружен ключ OpenRouter — выбран DeepSeek-V3!", "info");
+      }
+    } else if (key.startsWith("sk-") && !key.startsWith("sk-or-")) {
+      if (elements.cfgBaseUrl.value.includes("pollinations") || !elements.cfgBaseUrl.value) {
+        elements.cfgBaseUrl.value = "https://api.deepseek.com/v1";
+        elements.cfgModel.value = "deepseek-chat";
+        highlightMatchingPreset(elements.cfgBaseUrl.value, elements.cfgModel.value);
+        showToast("Обнаружен API-ключ — выбран DeepSeek-V3!", "info");
+      }
+    }
+  });
+}
+
+if (elements.cfgBaseUrl) {
+  elements.cfgBaseUrl.addEventListener("input", () => {
+    highlightMatchingPreset(elements.cfgBaseUrl.value, elements.cfgModel?.value);
+  });
+}
+if (elements.cfgModel) {
+  elements.cfgModel.addEventListener("input", () => {
+    highlightMatchingPreset(elements.cfgBaseUrl?.value, elements.cfgModel.value);
+  });
+}
 
 elements.btnTogglePw.addEventListener("click", () => {
   const input = elements.cfgApiKey;
@@ -984,22 +1183,33 @@ elements.btnTogglePw.addEventListener("click", () => {
 });
 
 elements.btnTestLlm.addEventListener("click", async () => {
+  const origHtml = elements.btnTestLlm.innerHTML;
+  elements.btnTestLlm.disabled = true;
+  elements.btnTestLlm.innerHTML = "<span>⏳ Проверяю...</span>";
   elements.testLlmResult.textContent = "Проверяю связь с моделью...";
   elements.testLlmResult.style.color = "var(--color-cyan)";
 
   const payload = {
-    base_url: elements.cfgBaseUrl.value.trim(),
-    model: elements.cfgModel.value.trim(),
-    api_key: elements.cfgApiKey.value.trim(),
+    base_url: (elements.cfgBaseUrl.value || "").trim(),
+    model: (elements.cfgModel.value || "").trim(),
+    api_key: (elements.cfgApiKey.value || "").trim(),
   };
 
+  const startTime = performance.now();
   const res = await callApi("test_llm_settings", payload);
+  const elapsedMs = Math.round(performance.now() - startTime);
+
+  elements.btnTestLlm.disabled = false;
+  elements.btnTestLlm.innerHTML = origHtml;
+
   if (res && res.success) {
-    elements.testLlmResult.textContent = "✅ Подключение успешно! ИИ отвечает.";
+    elements.testLlmResult.textContent = `✅ ${res.message || "ИИ отвечает успешно"} (${elapsedMs} мс)`;
     elements.testLlmResult.style.color = "var(--color-radiant)";
+    showToast(`Подключение к ${payload.model || "ИИ"} успешно (${elapsedMs} мс)!`, "success");
   } else {
-    elements.testLlmResult.textContent = `❌ Ошибка: ${res?.message || "Не удалось связаться с сервером"}`;
+    elements.testLlmResult.textContent = `❌ Ошибка (${elapsedMs} мс): ${res?.message || "Не удалось связаться с сервером"}`;
     elements.testLlmResult.style.color = "var(--color-dire)";
+    showToast(`Ошибка подключения к ИИ: ${res?.message || "нет ответа"}`, "warn");
   }
 });
 
@@ -1029,25 +1239,34 @@ window.addEventListener("keydown", (e) => {
 
 // Save Settings
 elements.btnSaveSettings.addEventListener("click", async () => {
+  const origHtml = elements.btnSaveSettings.innerHTML;
+  elements.btnSaveSettings.disabled = true;
+  elements.btnSaveSettings.innerHTML = "<span>⏳ Сохраняю...</span>";
+
   const payload = {
-    llm_base_url: elements.cfgBaseUrl.value.trim(),
-    llm_model: elements.cfgModel.value.trim(),
-    llm_api_key: elements.cfgApiKey.value.trim(),
-    tts_provider: elements.cfgTtsProvider.value,
-    edge_voice: elements.cfgEdgeVoice.value,
-    input_device: elements.cfgInputDevice.value || null,
-    output_device: elements.cfgOutputDevice.value || null,
-    ptt_key: elements.cfgPttKey.value.trim(),
-    autonomy_level: elements.cfgAutonomyLevel.value,
+    llm_base_url: (elements.cfgBaseUrl.value || "").trim() || "https://text.pollinations.ai/openai",
+    llm_model: (elements.cfgModel.value || "").trim() || "gemini",
+    llm_api_key: (elements.cfgApiKey.value || "").trim(),
+    tts_provider: elements.cfgTtsProvider ? elements.cfgTtsProvider.value : "piper",
+    edge_voice: elements.cfgEdgeVoice ? elements.cfgEdgeVoice.value : "ru-RU-SvetlanaNeural",
+    input_device: elements.cfgInputDevice?.value || null,
+    output_device: elements.cfgOutputDevice?.value || null,
+    ptt_key: (elements.cfgPttKey?.value || "v").trim(),
+    autonomy_level: elements.cfgAutonomyLevel?.value || "medium",
     ...(elements.cfgSkillLevel ? { skill_level: elements.cfgSkillLevel.value } : {}),
   };
 
   const res = await callApi("save_settings", payload);
+  elements.btnSaveSettings.disabled = false;
+  elements.btnSaveSettings.innerHTML = origHtml;
+
   if (res && res.success) {
     elements.saveSettingsIndicator.textContent = "✅ Настройки успешно сохранены!";
-    setTimeout(() => { elements.saveSettingsIndicator.textContent = ""; }, 3000);
+    showToast("Настройки успешно сохранены!", "success");
+    setTimeout(() => { elements.saveSettingsIndicator.textContent = ""; }, 3500);
+    highlightMatchingPreset(payload.llm_base_url, payload.llm_model);
   } else {
-    alert("Ошибка при сохранении настроек: " + (res?.message || ""));
+    showToast("Ошибка при сохранении настроек: " + (res?.message || ""), "warn");
   }
 });
 
@@ -1229,7 +1448,7 @@ async function syncStateLoop() {
     }
 
     // Audio Devices populate if empty
-    if (data.audio_devices && elements.cfgInputDevice.children.length <= 1) {
+    if (data.audio_devices && elements.cfgInputDevice && elements.cfgInputDevice.children.length <= 1) {
       data.audio_devices.inputs?.forEach((d) => {
         const opt = document.createElement("option");
         opt.value = d.id;
@@ -1242,6 +1461,12 @@ async function syncStateLoop() {
         opt.textContent = d.name;
         elements.cfgOutputDevice.appendChild(opt);
       });
+    }
+
+    // Sync settings to form once on startup
+    if (data.settings && !state.settingsLoaded) {
+      applySettingsToUi(data.settings);
+      state.settingsLoaded = true;
     }
   }
 
