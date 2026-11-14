@@ -49,6 +49,7 @@ from .icons import (
 from .live_advice import build_item_advice
 from .settings_gui import test_llm_connection
 from .tray import AidotaTray
+from .windows_icon import get_app_icon_path, set_app_user_model_id, setup_window_handle
 
 log = logging.getLogger("aidota.web_app")
 
@@ -919,6 +920,7 @@ class WebGuiController:
             self._assistant_thread.start()
             self.is_running = True
             log.info("Фоновый ассистент AIDOTA успешно запущен.")
+            setup_window_handle(self.window)
         except Exception as exc:  # noqa: BLE001
             log.error("Не удалось запустить ассистента: %s", exc)
 
@@ -1037,6 +1039,9 @@ def run_web_gui(config: Config, config_path: Path | None = None) -> int:
     """Запускает современный веб-интерфейс AIDOTA через pywebview."""
     import webview
 
+    set_app_user_model_id()
+    icon_path = get_app_icon_path()
+
     cfg_path = config_path or DEFAULT_CONFIG_PATH
     ctrl = WebGuiController(config, cfg_path)
     api = AidotaWebApi(ctrl)
@@ -1055,8 +1060,17 @@ def run_web_gui(config: Config, config_path: Path | None = None) -> int:
     )
     ctrl.window = window
 
+    def _on_window_shown():
+        setup_window_handle(window)
+
+    window.events.shown += _on_window_shown
+
     try:
-        webview.start(ctrl.start_assistant, debug=False)
+        webview.start(
+            ctrl.start_assistant,
+            debug=False,
+            icon=str(icon_path) if icon_path else None,
+        )
     except Exception as exc:  # noqa: BLE001
         log.warning("pywebview завершился с ошибкой или прерван: %s", exc)
     finally:

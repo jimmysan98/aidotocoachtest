@@ -191,6 +191,14 @@ class AidotaApp(ctk.CTk):
         self.configure(fg_color=COLOR_BG)
 
         # Иконка окна
+        if sys.platform == "win32":
+            try:
+                from .windows_icon import set_app_user_model_id, setup_window_handle
+                set_app_user_model_id()
+                setup_window_handle(self)
+            except Exception:
+                pass
+
         icon_path = PROJECT_ROOT / "assets" / "icon.ico"
         if icon_path.is_file():
             try:
@@ -2229,6 +2237,13 @@ def run_gui_app(config: Config | None = None, config_path: Path | None = None) -
     По умолчанию использует современный игровой HTML/CSS/JS интерфейс (pywebview),
     с автоматическим откатом на CustomTkinter при необходимости.
     """
+    if sys.platform == "win32":
+        try:
+            from .windows_icon import set_app_user_model_id
+            set_app_user_model_id()
+        except Exception:
+            pass
+
     use_ctk = any(arg.lower() in ("--ctk", "--gui=ctk", "--legacy-gui") for arg in sys.argv)
     if not use_ctk:
         try:

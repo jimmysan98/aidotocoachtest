@@ -11,7 +11,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-a855f7.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10–3.15-38bdf8.svg)](requirements.txt)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0ea5e9.svg)](#требования)
-[![Tests](https://img.shields.io/badge/tests-618%20passed-34d399.svg)](#тесты-и-качество)
+[![Tests](https://img.shields.io/badge/tests-625%20passed-34d399.svg)](#тесты-и-качество)
 [![Version](https://img.shields.io/badge/version-1.2.0-f59e0b.svg)](CHANGELOG.md)
 
 [Установка](#установка) · [Возможности](#возможности) · [Скриншоты](#скриншоты) ·
@@ -165,7 +165,7 @@ aidota/
 data/                   Снапшоты OpenDota (герои, предметы) + рантайм-память
 hero_icons/             Иконки героев
 assets/                 Логотип, иконки, баннер и скриншоты для README
-tests/                  Набор из 618 автоматических тестов (unittest)
+tests/                  Набор из 625 автоматических тестов (unittest)
 ```
 
 ## Разработка
@@ -187,11 +187,12 @@ python -m venv .venv
 .venv\Scripts\python.exe -m unittest discover -s tests -t .
 ```
 
-- **618 тестов** (unittest), все зелёные; CI — `.github/workflows/ci.yml`
+- **625 тестов** (unittest), все зелёные; CI — `.github/workflows/ci.yml`
   (Windows, Python 3.12/3.13).
 - Отдельные наборы: `test_beginner_coach.py`, `test_coach_smart.py`,
   `test_tts_comprehensive.py`, `test_tts_utils.py`, `test_gsi_and_patch_db.py`,
-  `test_meta_db_extra.py`, `test_context_extra.py`, `test_release_readiness.py`.
+  `test_windows_icon.py`, `test_meta_db_extra.py`, `test_context_extra.py`,
+  `test_release_readiness.py`.
 - Никаких сетевых вызовов в тестах — только фикстуры и мок-сессии.
 
 ### Сборка установщика

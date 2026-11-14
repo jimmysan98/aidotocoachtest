@@ -77,6 +77,13 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         pass
 
+    if sys.platform == "win32":
+        try:
+            from aidota.windows_icon import set_app_user_model_id
+            set_app_user_model_id()
+        except Exception:
+            pass
+
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")
