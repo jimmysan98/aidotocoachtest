@@ -223,10 +223,10 @@ class RequirementsAndBuildTests(unittest.TestCase):
             from PIL import Image
         except ImportError:  # pragma: no cover — Pillow есть в dev-окружении
             self.skipTest("Pillow не установлен")
-        icon = Image.open(assets / "icon.ico")
-        sizes = sorted(icon.info.get("sizes", []))
-        self.assertIn((16, 16), sizes)
-        self.assertIn((256, 256), sizes)
+        with Image.open(assets / "icon.ico") as icon:
+            sizes = sorted(icon.info.get("sizes", []))
+            self.assertIn((16, 16), sizes)
+            self.assertIn((256, 256), sizes)
 
     @unittest.skipUnless(SETUP.is_file(), "установщик ещё не собран")
     def test_installer_artifact(self):

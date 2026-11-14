@@ -70,7 +70,8 @@ class AidotaTray:
             return None
         try:
             if self._icon_path.is_file():
-                return Image.open(self._icon_path)
+                with Image.open(self._icon_path) as raw_img:
+                    return raw_img.copy()
         except Exception as exc:  # noqa: BLE001
             log.warning("Не удалось загрузить иконку из %s: %s", self._icon_path, exc)
 

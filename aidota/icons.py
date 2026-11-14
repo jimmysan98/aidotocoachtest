@@ -120,8 +120,6 @@ def fetch_hero_icons(
 
     import requests
 
-    session = requests.Session()
-    session.headers["User-Agent"] = USER_AGENT
     icons_dir = Path(icons_dir)
     tasks: list[tuple[str, Path]] = []
     for hero in heroes:
@@ -138,11 +136,13 @@ def fetch_hero_icons(
     if progress:
         progress(f"Проверяю иконки героев в {icons_dir}…")
     downloaded = 0
-    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        futures = [pool.submit(_download, session, url, path) for url, path in tasks]
-        for future in futures:
-            if future.result():
-                downloaded += 1
+    with requests.Session() as session:
+        session.headers["User-Agent"] = USER_AGENT
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+            futures = [pool.submit(_download, session, url, path) for url, path in tasks]
+            for future in futures:
+                if future.result():
+                    downloaded += 1
     if progress:
         progress(f"Иконки готовы: скачано {downloaded}, портретов {count_icons(icons_dir)}")
     return downloaded, len(tasks)

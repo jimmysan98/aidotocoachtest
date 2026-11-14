@@ -69,6 +69,44 @@ class GsiServerTests(unittest.TestCase):
         self.assertEqual(snapshot["map"]["clock_time"], 10)
         self.assertEqual(snapshot["draft"]["team2"]["pick_ids"], [1])
 
+    def test_non_dict_auth_and_provider_does_not_crash(self):
+        # auth is a string instead of dict
+        resp1 = self.requests.post(
+            self.url, json={"auth": "invalid_string", "provider": "Dota2_string", "map": {}}, timeout=5
+        )
+        self.assertEqual(resp1.status_code, 401)
+
+        # auth is valid dict, but provider is string
+        resp2 = self.requests.post(
+            self.url,
+            json={"auth": {"token": self.token}, "provider": "Dota2_string", "map": {"clock_time": 42}},
+            timeout=5,
+        )
+        self.assertEqual(resp2.status_code, 200)
+        self.assertEqual(self.server.snapshot()["map"]["clock_time"], 42)
+
+    def test_oversized_payload_returns_400_and_closes_connection(self):
+        # Raw socket test to verify Connection: close header
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.connect(("127.0.0.1", self.port))
+        # Request with oversized Content-Length
+        req = b"POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 5000000\r\n\r\n"
+        s.sendall(req)
+        resp_data = s.recv(1024).decode("utf-8", errors="ignore")
+        s.close()
+        self.assertIn("400 Bad Request", resp_data)
+        self.assertIn("Connection: close", resp_data)
+
+    def test_snapshot_caching_performance(self):
+        self.requests.post(
+            self.url,
+            json={"auth": {"token": self.token}, "map": {"clock_time": 100}},
+            timeout=5,
+        )
+        snap1 = self.server.snapshot()
+        snap2 = self.server.snapshot()
+        self.assertIs(snap1, snap2)
+
 
 class DeepMergeTests(unittest.TestCase):
     def test_nested_merge(self):
@@ -82,6 +120,16 @@ class DeepMergeTests(unittest.TestCase):
     def test_none_does_not_erase(self):
         merged = deep_merge({"a": 1}, {"a": None})
         self.assertEqual(merged["a"], 1)
+
+    def test_max_depth_recursion_guard(self):
+        # Create recursive or deeply nested dict
+        nested = {"level": 0}
+        curr = nested
+        for i in range(1, 30):
+            curr["child"] = {"level": i}
+            curr = curr["child"]
+        merged = deep_merge({}, nested, max_depth=10)
+        self.assertIsNotNone(merged)
 
 
 if __name__ == "__main__":

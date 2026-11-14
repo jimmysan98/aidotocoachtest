@@ -129,14 +129,18 @@ def roshan_pit_location(clock_seconds: Any = None, is_daytime: bool | None = Non
 
     Днём (0-5 мин, 10-15 мин...) — в нижнем логове (сторона Radiant).
     Ночью (5-10 мин, 15-20 мин...) — в верхнем логове (сторона Dire).
+    Рошан переходит строго по естественному 300-секундному циклу игровых часов (0:00, 5:00...),
+    независимо от искусственной ночи способностей героев (Night Stalker / Luna).
     """
+    sec = _i(clock_seconds)
+    if sec is not None:
+        if sec < 0:
+            return "нижнем логове (Radiant, день)"
+        cycle = (sec // 300) % 2
+        return "нижнем логове (Radiant, день)" if cycle == 0 else "верхнем логове (Dire, ночь)"
     if is_daytime is not None:
         return "нижнем логове (Radiant, день)" if is_daytime else "верхнем логове (Dire, ночь)"
-    sec = _i(clock_seconds)
-    if sec is None or sec < 0:
-        return "нижнем логове (Radiant, день)"
-    cycle = (sec // 300) % 2
-    return "нижнем логове (Radiant, день)" if cycle == 0 else "верхнем логове (Dire, ночь)"
+    return "нижнем логове (Radiant, день)"
 
 
 def objectives_context(clock_seconds: Any, game_mode: Any = None) -> str:
@@ -1121,7 +1125,7 @@ def build_gsi_context(
         if level is not None:
             hero_parts.append(f"ур. {level}")
         facet = hero.get("facet")
-        if facet is not None:
+        if facet is not None and facet is not False:
             hero_parts.append(f"аспект {facet}")
         if hero.get("alive") is False:
             respawn = _i(hero.get("respawn_seconds"))
@@ -1145,6 +1149,12 @@ def build_gsi_context(
             statuses.append("в хексе")
         if hero.get("magicimmune"):
             statuses.append("иммунитет к магии")
+        if hero.get("rooted"):
+            statuses.append("в оцепенении")
+        if hero.get("muted"):
+            statuses.append("предметы заглушены")
+        if hero.get("taunted"):
+            statuses.append("в таунте")
         if statuses:
             hero_parts.append(f"статус: {', '.join(statuses)}")
         buyback_cost = _i(hero.get("buyback_cost"))
@@ -1862,6 +1872,26 @@ def get_live_gsi_snapshot(
     if clock_sec is not None and clock_sec >= 0:
         objectives = objectives_context(clock_sec, get_game_mode(payload))
 
+    statuses = []
+    if hero.get("stunned"):
+        statuses.append("в стане")
+    if hero.get("silenced"):
+        statuses.append("в сайленсе")
+    if hero.get("disarmed"):
+        statuses.append("в дизарме")
+    if hero.get("break"):
+        statuses.append("истощён")
+    if hero.get("hexed"):
+        statuses.append("в хексе")
+    if hero.get("magicimmune"):
+        statuses.append("иммунитет к магии")
+    if hero.get("rooted"):
+        statuses.append("в оцепенении")
+    if hero.get("muted"):
+        statuses.append("предметы заглушены")
+    if hero.get("taunted"):
+        statuses.append("в таунте")
+
     return {
         "available": True,
         "clock_seconds": clock_sec,
@@ -1872,6 +1902,9 @@ def get_live_gsi_snapshot(
         "my_team": my_team,
         "hero_name": hero_name,
         "hero_level": _i(hero.get("level")),
+        "facet": hero.get("facet") if hero.get("facet") is not False else None,
+        "statuses": statuses,
+        "roshan_pit": roshan_pit_location(clock_sec, map_data.get("daytime")),
         "alive": hero.get("alive", True) is not False,
         "health_percent": _f(hero.get("health_percent")),
         "mana_percent": _f(hero.get("mana_percent")),
@@ -2084,6 +2117,7 @@ class MidTimersTracker:
         clock_seconds: Any,
         position: int = 1,
         team_name: str | None = None,
+        turbo: bool = False,
     ) -> str | None:
         """Общие и специализированные тайминги: руны мудрости, лотосы, отводы, стаки, Терзатель."""
         if not self.enabled or clock_seconds is None:
@@ -2173,14 +2207,23 @@ class MidTimersTracker:
                 log.info("Сработал макро-таймер: стак нейтралов (мин %d)", minute_idx)
                 return "53-я секунда — время стакать нейтралов."
 
-        # 6. Нейтральные предметы (разряды 1..5)
-        neutral_tiers = {
-            1: (420, "Седьмая минута — появились нейтральные предметы 1-го разряда! Зачищайте лесные лагеря за жетонами."),
-            2: (1020, "Семнадцатая минута — доступен 2-й разряд нейтральных предметов! Не забудьте обновить артефакт."),
-            3: (1620, "Двадцать седьмая минута — доступен 3-й разряд нейтралок!"),
-            4: (2220, "Тридцать седьмая минута — доступен 4-й разряд нейтральных предметов!"),
-            5: (3600, "Шестидесятая минута — появился 5-й разряд нейтральных предметов!"),
-        }
+        # 6. Нейтральные предметы (разряды 1..5, актуальные тайминги 7.36/7.37)
+        if turbo:
+            neutral_tiers = {
+                1: (210, "Четвёртая минута — в Турбо появились нейтральные предметы 1-го разряда! Зачищайте лагеря за жетонами."),
+                2: (450, "Восьмая минута — в Турбо доступен 2-й разряд нейтральных предметов! Обновите артефакт."),
+                3: (750, "Тринадцатая минута — в Турбо доступен 3-й разряд нейтралок!"),
+                4: (1050, "Восемнадцатая минута — в Турбо доступен 4-й разряд нейтральных предметов!"),
+                5: (1800, "Тридцатая минута — в Турбо появился 5-й разряд нейтральных предметов!"),
+            }
+        else:
+            neutral_tiers = {
+                1: (420, "Седьмая минута — появились нейтральные предметы 1-го разряда! Зачищайте лесные лагеря за жетонами."),
+                2: (900, "Пятнадцатая минута — доступен 2-й разряд нейтральных предметов! Не забудьте обновить артефакт."),
+                3: (1500, "Двадцать пятая минута — доступен 3-й разряд нейтралок!"),
+                4: (2100, "Тридцать пятая минута — доступен 4-й разряд нейтральных предметов!"),
+                5: (3600, "Шестидесятая минута — появился 5-й разряд нейтральных предметов!"),
+            }
         for tier, (t_sec, text) in neutral_tiers.items():
             if t_sec <= sec <= t_sec + 6:
                 if tier not in self._alerted_neutrals:
@@ -2250,6 +2293,8 @@ def _aegis_side(
     my_team: str | None,
 ) -> str | None:
     """Чья сторона держит аегис: 'radiant' / 'dire' / None, если не понять."""
+    if value == "self":
+        return my_team
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
@@ -2424,7 +2469,9 @@ class AutonomousCoachAgent:
         if lvl6_alert:
             return lvl6_alert if self._emit(lvl6_alert, now) else None
 
-        macro_alert = self.mid_timers.check_macro_timers(clock_sec, position=position)
+        game_mode = map_data.get("game_mode")
+        turbo = is_turbo(game_mode)
+        macro_alert = self.mid_timers.check_macro_timers(clock_sec, position=position, turbo=turbo)
         if macro_alert:
             return macro_alert if self._emit(macro_alert, now) else None
 
@@ -2671,6 +2718,14 @@ class AutonomousCoachAgent:
             if value:
                 raw_aegis = value
                 break
+        if raw_aegis is None:
+            own_items = extract_own_items(payload)
+            item_list = own_items.values() if isinstance(own_items, dict) else (own_items or ())
+            for it in item_list:
+                it_name = it.get("name") if isinstance(it, dict) else str(it)
+                if it_name and "item_aegis" in it_name.lower():
+                    raw_aegis = "self"
+                    break
         if raw_aegis is not None:
             if self._aegis_reported:
                 return None

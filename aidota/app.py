@@ -176,11 +176,7 @@ class Assistant:
         """Возвращает True, если от Dota 2 поступают свежие данные GSI."""
         if self._gsi is None:
             return False
-        payload = getattr(self._gsi, "last_payload", None)
-        if payload is None:
-            return False
-        last_t = getattr(self._gsi, "_last_time", 0.0)
-        return (time.time() - last_t) < 45.0
+        return self._gsi.is_fresh(45.0)
 
     def set_coach_name(self, name: str) -> None:
         """Переключает активного тренера (Астра / Джарвис) на лету."""
@@ -279,10 +275,15 @@ class Assistant:
 
     def stop(self) -> None:
         self.stop_event.set()
-        if self._overlay is not None:
-            self._overlay.shutdown()
+        if self._worker is not None and self._worker.is_alive():
+            self._worker.join(timeout=3.0)
+            self._worker = None
+        self._shutdown()
 
     def _shutdown(self) -> None:
+        if getattr(self, "_is_shut_down", False):
+            return
+        self._is_shut_down = True
         if hasattr(self, "_toggle_listener") and self._toggle_listener is not None:
             self._toggle_listener.stop()
             self._toggle_listener = None
@@ -292,6 +293,9 @@ class Assistant:
             self._gsi.stop()
         if self._overlay is not None:
             self._overlay.close()
+        if hasattr(self, "_coach") and self._coach is not None:
+            if hasattr(self._coach, "close"):
+                self._coach.close()
         self.log.info("AIDOTA остановлена")
 
 
@@ -1230,22 +1234,23 @@ class Assistant:
                     self.on_log_message(self._coach.coach_name, text)
                 except Exception:
                     pass
-            if not (speak and self._tts_enabled):
-                return
+
+        if not (speak and self._tts_enabled):
+            return
+        if self._voice.ready:
+            self._voice.set_muted(True)
+        if self._overlay is not None:
+            self._overlay.update_status("Озвучиваю…")
+        try:
+            ok = self._tts.speak(text, wait=True, priority=priority, ttl=ttl)
+        finally:
             if self._voice.ready:
-                self._voice.set_muted(True)
+                self._voice.set_muted(False)
+                self._voice.discard_pending()
             if self._overlay is not None:
-                self._overlay.update_status("Озвучиваю…")
-            try:
-                ok = self._tts.speak(text, wait=True, priority=priority, ttl=ttl)
-            finally:
-                if self._voice.ready:
-                    self._voice.set_muted(False)
-                    self._voice.discard_pending()
-                if self._overlay is not None:
-                    self._overlay.update_status(idle_status)
-            if not ok and not self._tts_warned:
-                self._tts_warned = True
-                self.log.warning("Озвучка недоступна: %s", self._tts.error)
-                with self._console_lock:
-                    print(f"(озвучка недоступна: {self._tts.error})")
+                self._overlay.update_status(idle_status)
+        if not ok and not self._tts_warned:
+            self._tts_warned = True
+            self.log.warning("Озвучка недоступна: %s", self._tts.error)
+            with self._console_lock:
+                print(f"(озвучка недоступна: {self._tts.error})")

@@ -522,7 +522,7 @@ class WebStateContractTests(unittest.TestCase):
         self.config = Config()
         self.config.player_profile.default_position = 5
         save_config(self.config, self.config_path)
-        self.ctrl = WebGuiController(self.config, self.config_path)
+        self.ctrl = WebGuiController(self.config, self.config_path, enable_tray=False)
         self.api = AidotaWebApi(self.ctrl)
         self.ctrl.assistant = SimpleNamespace(
             _coach=_FakeCoach(realistic_payload()),
@@ -533,7 +533,8 @@ class WebStateContractTests(unittest.TestCase):
         self.ctrl.is_running = True
 
     def tearDown(self) -> None:
-        self.ctrl.tray.stop()
+        if self.ctrl and getattr(self.ctrl, "tray", None):
+            self.ctrl.tray.stop()
         self.ctrl.assistant = None
         remove_temp_dir(self.tmp)
 

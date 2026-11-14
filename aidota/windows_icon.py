@@ -71,8 +71,40 @@ def apply_window_icon(hwnd: int) -> bool:
 
     try:
         import ctypes
+        from ctypes import wintypes
 
         user32 = ctypes.windll.user32
+
+        # Явные 64-битные типы аргументов и возвращаемых значений для безопасной работы с указателями
+        user32.IsWindow.argtypes = [wintypes.HWND]
+        user32.IsWindow.restype = wintypes.BOOL
+
+        user32.LoadImageW.argtypes = [
+            wintypes.HINSTANCE,
+            wintypes.LPCWSTR,
+            wintypes.UINT,
+            ctypes.c_int,
+            ctypes.c_int,
+            wintypes.UINT,
+        ]
+        user32.LoadImageW.restype = wintypes.HANDLE
+
+        user32.SendMessageW.argtypes = [
+            wintypes.HWND,
+            wintypes.UINT,
+            wintypes.WPARAM,
+            wintypes.LPARAM,
+        ]
+        user32.SendMessageW.restype = ctypes.c_ssize_t
+
+        if hasattr(user32, "SetClassLongPtrW"):
+            user32.SetClassLongPtrW.argtypes = [
+                wintypes.HWND,
+                ctypes.c_int,
+                ctypes.c_ssize_t,
+            ]
+            user32.SetClassLongPtrW.restype = ctypes.c_ssize_t
+
         if not user32.IsWindow(hwnd):
             return False
 

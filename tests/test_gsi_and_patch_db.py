@@ -193,7 +193,7 @@ class TestCurrentPatchContextAndTimers(unittest.TestCase):
     def test_build_gsi_context_with_facets_and_statuses(self):
         payload = {
             "map": {
-                "clock_time": 600,
+                "clock_time": 450,
                 "game_state": "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS",
                 "daytime": False,
                 "radiant_score": 10,
@@ -216,6 +216,87 @@ class TestCurrentPatchContextAndTimers(unittest.TestCase):
         self.assertIn("в стане", ctx)
         self.assertIn("в сайленсе", ctx)
         self.assertIn("верхнем логове", ctx)
+
+    def test_roshan_pit_immune_to_night_stalker_ult(self):
+        """Дневной ульт Night Stalker (daytime=False при clock=120) не должен сбивать логово Рошана."""
+        pit = roshan_pit_location(clock_seconds=120, is_daytime=False)
+        self.assertIn("нижн", pit)
+
+        # Fallback при отсутствии clock_seconds
+        pit_fallback = roshan_pit_location(clock_seconds=None, is_daytime=False)
+        self.assertIn("верхн", pit_fallback)
+
+    def test_cc_statuses_rooted_muted_taunted_in_context_and_snapshot(self):
+        """Проверка детекции эффектов контроля: rooted, muted, taunted."""
+        from aidota.context import get_live_gsi_snapshot
+
+        payload = {
+            "map": {"clock_time": 200, "daytime": True},
+            "hero": {
+                "name": "npc_dota_hero_axe",
+                "level": 6,
+                "facet": 2,
+                "rooted": True,
+                "muted": True,
+                "taunted": True,
+                "alive": True,
+            },
+            "player": {"gold": 500},
+        }
+        ctx = build_gsi_context(payload, catalog=None)
+        self.assertIn("в оцепенении", ctx)
+        self.assertIn("предметы заглушены", ctx)
+        self.assertIn("в таунте", ctx)
+
+        snapshot = get_live_gsi_snapshot(payload)
+        self.assertEqual(snapshot["facet"], 2)
+        self.assertIn("в оцепенении", snapshot["statuses"])
+        self.assertIn("предметы заглушены", snapshot["statuses"])
+        self.assertIn("в таунте", snapshot["statuses"])
+        self.assertIn("нижнем логове", snapshot["roshan_pit"])
+
+    def test_item_costs_cleaned_up(self):
+        """Проверка актуальных стоимостей предметов 7.36/7.37 в items.json."""
+        items_path = Path(__file__).resolve().parent.parent / "data" / "items.json"
+        with open(items_path, "r", encoding="utf-8") as f:
+            items = json.load(f)
+        self.assertEqual(items["angels_demise"]["cost"], 5000)
+        self.assertEqual(items["devastator"]["cost"], 5575)
+        self.assertEqual(items["recipe_devastator"]["cost"], 0)
+        self.assertEqual(items["harpoon"]["cost"], 4800)
+
+    def test_macro_timer_neutrals_736_timings(self):
+        """Проверка таймингов нейтральных предметов 7.36/7.37 (7, 15, 25, 35, 60 мин) и Турбо."""
+        from aidota.context import MidTimersTracker
+
+        skill = MidTimersTracker()
+        # 15 минут (900 сек) -> 2-й разряд
+        alert_15m = skill.check_macro_timers(901, turbo=False)
+        self.assertIsNotNone(alert_15m)
+        self.assertIn("2-й разряд", alert_15m)
+
+        # Турбо: 3.5 мин (210 сек) -> 1-й разряд
+        skill_turbo = MidTimersTracker()
+        alert_turbo = skill_turbo.check_macro_timers(211, turbo=True)
+        self.assertIsNotNone(alert_turbo)
+        self.assertIn("1-го разряда", alert_turbo)
+
+    def test_aegis_in_inventory_detected(self):
+        """Проверка детекции аегиса непосредственно в инвентаре игрока."""
+        from aidota.context import AutonomousCoachAgent
+
+        agent = AutonomousCoachAgent()
+        payload = {
+            "map": {"clock_time": 1200},
+            "items": {
+                "slot0": {"name": "item_aegis"},
+                "slot1": {"name": "item_blink"},
+            },
+            "player": {"team_name": "radiant"},
+        }
+        res = agent._check_aegis_and_roshan(payload, catalog=None, my_team="radiant")
+        self.assertIsNotNone(res)
+        self.assertIn("У тебя аегис", res)
 
 
 if __name__ == "__main__":

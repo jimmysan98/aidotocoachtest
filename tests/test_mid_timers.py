@@ -163,8 +163,8 @@ class TestMidTimersAndMacroAlerts(unittest.TestCase):
         self.assertIsNotNone(t1)
         self.assertIn("нейтральные предметы 1-го разряда", t1.lower())
 
-        # 17:00 (1020с) — Тир 2 нейтралок
-        t2 = tracker.check_macro_timers(1020, position=1)
+        # 15:00 (900с) — Тир 2 нейтралок (7.36+)
+        t2 = tracker.check_macro_timers(900, position=1)
         self.assertIsNotNone(t2)
         self.assertIn("2-й разряд", t2.lower())
 

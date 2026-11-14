@@ -630,7 +630,8 @@ class AidotaWebApi:
                 self._ctrl.assistant._tts.config.edge_voice = self._ctrl.config.tts.edge_voice
 
         save_config(self._ctrl.config, self._ctrl.config_path)
-        self._ctrl.tray.update_menu()
+        if self._ctrl.tray is not None:
+            self._ctrl.tray.update_menu()
         return True
 
     def set_position(self, pos: int) -> bool:
@@ -640,7 +641,8 @@ class AidotaWebApi:
         if self._ctrl.assistant:
             self._ctrl.assistant.set_position(pos)
         save_config(self._ctrl.config, self._ctrl.config_path)
-        self._ctrl.tray.update_menu()
+        if self._ctrl.tray is not None:
+            self._ctrl.tray.update_menu()
         return True
 
     def test_voice(self, phrase: str) -> bool:
@@ -864,13 +866,23 @@ class AidotaWebApi:
             "allies": list(draft.my_picks),
         }
 
+    def close(self) -> None:
+        """Освобождает HTTP-сессию и фоновые ресурсы."""
+        if self._icon_session_obj is not None:
+            try:
+                self._icon_session_obj.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._icon_session_obj = None
+
 
 class WebGuiController:
     """Контроллер запуска веб-интерфейса и фоновых сервисов."""
 
-    def __init__(self, config: Config, config_path: Path):
+    def __init__(self, config: Config, config_path: Path, enable_tray: bool = True):
         self.config = config
         self.config_path = config_path
+        self.enable_tray = enable_tray
         self.assistant: Assistant | None = None
         self.is_running = False
         self._assistant_thread: threading.Thread | None = None
@@ -878,21 +890,23 @@ class WebGuiController:
         self._audio_cache: tuple[float, dict[str, Any]] | None = None
 
         # Инициализация системного трея
-        self.tray = AidotaTray(
-            on_show=self.restore_window,
-            on_toggle_overlay=self._tray_toggle_overlay,
-            get_coach=lambda: self.config.player_profile.coach_name,
-            set_coach=self._tray_set_coach,
-            get_position=lambda: self.config.player_profile.default_position,
-            set_position=self._tray_set_position,
-            get_autonomy=lambda: getattr(self.config.player_profile, "autonomy_level", "medium"),
-            set_autonomy=self._tray_set_autonomy,
-            on_open_settings=self.open_settings_tab,
-            on_open_doctor=self.open_doctor_tab,
-            on_exit=self.on_exit,
-            icon_path=PROJECT_ROOT / "assets" / "icon.png",
-        )
-        self.tray.start()
+        self.tray: AidotaTray | None = None
+        if self.enable_tray:
+            self.tray = AidotaTray(
+                on_show=self.restore_window,
+                on_toggle_overlay=self._tray_toggle_overlay,
+                get_coach=lambda: self.config.player_profile.coach_name,
+                set_coach=self._tray_set_coach,
+                get_position=lambda: self.config.player_profile.default_position,
+                set_position=self._tray_set_position,
+                get_autonomy=lambda: getattr(self.config.player_profile, "autonomy_level", "medium"),
+                set_autonomy=self._tray_set_autonomy,
+                on_open_settings=self.open_settings_tab,
+                on_open_doctor=self.open_doctor_tab,
+                on_exit=self.on_exit,
+                icon_path=PROJECT_ROOT / "assets" / "icon.png",
+            )
+            self.tray.start()
 
     def start_assistant(self) -> None:
         """Запускает Assistant в фоновом потоке."""
@@ -1026,7 +1040,8 @@ class WebGuiController:
     def on_exit(self) -> None:
         """Полный выход из приложения."""
         self.stop_assistant()
-        self.tray.stop()
+        if self.tray is not None:
+            self.tray.stop()
         if self.window:
             try:
                 self.window.destroy()

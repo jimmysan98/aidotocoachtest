@@ -595,3 +595,11 @@ class DotaApi:
             return getattr(response, "status_code", 0) == 200
         except Exception:  # noqa: BLE001
             return False
+
+    def close(self) -> None:
+        """Освобождает ресурсы, включая HTTP-сессию."""
+        if hasattr(self, "_session") and self._session is not None:
+            try:
+                self._session.close()
+            except Exception:
+                pass

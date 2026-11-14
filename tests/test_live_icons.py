@@ -213,12 +213,13 @@ class WebIconApiTests(unittest.TestCase):
         self.config.data_dir = str(self.data_dir)
         self.config_path = self.tmp / "config.json"
         save_config(self.config, self.config_path)
-        self.ctrl = WebGuiController(self.config, self.config_path)
+        self.ctrl = WebGuiController(self.config, self.config_path, enable_tray=False)
         self.api = AidotaWebApi(self.ctrl)
         self.session = FakeIconSession()
 
     def tearDown(self) -> None:
-        self.ctrl.tray.stop()
+        if self.ctrl.tray:
+            self.ctrl.tray.stop()
         self.ctrl.assistant = None
         remove_temp_dir(self.tmp)
 

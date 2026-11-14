@@ -37,7 +37,29 @@ from .config import TtsConfig
 
 log = logging.getLogger("aidota.tts")
 
-_TTS_STOP = object()
+
+@dataclass(order=True)
+class _QueueItem:
+    priority: int
+    seq: int
+    enqueued_at: float = field(compare=False)
+    ttl: float = field(compare=False)
+    text: str = field(compare=False)
+    done_event: threading.Event = field(compare=False)
+    is_filler: bool = field(default=False, compare=False)
+    is_stop: bool = field(default=False, compare=False)
+    success: bool = field(default=False, compare=False)
+
+
+_TTS_STOP = _QueueItem(
+    priority=-999999,
+    seq=-1,
+    enqueued_at=0.0,
+    ttl=0.0,
+    text="",
+    done_event=threading.Event(),
+    is_stop=True,
+)
 
 
 def _ensure_gen_py() -> None:
@@ -76,16 +98,28 @@ _DOTA_PHONETIC_REPLACEMENTS: tuple[tuple[re.Pattern, str], ...] = (
     (re.compile(r"\b(дпс|dps)\b", re.IGNORECASE), "дэпээс"),
     (re.compile(r"\b(кда|kda)\b", re.IGNORECASE), "кадэа"),
     (re.compile(r"\b(ммр|mmr)\b", re.IGNORECASE), "эмэмэр"),
-    (re.compile(r"\blvl\b", re.IGNORECASE), "уровень"),
+    (re.compile(r"\b(lvl|лвл)\b", re.IGNORECASE), "уровень"),
     (re.compile(r"\bvs\.?\b", re.IGNORECASE), "против"),
+    (re.compile(r"\b(дд|dd)\b", re.IGNORECASE), "двойной урон"),
+    (re.compile(r"\bбб\b", re.IGNORECASE), "байбек"),
+    (re.compile(r"\b(хг|hg)\b", re.IGNORECASE), "хайграунд"),
+    (re.compile(r"\b[тt]1\b", re.IGNORECASE), "тэ один"),
+    (re.compile(r"\b[тt]2\b", re.IGNORECASE), "тэ два"),
+    (re.compile(r"\b[тt]3\b", re.IGNORECASE), "тэ три"),
+    (re.compile(r"\b[тt]4\b", re.IGNORECASE), "тэ четыре"),
     # Ударения и специфика имён/объектов
     (re.compile(r"\bаганим([а-яё]*)\b", re.IGNORECASE), r"агани+м\1"),
-    (re.compile(r"\b(aghanim|aganim)([a-z]*)\b", re.IGNORECASE), r"агани+м\2"),
+    (re.compile(r"\b(aghanim|aganim)s?\b", re.IGNORECASE), "агани+м"),
     (re.compile(r"\bрошан([а-яё]*)\b", re.IGNORECASE), r"роша+н\1"),
-    (re.compile(r"\broshan([a-z]*)\b", re.IGNORECASE), r"роша+н\1"),
+    (re.compile(r"\broshans?\b", re.IGNORECASE), "роша+н"),
     (re.compile(r"\bторментор([а-яё]*)\b", re.IGNORECASE), r"торме+нтор\1"),
-    (re.compile(r"\btormentor([a-z]*)\b", re.IGNORECASE), r"торме+нтор\1"),
-    (re.compile(r"\bтерзатель([а-яё]*)\b", re.IGNORECASE), r"терза+тель\1"),
+    (re.compile(r"\btormentors?\b", re.IGNORECASE), "торме+нтор"),
+    (re.compile(r"\bтерзател([ьяеию]|ь|ем)?\b", re.IGNORECASE), r"терза+тел\1"),
+    # Предметы патчей 7.36/7.37
+    (re.compile(r"\b(кханда|khanda)\b", re.IGNORECASE), "кха+нда"),
+    (re.compile(r"\b(парасма|parasma)\b", re.IGNORECASE), "пара+сма"),
+    (re.compile(r"\b(гарпун|harpoon)\b", re.IGNORECASE), "гарпу+н"),
+    (re.compile(r"\b(дисперсер|disperser)\b", re.IGNORECASE), "диспе+рсер"),
 )
 
 # Предзаписанные/кэшируемые фразы задумчивости (аудио-филлеры)
@@ -108,8 +142,13 @@ def normalize_for_speech(text: str, max_chars: int = 700) -> str:
 
     raw = str(text)
 
+    # 0. Математические символы и проценты
+    cleaned = re.sub(r"<\s*=?\s*", "меньше ", raw)
+    cleaned = re.sub(r">\s*=?\s*(?=\d)", "больше ", cleaned)
+    cleaned = re.sub(r"%", " процентов", cleaned)
+
     # 1. Ссылки и markdown
-    cleaned = re.sub(r"\[(.*?)\]\(.*?\)", r"\1", raw)
+    cleaned = re.sub(r"\[(.*?)\]\(.*?\)", r"\1", cleaned)
     cleaned = re.sub(r"[*_#`~>]+", " ", cleaned)
 
     # Маркеры списков и нумерация в начале строк
@@ -148,17 +187,6 @@ def normalize_for_speech(text: str, max_chars: int = 700) -> str:
 sanitize_for_speech = normalize_for_speech
 
 
-@dataclass(order=True)
-class _QueueItem:
-    priority: int
-    seq: int
-    enqueued_at: float = field(compare=False)
-    ttl: float = field(compare=False)
-    text: str = field(compare=False)
-    done_event: threading.Event = field(compare=False)
-    is_filler: bool = field(default=False, compare=False)
-
-
 class SmartAudioCache:
     """Локальный Smart Cache аудио-фраз на диске (cache/audio/) и в оперативной памяти."""
 
@@ -177,13 +205,13 @@ class SmartAudioCache:
         self._save_threads: list[threading.Thread] = []
         self._lock = threading.Lock()
 
-    def _hash_key(self, text: str, voice: str, rate: str, pitch: str) -> str:
-        content = f"{voice}|{rate}|{pitch}|{text.strip().lower()}"
+    def _hash_key(self, text: str, voice: str, rate: str, pitch: str, provider: str = "edge") -> str:
+        content = f"{provider}|{voice}|{rate}|{pitch}|{text.strip().lower()}"
         return hashlib.md5(content.encode("utf-8")).hexdigest()
 
-    def get(self, text: str, voice: str, rate: str, pitch: str) -> tuple[Any, int] | None:
+    def get(self, text: str, voice: str, rate: str, pitch: str, provider: str = "edge") -> tuple[Any, int] | None:
         """Возвращает (numpy_data, samplerate) за <0.01 сек, если фраза уже кэшировалась."""
-        key = self._hash_key(text, voice, rate, pitch)
+        key = self._hash_key(text, voice, rate, pitch, provider=provider)
         with self._lock:
             if key in self._ram:
                 return self._ram[key]
@@ -212,11 +240,14 @@ class SmartAudioCache:
         data: Any,
         sr: int,
         *,
+        provider: str = "edge",
         async_save: bool = True,
     ) -> None:
         """Сохраняет аудио в RAM и асинхронно на диск."""
-        key = self._hash_key(text, voice, rate, pitch)
+        key = self._hash_key(text, voice, rate, pitch, provider=provider)
         with self._lock:
+            # Очищаем завершившиеся потоки для предотвращения утечки объектов Thread в памяти
+            self._save_threads = [t for t in self._save_threads if t.is_alive()]
             if len(self._ram) > 500:
                 self._ram.clear()
             self._ram[key] = (data, sr)
@@ -232,7 +263,8 @@ class SmartAudioCache:
 
         if async_save:
             t = threading.Thread(target=_save_disk, name="aidota-cache-saver", daemon=True)
-            self._save_threads.append(t)
+            with self._lock:
+                self._save_threads.append(t)
             t.start()
         else:
             _save_disk()
@@ -325,6 +357,13 @@ class HumanTTSManager:
 
     def _stop_current_playback(self) -> None:
         """Останавливает звук на текущем бэкенде."""
+        if self._engine is not None:
+            try:
+                # SVSFlagsAsync | SVSFPurgeBeforeSpeak
+                self._engine.Speak("", 3)
+            except Exception:  # noqa: BLE001
+                pass
+
         if self._pygame_mixer is not None:
             try:
                 self._pygame_mixer.stop()
@@ -414,8 +453,11 @@ class HumanTTSManager:
             self._queue.put(item)
 
         if wait:
-            done.wait(timeout)
-        return self._error is None or self._backend is not None
+            finished = done.wait(timeout)
+            if not finished:
+                return False
+            return getattr(item, "success", False)
+        return not self._speak_failed and self._error is None
 
     def play_filler(self, filler: str | None = None) -> bool:
         """Проигрывает короткую фразу задумчивости (аудио-филлер) из кэша."""
@@ -489,7 +531,7 @@ class HumanTTSManager:
                 except queue.Empty:
                     continue
 
-                if item is _TTS_STOP:
+                if item is _TTS_STOP or getattr(item, "is_stop", False):
                     break
 
                 if not isinstance(item, _QueueItem):
@@ -505,6 +547,7 @@ class HumanTTSManager:
                             item.ttl,
                             item.text,
                         )
+                        item.success = False
                         item.done_event.set()
                         continue
 
@@ -513,6 +556,9 @@ class HumanTTSManager:
                 self._is_speaking_event.set()
                 try:
                     self._say(item.text)
+                    item.success = not self._speak_failed
+                except Exception:
+                    item.success = False
                 finally:
                     self._is_speaking_event.clear()
                     item.done_event.set()
@@ -703,11 +749,11 @@ class HumanTTSManager:
         loop = asyncio.new_event_loop()
         try:
             try:
-                audio_buf = loop.run_until_complete(_fetch(pitch))
+                audio_buf = loop.run_until_complete(asyncio.wait_for(_fetch(pitch), timeout=10.0))
             except Exception as exc:
                 if pitch != "+0Hz" and "NoAudioReceived" in type(exc).__name__:
                     log.debug("Edge-TTS отклонил pitch='%s', повторяю с '+0Hz'", pitch)
-                    audio_buf = loop.run_until_complete(_fetch("+0Hz"))
+                    audio_buf = loop.run_until_complete(asyncio.wait_for(_fetch("+0Hz"), timeout=10.0))
                 else:
                     raise
         finally:
@@ -778,7 +824,13 @@ class HumanTTSManager:
             stderr=subprocess.PIPE,
             creationflags=creationflags,
         )
-        wav_bytes, err = proc.communicate(input=text.encode("utf-8"), timeout=30.0)
+        clean_piper_text = text.replace("+", "")
+        try:
+            wav_bytes, err = proc.communicate(input=clean_piper_text.encode("utf-8"), timeout=30.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            raise
         if proc.returncode != 0:
             raise RuntimeError(f"Piper error ({proc.returncode}): {err.decode('utf-8', errors='ignore')}")
 
@@ -799,6 +851,10 @@ class HumanTTSManager:
         arr = np.asarray(data, dtype=np.float32)
         if arr.size == 0:
             return
+
+        # Применение громкости (self.config.volume: 0..100)
+        vol = max(0.0, min(1.0, float(getattr(self.config, "volume", 100)) / 100.0))
+        arr = arr * vol
 
         # Защита от клиппинга
         peak = float(np.max(np.abs(arr)))
@@ -847,7 +903,10 @@ class HumanTTSManager:
             num_target = int(round(len(arr) * target_sr / samplerate))
             x_orig = np.linspace(0, 1, len(arr), endpoint=False)
             x_target = np.linspace(0, 1, num_target, endpoint=False)
-            arr = np.interp(x_target, x_orig, arr).astype(np.float32)
+            if arr.ndim == 2:
+                arr = np.column_stack([np.interp(x_target, x_orig, arr[:, c]) for c in range(arr.shape[1])]).astype(np.float32)
+            else:
+                arr = np.interp(x_target, x_orig, arr).astype(np.float32)
             samplerate = target_sr
 
         if arr.ndim == 1:
@@ -866,23 +925,27 @@ class HumanTTSManager:
         voice = getattr(self.config, "edge_voice", "ru-RU-DmitryNeural") or "ru-RU-DmitryNeural"
         rate = getattr(self.config, "rate_str", "+10%")
         pitch = getattr(self.config, "pitch_str", "-3Hz")
+        cache_enabled = bool(getattr(self.config, "cache_audio", True))
+        current_provider = getattr(self.config, "provider", "edge")
 
-        # Проверка Smart Cache
-        cached = self._cache.get(text, voice, rate, pitch)
-        if cached is not None:
-            data, sr = cached
-            self._play_audio(data, sr)
-            self._backend = "Smart Cache"
-            self._speak_failed = False
-            self._error = None
-            return
+        # Проверка Smart Cache (с учётом флага cache_audio и провайдера)
+        if cache_enabled:
+            cached = self._cache.get(text, voice, rate, pitch, provider=current_provider)
+            if cached is not None:
+                data, sr = cached
+                self._play_audio(data, sr)
+                self._backend = "Smart Cache"
+                self._speak_failed = False
+                self._error = None
+                return
 
         # 1. Основной режим: Edge-TTS (In-Memory Streaming)
-        if getattr(self.config, "provider", "edge") == "edge":
+        if current_provider == "edge":
             try:
                 data, samplerate = self._synthesize_edge_audio(text)
                 data, samplerate = self.apply_rvc_if_enabled(data, samplerate)
-                self._cache.put(text, voice, rate, pitch, data, samplerate)
+                if cache_enabled:
+                    self._cache.put(text, voice, rate, pitch, data, samplerate, provider="edge")
                 self._play_audio(data, samplerate)
                 self._backend = f"Edge ({voice})"
                 self._speak_failed = False
@@ -893,11 +956,12 @@ class HumanTTSManager:
 
         # 2. Офлайн / Fallback: Piper TTS
         piper_exe, _ = self._find_piper_binary_and_model()
-        if getattr(self.config, "provider", "edge") == "piper" or piper_exe is not None:
+        if current_provider == "piper" or piper_exe is not None:
             try:
                 data, samplerate = self._synthesize_piper_audio(text)
                 data, samplerate = self.apply_rvc_if_enabled(data, samplerate)
-                self._cache.put(text, voice, rate, pitch, data, samplerate)
+                if cache_enabled:
+                    self._cache.put(text, voice, rate, pitch, data, samplerate, provider="piper")
                 self._play_audio(data, samplerate)
                 self._backend = "Piper (офлайн-нейросеть)"
                 self._speak_failed = False
@@ -906,10 +970,25 @@ class HumanTTSManager:
             except Exception as exc:  # noqa: BLE001
                 log.warning("Синтез через Piper TTS не удался (%s), переключаюсь на системный SAPI…", exc)
 
-        # 3. Локальный SAPI
+        # 3. Локальный SAPI с поддержкой Barge-In прерывания
         if self._engine is not None:
             try:
-                self._engine.Speak(text, 0)
+                sapi_text = text.replace("+", "")
+                # SVSFlagsAsync = 1
+                self._engine.Speak(sapi_text, 1)
+                while not self._interrupt_event.is_set() and not self._stop.is_set():
+                    try:
+                        done = self._engine.WaitUntilDone(100)
+                        if done:
+                            break
+                    except Exception:
+                        break
+                if self._interrupt_event.is_set() or self._stop.is_set():
+                    try:
+                        # SVSFlagsAsync | SVSFPurgeBeforeSpeak = 3
+                        self._engine.Speak("", 3)
+                    except Exception:
+                        pass
                 self._backend = "SAPI"
                 self._speak_failed = False
                 self._error = None
@@ -920,7 +999,8 @@ class HumanTTSManager:
         # 4. pyttsx3
         if self._pyttsx_engine is not None:
             try:
-                self._pyttsx_engine.say(text)
+                pyttsx_text = text.replace("+", "")
+                self._pyttsx_engine.say(pyttsx_text)
                 self._pyttsx_engine.runAndWait()
                 self._backend = "pyttsx3"
                 self._speak_failed = False
@@ -944,8 +1024,17 @@ class HumanTTSManager:
     def close(self) -> None:
         self._stop.set()
         self._interrupt_event.set()
+        while True:
+            try:
+                it = self._queue.get_nowait()
+                if isinstance(it, _QueueItem) and not it.is_stop:
+                    it.success = False
+                    it.done_event.set()
+            except queue.Empty:
+                break
         self._queue.put(_TTS_STOP)
         self._stop_current_playback()
+        self._cache.wait_pending()
         if self._thread is not None:
             self._thread.join(timeout=3)
             self._thread = None

@@ -113,6 +113,37 @@ class TestMetaDb(unittest.TestCase):
         self.assertIn("saves_buffs", threat_keys)
         self.assertIn("magic_burst_cc", threat_keys)
 
+    def test_russian_slang_aliases(self):
+        """Проверка разрешения популярных русских сленговых никнеймов героев."""
+        aliases_map = {
+            "ск": "sand_king",
+            "гуля": "life_stealer",
+            "тракса": "drow_ranger",
+            "мортра": "phantom_assassin",
+            "леший": "leshrac",
+            "селёдка": "slardar",
+            "корова": "spirit_breaker",
+            "петух": "skywrath_mage",
+            "вертолёт": "gyrocopter",
+            "коза": "enchantress",
+            "дед": "keeper_of_the_light",
+        }
+        for alias, expected_id in aliases_map.items():
+            entry = get_hero_meta_entry(alias)
+            self.assertIsNotNone(entry, f"Alias '{alias}' did not resolve to any hero")
+            self.assertEqual(entry["id"], expected_id, f"Alias '{alias}' resolved to {entry['id']}, expected {expected_id}")
+
+    def test_frozenset_roles_and_draft_tags(self):
+        """Проверка что _roles_set и _DRAFT_NEED_TAGS используют frozenset."""
+        from aidota.meta_db import _DRAFT_NEED_TAGS
+        for k, v in _DRAFT_NEED_TAGS.items():
+            self.assertIsInstance(v, frozenset, f"Tag {k} should be frozenset")
+
+        for hero_id, meta in META_HEROES_DB.items():
+            roles_set = meta.get("_roles_set")
+            self.assertIsInstance(roles_set, frozenset, f"{hero_id} _roles_set should be frozenset")
+            self.assertEqual(roles_set, frozenset(meta.get("roles") or []))
+
 
 if __name__ == "__main__":
     unittest.main()

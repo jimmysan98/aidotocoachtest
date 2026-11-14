@@ -2106,6 +2106,26 @@ _HERO_ID_ALIASES: dict[str, str] = {
     "шд": "shadow_demon",
     "вд": "witch_doctor",
     "аа": "ancient_apparition",
+    "ск": "sand_king",
+    "sandking": "sand_king",
+    "гуля": "life_stealer",
+    "гуль": "life_stealer",
+    "тракса": "drow_ranger",
+    "тракс": "drow_ranger",
+    "мортра": "phantom_assassin",
+    "морта": "phantom_assassin",
+    "леший": "leshrac",
+    "лешрак": "leshrac",
+    "селедка": "slardar",
+    "селёдка": "slardar",
+    "корова": "spirit_breaker",
+    "баратрум": "spirit_breaker",
+    "петух": "skywrath_mage",
+    "вертолет": "gyrocopter",
+    "вертолёт": "gyrocopter",
+    "гиро": "gyrocopter",
+    "коза": "enchantress",
+    "дед": "keeper_of_the_light",
 }
 
 
@@ -2418,6 +2438,7 @@ def _finalize_meta_db(database: dict[str, dict[str, Any]]) -> None:
         meta["_countered_by_set"] = frozenset(meta["countered_by"])
         meta["_synergies_set"] = frozenset(meta["synergies"])
         meta["_tags_set"] = frozenset(meta.get("tags") or ())
+        meta["_roles_set"] = frozenset(meta.get("roles") or ())
 
 
 _finalize_meta_db(META_HEROES_DB)
@@ -2784,11 +2805,11 @@ def get_hero_build(hero_name: str, role: int = 1, enemy_heroes: list[str] | None
 # ---------------------------------------------------------------------------
 # A4: умный рекомендатор пиков
 # ---------------------------------------------------------------------------
-_DRAFT_NEED_TAGS: dict[str, tuple[str, ...]] = {
-    "control": ("single_target_cc", "magic_burst_cc", "silence"),
-    "save": ("saves_buffs", "heal_regen"),
-    "push": ("split_push", "summons"),
-    "frontline": ("tanky", "saves_buffs"),
+_DRAFT_NEED_TAGS: dict[str, frozenset[str]] = {
+    "control": frozenset({"single_target_cc", "magic_burst_cc", "silence"}),
+    "save": frozenset({"saves_buffs", "heal_regen"}),
+    "push": frozenset({"split_push", "summons"}),
+    "frontline": frozenset({"tanky", "saves_buffs"}),
 }
 
 
@@ -2853,7 +2874,10 @@ def _recommend_picks_cached(
     for hero_id, meta in META_HEROES_DB.items():
         if hero_id in excluded:
             continue
-        if role_norm not in (meta.get("roles") or []):
+        roles_set = meta.get("_roles_set")
+        if roles_set is None:
+            roles_set = frozenset(meta.get("roles") or [])
+        if role_norm not in roles_set:
             continue
 
         counter_ids = meta.get("_counters_set") or set(meta.get("counters") or [])

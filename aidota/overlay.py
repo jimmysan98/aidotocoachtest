@@ -378,7 +378,8 @@ class Overlay:
             if not path.is_file():
                 continue
             try:
-                image = Image.open(path).convert("RGBA")
+                with Image.open(path) as raw_image:
+                    image = raw_image.convert("RGBA")
                 image.thumbnail((size, size))
                 photo = ImageTk.PhotoImage(image)
                 self._images_keepalive.append(photo)
@@ -791,7 +792,8 @@ class Overlay:
             return self._icon_cache[cache_key]
 
         try:
-            img = Image.open(matched_path).convert("RGBA")
+            with Image.open(matched_path) as raw_img:
+                img = raw_img.convert("RGBA")
             img = img.resize((24, 24), Image.Resampling.LANCZOS)
             photo = ImageTk.PhotoImage(img)
             self._icon_cache[cache_key] = photo

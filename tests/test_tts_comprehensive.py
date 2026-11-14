@@ -460,5 +460,87 @@ class TestGSIIntegrationAndBargeIn(unittest.TestCase):
         self.assertFalse(should_alert)
 
 
+class TestTTSHardeningAndBugFixes(unittest.TestCase):
+    """Тесты на предотвращение скрытых дефектов и стабильность TTS."""
+
+    def test_priority_queue_close_with_pending_items(self):
+        """Проверка, что close() не падает с TypeError при наличии элементов в очереди."""
+        import queue
+        from aidota.tts import _TTS_STOP, _QueueItem
+
+        q = queue.PriorityQueue()
+        item1 = _QueueItem(priority=1, seq=1, enqueued_at=0, ttl=0, text="test1", done_event=threading.Event())
+        item2 = _QueueItem(priority=2, seq=2, enqueued_at=0, ttl=0, text="test2", done_event=threading.Event())
+        q.put(item1)
+        q.put(item2)
+        # Добавление _TTS_STOP должно пройти без исключения TypeError
+        q.put(_TTS_STOP)
+        popped = q.get()
+        self.assertIs(popped, _TTS_STOP)
+
+    def test_stereo_audio_resampling_safety(self):
+        """Проверка безопасного ресемплинга 2D-стереомассива без ошибки np.interp."""
+        cfg = TtsConfig(enabled=True)
+        mgr = HumanTTSManager(cfg)
+        try:
+            arr = np.zeros((100, 2), dtype=np.float32)
+            # Мокаем sd.play и sd.query_devices так, чтобы запросить ресемплинг
+            with patch("sounddevice.query_devices", return_value={"default_samplerate": 48000}), \
+                 patch("sounddevice.play") as mock_play, \
+                 patch("sounddevice.get_stream", return_value=None):
+                mgr._play_audio(arr, 24000)
+                self.assertTrue(mock_play.called)
+        finally:
+            mgr.close()
+
+    def test_smart_cache_thread_pruning_and_provider_keys(self):
+        """Проверка очистки завершённых потоков и разделения кэша по провайдерам."""
+        with tempfile.TemporaryDirectory() as td:
+            cache = SmartAudioCache(Path(td))
+            key_edge = cache._hash_key("фраза", "voice1", "+0%", "+0Hz", provider="edge")
+            key_piper = cache._hash_key("фраза", "voice1", "+0%", "+0Hz", provider="piper")
+            self.assertNotEqual(key_edge, key_piper)
+
+            data = np.zeros(100, dtype=np.float32)
+            for i in range(5):
+                cache.put(f"текст {i}", "v", "r", "p", data, 48000, async_save=True)
+            cache.wait_pending(timeout=2.0)
+            # После wait_pending и нового вызова put() все мёртвые потоки очищаются
+            cache.put("новый текст", "v", "r", "p", data, 48000, async_save=False)
+            self.assertEqual(len(cache._save_threads), 0)
+
+    def test_phonetic_fixes_and_slang(self):
+        """Проверка склонений терзателя, латинского множественного числа, математических знаков и новых терминов."""
+        self.assertIn("терза+теля", normalize_for_speech("убей терзателя").lower())
+        self.assertIn("терза+телю", normalize_for_speech("иди к терзателю").lower())
+        self.assertIn("терза+телем", normalize_for_speech("драка под терзателем").lower())
+
+        # Латинские множественные числа не должны оставлять английскую 's' на конце
+        self.assertEqual("агани+м", normalize_for_speech("aghanims").lower())
+        self.assertEqual("роша+н", normalize_for_speech("roshans").lower())
+        self.assertEqual("торме+нтор", normalize_for_speech("tormentors").lower())
+
+        # Математические символы
+        hp_math = normalize_for_speech("хп < 25%")
+        self.assertIn("хэпэ", hp_math.lower())
+        self.assertIn("меньше", hp_math.lower())
+        self.assertIn("процентов", hp_math.lower())
+        self.assertNotIn("<", hp_math)
+        self.assertNotIn("%", hp_math)
+
+        # Новые предметы 7.36/7.37
+        self.assertIn("кха+нда", normalize_for_speech("купи khanda").lower())
+        self.assertIn("пара+сма", normalize_for_speech("собери parasma").lower())
+        self.assertIn("гарпу+н", normalize_for_speech("жми harpoon").lower())
+        self.assertIn("диспе+рсер", normalize_for_speech("активируй disperser").lower())
+
+        # Сленговые сокращения
+        self.assertIn("уровень", normalize_for_speech("шестой лвл").lower())
+        self.assertIn("двойной урон", normalize_for_speech("взял дд").lower())
+        self.assertIn("байбек", normalize_for_speech("есть бб").lower())
+        self.assertIn("хайграунд", normalize_for_speech("зашли на хг").lower())
+        self.assertIn("тэ два", normalize_for_speech("пушь т2").lower())
+
+
 if __name__ == "__main__":
     unittest.main()

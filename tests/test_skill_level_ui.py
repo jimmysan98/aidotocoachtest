@@ -145,11 +145,12 @@ class SkillLevelWebApiTests(unittest.TestCase):
         self.config_path = self.temp_dir / "config.json"
         self.config = Config()
         save_config(self.config, self.config_path)
-        self.ctrl = WebGuiController(self.config, self.config_path)
+        self.ctrl = WebGuiController(self.config, self.config_path, enable_tray=False)
         self.api = AidotaWebApi(self.ctrl)
 
     def tearDown(self) -> None:
-        self.ctrl.tray.stop()
+        if self.ctrl.tray:
+            self.ctrl.tray.stop()
         self.ctrl.assistant = None
         remove_temp_dir(self.temp_dir)
 

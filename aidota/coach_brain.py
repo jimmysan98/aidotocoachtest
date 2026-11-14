@@ -67,7 +67,7 @@ _QUERY_KIND_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "lane",
         (
-            "линия", "линии", "лейн", "стою на", "харрасс", "харас", "ластхит",
+            "линия", "линии", "линию", "лейн", "лейне", "стою на", "харрасс", "харас", "ластхит",
             "под вишкой", "у вышки", "отвод", "стандартная линия",
         ),
     ),
@@ -651,6 +651,8 @@ def build_brief(
         "score": "",
         "my_team": None,
         "hero_name": None,
+        "facet": None,
+        "statuses": [],
         "hero_level": None,
         "alive": None,
         "respawn_seconds": None,
@@ -739,6 +741,15 @@ def build_brief(
         resolved = catalog.by_npc(str(hero_data.get("name"))) if catalog is not None else None
         hero_name = (resolved or {}).get("localized_name")
     brief["hero_name"] = hero_name
+
+    facet_val = hero_data.get("facet")
+    brief["facet"] = facet_val if (facet_val is not None and facet_val is not False) else None
+
+    cc_keys = (
+        "stunned", "silenced", "disarmed", "break", "hexed",
+        "magicimmune", "rooted", "muted", "taunted"
+    )
+    brief["statuses"] = [k for k in cc_keys if hero_data.get(k)]
 
     brief["hero_level"] = _safe_call(ctx, "_i", hero_data.get("level"))
     brief["alive"] = hero_data.get("alive")
@@ -920,6 +931,8 @@ def render_brief(brief: dict[str, Any], *, max_chars: int = 1100) -> str:
     hero_bits: list[str] = []
     if brief.get("hero_name"):
         hero_bits.append(f"герой {brief['hero_name']}")
+    if brief.get("facet"):
+        hero_bits.append(f"аспект {brief['facet']}")
     if brief.get("hero_level"):
         hero_bits.append(f"ур. {brief['hero_level']}")
     if brief.get("kda"):
@@ -928,6 +941,8 @@ def render_brief(brief: dict[str, Any], *, max_chars: int = 1100) -> str:
         hero_bits.append(f"HP {float(brief['hp_percent']):.0f}%")
     if brief.get("mana_percent") is not None:
         hero_bits.append(f"мана {float(brief['mana_percent']):.0f}%")
+    if brief.get("statuses"):
+        hero_bits.append(f"контроль: {', '.join(brief['statuses'])}")
     if brief.get("alive") is False:
         hero_bits.append("мёртв")
     if hero_bits:
@@ -1370,6 +1385,10 @@ def render_system_prompt(
 _EMOJI_RE = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F\u200D]")
 _CODE_FENCE_RE = re.compile(r"```.*?```", re.S)
 _INLINE_CODE_RE = re.compile(r"`([^`]*)`")
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_TABLE_DIVIDER_RE = re.compile(r"(?:^|\n)\s*\|?[-:| ]+\|?\s*(?=\n|$)", re.M)
+_TABLE_PIPE_RE = re.compile(r"\|")
 _MD_TOKEN_RE = re.compile(r"\*\*|__|~~|\*|`")
 _HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s*", re.M)
 _QUOTE_RE = re.compile(r"^\s{0,3}>\s?", re.M)
@@ -1395,6 +1414,10 @@ _REFUSAL_MARKERS = (
 def _strip_markdown(text: str) -> str:
     text = _CODE_FENCE_RE.sub(" ", text)
     text = _INLINE_CODE_RE.sub(r"\1", text)
+    text = _MD_LINK_RE.sub(r"\1", text)
+    text = _HTML_TAG_RE.sub(" ", text)
+    text = _TABLE_DIVIDER_RE.sub("\n", text)
+    text = _TABLE_PIPE_RE.sub(" ", text)
     text = _MD_TOKEN_RE.sub("", text)
     text = _HEADING_RE.sub("", text)
     text = _QUOTE_RE.sub("", text)
@@ -1523,6 +1546,8 @@ def is_voice_safe(text: str, *, max_chars: int = 260) -> bool:
     if len(text) > max_chars:
         return False
     if _MD_TOKEN_RE.search(text) or "```" in text or _BULLET_RE.search(text) or _NUMBERED_RE.search(text):
+        return False
+    if _MD_LINK_RE.search(text) or _HTML_TAG_RE.search(text) or "|" in text:
         return False
     if _EMOJI_RE.search(text):
         return False

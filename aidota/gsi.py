@@ -25,23 +25,25 @@ class GsiError(RuntimeError):
     pass
 
 
-def deep_merge(base: dict, update: dict) -> dict:
+def deep_merge(base: dict, update: dict, max_depth: int = 15) -> dict:
     """Рекурсивно сливает новые данные GSI с предыдущим снимком.
 
     Dota присылает не все секции в каждом пакете (например, драфт
     перестаёт приходить после начала игры), поэтому объединяем.
     Не мутирует исходный base, копирует вложенные структуры без дорогого copy.deepcopy.
     """
+    if max_depth <= 0:
+        return copy.deepcopy(update)
     result = dict(base)
     for key, value in update.items():
         if isinstance(value, dict) and isinstance(result.get(key), dict):
-            result[key] = deep_merge(result[key], value)
+            result[key] = deep_merge(result[key], value, max_depth=max_depth - 1)
         elif value is not None:
             if isinstance(value, dict):
-                result[key] = deep_merge({}, value)
+                result[key] = deep_merge({}, value, max_depth=max_depth - 1)
             elif isinstance(value, list):
                 result[key] = [
-                    deep_merge({}, item) if isinstance(item, dict)
+                    deep_merge({}, item, max_depth=max_depth - 1) if isinstance(item, dict)
                     else (list(item) if isinstance(item, list) else item)
                     for item in value
                 ]
@@ -53,6 +55,7 @@ def deep_merge(base: dict, update: dict) -> dict:
 class _Handler(BaseHTTPRequestHandler):
     server_version = "AIDOTA-GSI/1.0"
     protocol_version = "HTTP/1.1"
+    timeout = 10.0
 
     # ------------------------------------------------------------------ #
     def do_POST(self) -> None:  # noqa: N802 — HTTP-метод
@@ -62,7 +65,8 @@ class _Handler(BaseHTTPRequestHandler):
         except (TypeError, ValueError):
             length = 0
         if length <= 0 or length > MAX_BODY:
-            self._respond(400)
+            self.close_connection = True
+            self._respond(400, close=True)
             return
         try:
             raw_body = self.rfile.read(length)
@@ -77,7 +81,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._respond(400)
             return
 
-        token = (payload.get("auth") or {}).get("token")
+        auth = payload.get("auth")
+        token = auth.get("token") if isinstance(auth, dict) else None
         if not server.check_token(token):
             log.warning("GSI: неверный токен, запрос отклонён")
             self._respond(401)
@@ -93,11 +98,14 @@ class _Handler(BaseHTTPRequestHandler):
         # Dota 2 использует только POST; GET отвечаем для отладки.
         self._respond(405)
 
-    def _respond(self, code: int) -> None:
+    def _respond(self, code: int, close: bool = False) -> None:
         self.send_response(code)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Length", "0")
-        self.send_header("Connection", "keep-alive")
+        if close or getattr(self, "close_connection", False):
+            self.send_header("Connection", "close")
+        else:
+            self.send_header("Connection", "keep-alive")
         self.end_headers()
 
     def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
@@ -161,7 +169,8 @@ class GsiServer:
             self._cached_snapshot = None
             self._received_at = time.time()
             self._count += 1
-        provider = (payload.get("provider") or {}).get("name", "?")
+        provider_data = payload.get("provider")
+        provider = provider_data.get("name", "?") if isinstance(provider_data, dict) else "?"
         log.debug("GSI #%d от %s", self._count, provider)
 
     # ------------------------------------------------------------------ #
@@ -172,7 +181,7 @@ class GsiServer:
                 return None
             if self._cached_snapshot is None:
                 self._cached_snapshot = copy.deepcopy(self._payload)
-            return copy.deepcopy(self._cached_snapshot)
+            return self._cached_snapshot
 
     @property
     def received_at(self) -> float | None:

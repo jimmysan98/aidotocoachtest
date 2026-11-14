@@ -38,7 +38,7 @@
     "id": 185
   },
   "angels_demise": {
-    "cost": 5600,
+    "cost": 5000,
     "dname": "Khanda",
     "id": 1808
   },
@@ -379,7 +379,7 @@
     "id": 292
   },
   "devastator": {
-    "cost": 5975,
+    "cost": 5575,
     "dname": "Parasma",
     "id": 1806
   },
@@ -792,7 +792,7 @@
     "id": 1863
   },
   "harpoon": {
-    "cost": 4700,
+    "cost": 4800,
     "dname": "Harpoon",
     "id": 939
   },
@@ -1444,7 +1444,7 @@
     "id": 103
   },
   "recipe_devastator": {
-    "cost": 400,
+    "cost": 0,
     "dname": "Parasma Recipe",
     "id": 1805
   },

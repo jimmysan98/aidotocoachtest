@@ -16,11 +16,12 @@ class TestWebApiController(unittest.TestCase):
         save_config(self.config, self.config_path)
 
         # Мокаем WebGuiController без запуска GUI цикла
-        self.ctrl = WebGuiController(self.config, self.config_path)
+        self.ctrl = WebGuiController(self.config, self.config_path, enable_tray=False)
         self.api = AidotaWebApi(self.ctrl)
 
     def tearDown(self):
-        self.ctrl.tray.stop()
+        if self.ctrl.tray:
+            self.ctrl.tray.stop()
         self.temp_dir.cleanup()
 
     def test_get_state(self):

@@ -2815,3 +2815,11 @@ class Coach:
         lines.append("3. Адаптируйте закуп под контроль и типы урона в драфте противника.")
 
         return "\n".join(lines)
+
+    def close(self) -> None:
+        """Освобождает ресурсы, включая HTTP-сессию."""
+        if hasattr(self, "_session") and self._session is not None:
+            try:
+                self._session.close()
+            except Exception:
+                pass
