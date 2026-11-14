@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 import re
 from typing import Any, Iterable
@@ -59,18 +60,18 @@ TAG_COUNTER_ITEMS: dict[str, tuple[str, ...]] = {
     "heal_regen": ("Spirit Vessel", "Eye of Skadi", "Shiva's Guard"),
     "passives": ("Silver Edge",),
     "saves_buffs": ("Nullifier",),
-    "magic_burst_cc": ("Black King Bar", "Pipe of Insight", "Mage Slayer"),
+    "magic_burst_cc": ("Black King Bar", "Pipe of Insight", "Mage Slayer", "Parasma"),
     "single_target_cc": ("Linken's Sphere", "Lotus Orb"),
     "illusions_swarms": ("Mjollnir", "Shiva's Guard", "Battle Fury", "Crimson Guard"),
-    "right_clickers": ("Heaven's Halberd", "Ghost Scepter", "Blade Mail"),
-    "high_mobility": ("Orchid Malevolence", "Scythe of Vyse", "Rod of Atos", "Gleipnir"),
+    "right_clickers": ("Heaven's Halberd", "Ghost Scepter", "Blade Mail", "Harpoon"),
+    "high_mobility": ("Orchid Malevolence", "Scythe of Vyse", "Rod of Atos", "Gleipnir", "Disperser"),
     "invis": ("Dust of Appearance", "Sentry Ward", "Gem of True Sight", "Silver Edge"),
     "summons": ("Mjollnir", "Crimson Guard", "Battle Fury", "Shiva's Guard"),
     "silence": ("Black King Bar", "Eul's Scepter of Divinity", "Lotus Orb", "Manta Style"),
     "global_presence": ("Black King Bar", "Pipe of Insight", "Lotus Orb"),
     "split_push": ("Boots of Travel", "Manta Style", "Battle Fury"),
     "tanky": ("Spirit Vessel", "Eye of Skadi", "Shiva's Guard", "Diffusal Blade"),
-    "burst": ("Black King Bar", "Aeon Disk", "Lotus Orb", "Pipe of Insight"),
+    "burst": ("Black King Bar", "Aeon Disk", "Lotus Orb", "Pipe of Insight", "Khanda"),
 }
 
 # Короткие русские описания тегов — для фраз тренера («чем опасен герой»).
@@ -122,8 +123,8 @@ SITUATIONAL_COUNTER_RULES: list[dict[str, Any]] = [
     {
         "threat": "magic_burst_cc",
         "description": "Тяжелый магический урон и контроль (Lion, Lina, Zeus, Shaman, Jakiro)",
-        "items": ["Black King Bar", "Pipe of Insight", "Mage Slayer"],
-        "tip": "BKB даёт невосприимчивость к магии; Mage Slayer режет урон вражеского мага на 40%.",
+        "items": ["Black King Bar", "Pipe of Insight", "Mage Slayer", "Parasma"],
+        "tip": "BKB даёт невосприимчивость к магии; Mage Slayer режет урон вражеского мага на 40%, а Parasma снижает маг-резист цели.",
     },
     {
         "threat": "single_target_cc",
@@ -140,14 +141,14 @@ SITUATIONAL_COUNTER_RULES: list[dict[str, Any]] = [
     {
         "threat": "right_clickers",
         "description": "Мощные райткликеры (Sven, Ursa, Sniper, Troll Warlord)",
-        "items": ["Heaven's Halberd", "Ghost Scepter", "Blade Mail"],
-        "tip": "Halberd даёт 5 секунд обезоруживания (дизарма), которое невозможно снять BKB.",
+        "items": ["Heaven's Halberd", "Ghost Scepter", "Blade Mail", "Harpoon"],
+        "tip": "Halberd даёт 5 секунд обезоруживания (дизарма), которое невозможно снять BKB; Harpoon даёт сближение с целью.",
     },
     {
         "threat": "high_mobility",
         "description": "Высокая мобильность и эскейпы (Storm Spirit, Puck, Ember Spirit, Weaver, Void Spirit)",
-        "items": ["Orchid Malevolence", "Scythe of Vyse", "Rod of Atos", "Gleipnir"],
-        "tip": "Моментальный сайленс или хекс не дают нажать прыжок или ульт.",
+        "items": ["Orchid Malevolence", "Scythe of Vyse", "Rod of Atos", "Gleipnir", "Disperser"],
+        "tip": "Моментальный сайленс или хекс не дают нажать прыжок или ульт; Disperser снимает замедление с союзников.",
     },
     {
         "threat": "invis",
@@ -187,9 +188,9 @@ SITUATIONAL_COUNTER_RULES: list[dict[str, Any]] = [
     },
     {
         "threat": "burst",
-        "description": "Высокий бурст-урон (Lina, Lion, Tiny, Morphling)",
-        "items": ["Black King Bar", "Aeon Disk", "Lotus Orb", "Pipe of Insight"],
-        "tip": "Aeon Disk и BKB переживают прокаст, после которого враг остаётся без кулдаунов.",
+        "description": "Высокий бурст-урон (Lina, Lion, Tiny, Morphling, Sniper)",
+        "items": ["Black King Bar", "Aeon Disk", "Lotus Orb", "Pipe of Insight", "Khanda"],
+        "tip": "Aeon Disk и BKB переживают прокаст; Khanda даёт мощный ответный взрывной урон с направленных способностей.",
     },
 ]
 
@@ -2069,23 +2070,42 @@ _HERO_ID_ALIASES: dict[str, str] = {
     "qop": "queenofpain",
     "anti_mage": "antimage",
     "am": "antimage",
+    "ам": "antimage",
     "cm": "crystal_maiden",
+    "цм": "crystal_maiden",
     "crystalmaiden": "crystal_maiden",
     "pa": "phantom_assassin",
+    "па": "phantom_assassin",
     "phantomassassin": "phantom_assassin",
     "pl": "phantom_lancer",
+    "пл": "phantom_lancer",
     "potm": "mirana",
+    "потм": "mirana",
     "kotl": "keeper_of_the_light",
+    "котл": "keeper_of_the_light",
     "ns": "night_stalker",
+    "нс": "night_stalker",
     "bh": "bounty_hunter",
+    "бх": "bounty_hunter",
     "bs": "bloodseeker",
+    "бс": "bloodseeker",
     "bristle": "bristleback",
     "skeletonking": "skeleton_king",
     "obsidian": "obsidian_destroyer",
     "furionn": "furion",
     "sb": "spirit_breaker",
     "wr": "windrunner",
+    "вр": "windrunner",
     "lc": "legion_commander",
+    "лс": "legion_commander",
+    "сф": "nevermore",
+    "од": "obsidian_destroyer",
+    "вк": "skeleton_king",
+    "дк": "dragon_knight",
+    "цк": "chaos_knight",
+    "шд": "shadow_demon",
+    "вд": "witch_doctor",
+    "аа": "ancient_apparition",
 }
 
 
@@ -2394,9 +2414,49 @@ def _finalize_meta_db(database: dict[str, dict[str, Any]]) -> None:
     for meta in database.values():
         meta["countered_by"] = meta["countered_by"][:10]
         meta["synergies"] = meta["synergies"][:8]
+        meta["_counters_set"] = frozenset(meta["counters"])
+        meta["_countered_by_set"] = frozenset(meta["countered_by"])
+        meta["_synergies_set"] = frozenset(meta["synergies"])
+        meta["_tags_set"] = frozenset(meta.get("tags") or ())
 
 
 _finalize_meta_db(META_HEROES_DB)
+
+
+# ---------------------------------------------------------------------------
+# Быстрый индекс для поиска героя O(1)
+# ---------------------------------------------------------------------------
+_HERO_FAST_INDEX: dict[str, dict[str, Any]] = {}
+
+
+def _build_hero_fast_index(database: dict[str, dict[str, Any]]) -> None:
+    global _HERO_FAST_INDEX
+    index: dict[str, dict[str, Any]] = {}
+    for hero_id, meta in database.items():
+        index[hero_id] = meta
+        index[hero_id.lower()] = meta
+        k_id = _norm_hero_key(hero_id)
+        if k_id:
+            index[k_id] = meta
+        name_k = _norm_hero_key(meta.get("name"))
+        if name_k:
+            index[name_k] = meta
+        ru_name_k = _norm_hero_key(meta.get("ru_name"))
+        if ru_name_k:
+            index[ru_name_k] = meta
+
+    for alias, target_id in _HERO_ID_ALIASES.items():
+        if target_id in database:
+            meta = database[target_id]
+            index[alias.lower()] = meta
+            k = _norm_hero_key(alias)
+            if k:
+                index[k] = meta
+
+    _HERO_FAST_INDEX = index
+
+
+_build_hero_fast_index(META_HEROES_DB)
 
 
 # ---------------------------------------------------------------------------
@@ -2442,36 +2502,33 @@ def _ru_alias_index() -> dict[str, str]:
 
 
 def get_hero_meta_entry(hero_name: str) -> dict[str, Any] | None:
-    """Ищет героя в базе по id, английскому или русскому имени (и прозвищам)."""
+    """Ищет героя в базе по id, английскому или русскому имени (и прозвищам) за O(1)."""
     raw = str(hero_name or "").strip()
     if not raw:
         return None
     lower = raw.lower().replace("npc_dota_hero_", "").strip()
-    if lower in META_HEROES_DB:
-        return META_HEROES_DB[lower]
-    alias_id = _HERO_ID_ALIASES.get(lower)
-    if alias_id in META_HEROES_DB:
-        return META_HEROES_DB[alias_id]
+    entry = _HERO_FAST_INDEX.get(lower)
+    if entry is not None:
+        return entry
 
     key = _norm_hero_key(raw)
     if not key:
         return None
-    for hero_id, meta in META_HEROES_DB.items():
-        if key == _norm_hero_key(hero_id):
-            return meta
-        if key == _norm_hero_key(meta.get("name")):
-            return meta
-        if key == _norm_hero_key(meta.get("ru_name")):
-            return meta
+    entry = _HERO_FAST_INDEX.get(key)
+    if entry is not None:
+        return entry
 
     alias_target = _ru_alias_index().get(key)
-    if alias_target:
-        return META_HEROES_DB[alias_target]
+    if alias_target and alias_target in META_HEROES_DB:
+        meta = META_HEROES_DB[alias_target]
+        _HERO_FAST_INDEX[key] = meta
+        return meta
 
     if len(key) >= 4:
         for meta in META_HEROES_DB.values():
             for candidate in (_norm_hero_key(meta.get("name")), _norm_hero_key(meta.get("ru_name"))):
                 if candidate and len(candidate) >= 4 and (key in candidate or candidate in key):
+                    _HERO_FAST_INDEX[key] = meta
                     return meta
     return None
 
@@ -2774,11 +2831,22 @@ def recommend_picks(
     except (TypeError, ValueError):
         count = 4
 
-    enemy_ids = _resolve_hero_ids(enemy_heroes)
-    ally_ids = _resolve_hero_ids(ally_heroes)
-    banned_ids = _resolve_hero_ids(banned_heroes)
+    enemy_ids = tuple(_resolve_hero_ids(enemy_heroes))
+    ally_ids = tuple(_resolve_hero_ids(ally_heroes))
+    banned_ids = tuple(_resolve_hero_ids(banned_heroes))
+    return _recommend_picks_cached(enemy_ids, ally_ids, role_norm, count, banned_ids)
+
+
+@functools.lru_cache(maxsize=128)
+def _recommend_picks_cached(
+    enemy_ids: tuple[str, ...],
+    ally_ids: tuple[str, ...],
+    role_norm: int,
+    count: int,
+    banned_ids: tuple[str, ...],
+) -> list[dict[str, Any]]:
     excluded = set(enemy_ids) | set(ally_ids) | set(banned_ids)
-    needs = _draft_needs(ally_ids)
+    needs = _draft_needs(list(ally_ids))
 
     candidates: list[tuple[float, dict[str, Any]]] = []
 
@@ -2788,10 +2856,10 @@ def recommend_picks(
         if role_norm not in (meta.get("roles") or []):
             continue
 
-        counter_ids = set(meta.get("counters") or [])
-        countered_by_ids = set(meta.get("countered_by") or [])
-        synergy_ids = set(meta.get("synergies") or [])
-        candidate_tags = set(meta.get("tags") or ())
+        counter_ids = meta.get("_counters_set") or set(meta.get("counters") or [])
+        countered_by_ids = meta.get("_countered_by_set") or set(meta.get("countered_by") or [])
+        synergy_ids = meta.get("_synergies_set") or set(meta.get("synergies") or [])
+        candidate_tags = meta.get("_tags_set") or set(meta.get("tags") or ())
 
         score = 50.0
         strong_against: list[str] = []

@@ -542,13 +542,28 @@ class Coach:
             system += "\n\nДЛЯ ОБЪЯСНЕНИЯ: допустимо 2–3 коротких предложения, но без лекций."
         temperature = self._temperature_for(kind)
         max_tokens = self._max_tokens_for(kind)
-        raw = self.chat(
-            prompt,
-            system=system,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            include_dynamic=False,
-        )
+
+        stop_filler = None
+        if hasattr(self, "tts") and self.tts is not None and hasattr(self.tts, "start_filler_timer"):
+            stop_filler = self.tts.start_filler_timer(0.8)
+        elif hasattr(self, "on_thinking_timer") and callable(self.on_thinking_timer):
+            stop_filler = self.on_thinking_timer(0.8)
+
+        try:
+            raw = self.chat(
+                prompt,
+                system=system,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                include_dynamic=False,
+            )
+        finally:
+            if stop_filler is not None:
+                try:
+                    stop_filler()
+                except Exception:
+                    pass
+
         clean = sanitize_answer(
             raw,
             max_chars=max_chars,

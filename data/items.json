@@ -2296,5 +2296,25 @@
     "cost": 4200,
     "dname": "Yasha and Kaya",
     "id": 277
+  },
+  "khanda": {
+    "cost": 5000,
+    "dname": "Khanda",
+    "id": 1124
+  },
+  "recipe_khanda": {
+    "cost": 600,
+    "dname": "Khanda Recipe",
+    "id": 1126
+  },
+  "parasma": {
+    "cost": 5575,
+    "dname": "Parasma",
+    "id": 1125
+  },
+  "recipe_parasma": {
+    "cost": 0,
+    "dname": "Parasma Recipe",
+    "id": 1127
   }
 }

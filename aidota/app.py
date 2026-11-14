@@ -24,7 +24,7 @@ from .icons import count_icons, fetch_hero_icons
 from .logging_setup import get_logger
 from .overlay import Overlay
 from .roles import position_label
-from .tts import Tts
+from .tts import HumanTTSManager, SpeechPriority, Tts
 from .vision import HeroVision
 
 BANNER = """
@@ -71,10 +71,11 @@ class Assistant:
             if config.overlay.enabled
             else None
         )
-        self._tts = Tts(config.tts, config.cache_path)
+        self._tts = HumanTTSManager(config.tts, config.cache_path)
         self._voice = VoiceInput(config.audio, PROJECT_ROOT)
         self._api = DotaApi(config.data_path)
         self._catalog = HeroCatalog([])
+        self._low_hp_alerted = False
         self._gsi: GsiServer | None = None
         if config.gsi.enabled:
             self._gsi = GsiServer(config.gsi.host, config.gsi.port, config.gsi.token)
@@ -88,6 +89,7 @@ class Assistant:
             coach_name=coach_name,
             memory_size=config.memory_size,
         )
+        self._coach.tts = self._tts
         autonomy = getattr(config.player_profile, "autonomy_level", "medium")
         self._agent = AutonomousCoachAgent(
             autonomy_level=autonomy,
@@ -315,11 +317,30 @@ class Assistant:
             def _skills_monitor() -> None:
                 while not self.stop_event.is_set():
                     try:
+                        payload = self._coach.gsi_payload()
+                        if payload:
+                            # 1. Проверка критического уровня здоровья (< 25% HP) и опасности (Barge-In)
+                            hero_data = payload.get("hero") or {}
+                            if isinstance(hero_data, dict) and hero_data.get("alive") is not False:
+                                hp_pct = hero_data.get("health_percent")
+                                if hp_pct is not None:
+                                    try:
+                                        hp_val = float(hp_pct)
+                                        if hp_val < 25.0 and not self._low_hp_alerted:
+                                            self._low_hp_alerted = True
+                                            self._say(
+                                                "Внимание, критически мало хэпэ! Отойди под вышку или жми стики!",
+                                                priority=SpeechPriority.CRITICAL,
+                                            )
+                                        elif hp_val >= 40.0:
+                                            self._low_hp_alerted = False
+                                    except (ValueError, TypeError):
+                                        pass
+
                         alert = self._coach.check_skills_alerts()
                         if alert:
-                            self._say(alert)
+                            self._say(alert, priority=SpeechPriority.TIMERS, ttl=5.0)
 
-                        payload = self._coach.gsi_payload()
                         if payload and self._overlay is not None:
                             hud_text = self._overlay_hud_text(payload)
                             if hud_text:
@@ -333,7 +354,7 @@ class Assistant:
                             )
                             if agent_advice:
                                 self.log.info("Автономный совет тренера: %s", agent_advice)
-                                self._say(agent_advice)
+                                self._say(agent_advice, priority=SpeechPriority.LLM_COACH)
                     except Exception as exc:  # noqa: BLE001
                         self.log.debug("Ошибка в мониторе скиллов/автономного тренера: %s", exc)
                     self.stop_event.wait(1.0)
@@ -1120,7 +1141,7 @@ class Assistant:
 
     def _answer(self, text: str) -> None:
         self._last_answer = text
-        self._say(text)
+        self._say(text, priority=SpeechPriority.LLM_COACH)
 
     def _resolve_hero(self, intent: Intent) -> dict | None:
         if intent.hero is not None:
@@ -1181,7 +1202,14 @@ class Assistant:
         if self._overlay is not None:
             self._overlay.update_status(text)
 
-    def _say(self, text: str, *, speak: bool = True) -> None:
+    def _say(
+        self,
+        text: str,
+        *,
+        speak: bool = True,
+        priority: int = SpeechPriority.NORMAL,
+        ttl: float = 0.0,
+    ) -> None:
         text = re.sub(r"\n{3,}", "\n\n", str(text or "")).strip()
         if not text:
             return
@@ -1209,7 +1237,7 @@ class Assistant:
             if self._overlay is not None:
                 self._overlay.update_status("Озвучиваю…")
             try:
-                ok = self._tts.speak(text, wait=True)
+                ok = self._tts.speak(text, wait=True, priority=priority, ttl=ttl)
             finally:
                 if self._voice.ready:
                     self._voice.set_muted(False)

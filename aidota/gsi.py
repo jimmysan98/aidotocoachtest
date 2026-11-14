@@ -30,13 +30,23 @@ def deep_merge(base: dict, update: dict) -> dict:
 
     Dota присылает не все секции в каждом пакете (например, драфт
     перестаёт приходить после начала игры), поэтому объединяем.
+    Не мутирует исходный base, копирует вложенные структуры без дорогого copy.deepcopy.
     """
     result = dict(base)
     for key, value in update.items():
         if isinstance(value, dict) and isinstance(result.get(key), dict):
             result[key] = deep_merge(result[key], value)
         elif value is not None:
-            result[key] = copy.deepcopy(value)
+            if isinstance(value, dict):
+                result[key] = deep_merge({}, value)
+            elif isinstance(value, list):
+                result[key] = [
+                    deep_merge({}, item) if isinstance(item, dict)
+                    else (list(item) if isinstance(item, list) else item)
+                    for item in value
+                ]
+            else:
+                result[key] = value
     return result
 
 
@@ -55,7 +65,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._respond(400)
             return
         try:
-            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            raw_body = self.rfile.read(length)
+            payload = json.loads(raw_body.decode("utf-8"))
+        except (ConnectionError, BrokenPipeError):
+            return
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             log.debug("Плохой JSON от Dota 2: %s", exc)
             self._respond(400)
@@ -71,7 +84,10 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         server._store(payload)  # noqa: SLF001 — намеренно внутренний API
-        self._respond(200)
+        try:
+            self._respond(200)
+        except (ConnectionError, BrokenPipeError):
+            pass
 
     def do_GET(self) -> None:  # noqa: N802
         # Dota 2 использует только POST; GET отвечаем для отладки.
@@ -81,7 +97,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Length", "0")
-        self.send_header("Connection", "close")
+        self.send_header("Connection", "keep-alive")
         self.end_headers()
 
     def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
@@ -95,6 +111,7 @@ class GsiServer:
         self.token = token
         self._lock = threading.RLock()
         self._payload: dict = {}
+        self._cached_snapshot: dict | None = None
         self._received_at: float | None = None
         self._count = 0
         self._httpd: ThreadingHTTPServer | None = None
@@ -141,6 +158,7 @@ class GsiServer:
     def _store(self, payload: dict) -> None:
         with self._lock:
             self._payload = deep_merge(self._payload, payload)
+            self._cached_snapshot = None
             self._received_at = time.time()
             self._count += 1
         provider = (payload.get("provider") or {}).get("name", "?")
@@ -152,7 +170,9 @@ class GsiServer:
         with self._lock:
             if not self._payload:
                 return None
-            return copy.deepcopy(self._payload)
+            if self._cached_snapshot is None:
+                self._cached_snapshot = copy.deepcopy(self._payload)
+            return copy.deepcopy(self._cached_snapshot)
 
     @property
     def received_at(self) -> float | None:

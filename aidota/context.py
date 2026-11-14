@@ -124,6 +124,21 @@ def _next_occurrence(minute: float, start: float, period: float) -> float:
     return start + (int((minute - start) // period) + 1) * period
 
 
+def roshan_pit_location(clock_seconds: Any = None, is_daytime: bool | None = None) -> str:
+    """Определяет, в каком логове находится Рошан (патч 7.33+):
+
+    Днём (0-5 мин, 10-15 мин...) — в нижнем логове (сторона Radiant).
+    Ночью (5-10 мин, 15-20 мин...) — в верхнем логове (сторона Dire).
+    """
+    if is_daytime is not None:
+        return "нижнем логове (Radiant, день)" if is_daytime else "верхнем логове (Dire, ночь)"
+    sec = _i(clock_seconds)
+    if sec is None or sec < 0:
+        return "нижнем логове (Radiant, день)"
+    cycle = (sec // 300) % 2
+    return "нижнем логове (Radiant, день)" if cycle == 0 else "верхнем логове (Dire, ночь)"
+
+
 def objectives_context(clock_seconds: Any, game_mode: Any = None) -> str:
     """Что из таймингов скоро наступит: руны, лотусы, Терзатель, Рошан."""
     minute = (_i(clock_seconds) or 0) / 60.0
@@ -132,34 +147,40 @@ def objectives_context(clock_seconds: Any, game_mode: Any = None) -> str:
     wisdom = _next_occurrence(minute, 7, 7)
     lotus = _next_occurrence(minute, 3, 3)
     tormentor = _next_occurrence(minute, 20, 10)
+    pit = roshan_pit_location(clock_seconds)
     parts = [
         f"руны мудрости {_fmt_minute(wisdom)}",
         f"лотусы {_fmt_minute(lotus)}",
         f"Терзатель {_fmt_minute(tormentor)}",
     ]
     if minute < 15:
-        parts.append("Рошан: первый Аегис примерно с 15:00")
+        parts.append(f"Рошан (в {pit}): первый Аегис примерно с 15:00")
     else:
-        parts.append("Рошан: возможно, жив (Аегис/Рефрешер)")
+        parts.append(f"Рошан (в {pit}): возможно, жив (Аегис/Рефрешер)")
     return "Ближайшие цели — " + ", ".join(parts) + "."
 
 
 def neutral_tier(minute: float, turbo: bool) -> int:
+    """Номер доступного разряда нейтральных предметов по минуте игры (патч 7.36/7.37)."""
     if turbo:
-        if minute < 4.5:
+        if minute < 7.5:
             return 1
-        if minute < 9:
+        if minute < 12.5:
             return 2
-        if minute < 14:
+        if minute < 17.5:
             return 3
-        return 4
-    if minute < 17:
+        if minute < 30.0:
+            return 4
+        return 5
+    if minute < 15.0:
         return 1
-    if minute < 27:
+    if minute < 25.0:
         return 2
-    if minute < 37:
+    if minute < 35.0:
         return 3
-    return 4
+    if minute < 60.0:
+        return 4
+    return 5
 
 
 def format_clock(seconds: Any) -> str:
@@ -1068,7 +1089,8 @@ def build_gsi_context(
 
     daytime = map_data.get("daytime")
     if isinstance(daytime, bool):
-        lines.append("Время суток: " + ("день" if daytime else "ночь") + ".")
+        pit = roshan_pit_location(map_data.get("clock_time"), daytime)
+        lines.append(f"Время суток: {'день' if daytime else 'ночь'} (Рошан в {pit}).")
 
     my_team = player.get("team_name")
     team_label = {"radiant": "Radiant", "dire": "Dire"}.get(str(my_team), "?")
@@ -1098,6 +1120,9 @@ def build_gsi_context(
         level = _i(hero.get("level"))
         if level is not None:
             hero_parts.append(f"ур. {level}")
+        facet = hero.get("facet")
+        if facet is not None:
+            hero_parts.append(f"аспект {facet}")
         if hero.get("alive") is False:
             respawn = _i(hero.get("respawn_seconds"))
             hero_parts.append(f"мёртв, респавн {'через ' + str(respawn) + ' c' if respawn is not None else ''}".strip())
@@ -1107,6 +1132,21 @@ def build_gsi_context(
         mana = _f(hero.get("mana_percent"))
         if mana is not None:
             hero_parts.append(f"мана {mana:.0f}%")
+        statuses = []
+        if hero.get("stunned"):
+            statuses.append("в стане")
+        if hero.get("silenced"):
+            statuses.append("в сайленсе")
+        if hero.get("disarmed"):
+            statuses.append("в дизарме")
+        if hero.get("break"):
+            statuses.append("истощён")
+        if hero.get("hexed"):
+            statuses.append("в хексе")
+        if hero.get("magicimmune"):
+            statuses.append("иммунитет к магии")
+        if statuses:
+            hero_parts.append(f"статус: {', '.join(statuses)}")
         buyback_cost = _i(hero.get("buyback_cost"))
         buyback_cd = _i(hero.get("buyback_cooldown"))
         if buyback_cost:

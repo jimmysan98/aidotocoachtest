@@ -193,12 +193,23 @@ class AudioConfig:
 @dataclass
 class TtsConfig:
     enabled: bool = True
-    provider: str = "edge"  # "edge" (нейросеть Svetlana/Dmitry) или "sapi" (локальный Windows)
-    edge_voice: str = "ru-RU-SvetlanaNeural"  # "ru-RU-SvetlanaNeural" или "ru-RU-DmitryNeural"
+    provider: str = "edge"  # "edge" (нейросеть Dmitry/Svetlana), "piper" или "sapi"
+    edge_voice: str = "ru-RU-DmitryNeural"  # "ru-RU-DmitryNeural" или "ru-RU-SvetlanaNeural"
+    # Настройки разговорной просодии edge-tts (живая речь, без монотонности)
+    rate_str: str = "+10%"
+    pitch_str: str = "-3Hz"
+    # Настройки Piper TTS (офлайн/fallback)
+    piper_noise_scale: float = 0.75
+    piper_length_scale: float = 0.92
+    # RVC Voice Conversion hook
+    rvc_enabled: bool = False
+    rvc_model_path: str = ""
+    # Локальное кэширование статических фраз
+    cache_audio: bool = True
     # Диапазон SAPI: -10 (медленно) .. 10 (быстро), 0 — норма.
     rate: int = 0
     volume: int = 100
-    voice_hint: str = "Irina"
+    voice_hint: str = "Dmitry"
     max_chars: int = 700
     output_device: int | str | None = None
 
