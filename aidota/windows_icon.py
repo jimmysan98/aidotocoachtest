@@ -49,11 +49,25 @@ def set_app_user_model_id() -> bool:
 
 def get_app_icon_path() -> Path | None:
     """Возвращает абсолютный путь к файлу иконки приложения (.ico)."""
-    candidates = (
+    candidates: list[Path] = []
+    if getattr(sys, "frozen", False):
+        # PyInstaller onefile: временная папка распаковки
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(Path(meipass) / "assets" / "icon.ico")
+        # PyInstaller onedir: папка рядом с exe или _internal
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates.extend([
+            exe_dir / "_internal" / "assets" / "icon.ico",
+            exe_dir / "assets" / "icon.ico",
+        ])
+
+    candidates.extend([
         PROJECT_ROOT / "assets" / "icon.ico",
         Path(__file__).resolve().parent.parent / "assets" / "icon.ico",
         Path(sys.executable).parent / "assets" / "icon.ico",
-    )
+    ])
+
     for path in candidates:
         if path.is_file():
             return path.resolve()
