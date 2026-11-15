@@ -11,7 +11,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-a855f7.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10–3.15-38bdf8.svg)](requirements.txt)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0ea5e9.svg)](#требования)
-[![Tests](https://img.shields.io/badge/tests-726%20passed-34d399.svg)](#тесты-и-качество)
+[![Tests](https://img.shields.io/badge/tests-731%20passed-34d399.svg)](#тесты-и-качество)
 [![Version](https://img.shields.io/badge/version-1.2.0-f59e0b.svg)](CHANGELOG.md)
 
 [Установка](#установка) · [Возможности](#возможности) · [Скриншоты](#скриншоты) ·
@@ -165,7 +165,7 @@ aidota/
 data/                   Снапшоты OpenDota (герои, предметы) + рантайм-память
 hero_icons/             Иконки героев
 assets/                 Логотип, иконки, баннер и скриншоты для README
-tests/                  Набор из 726 автоматических тестов (700+ unittest-тестов)
+tests/                  Набор из 731 автоматических тестов (unittest)
 ```
 
 ## Разработка
@@ -187,14 +187,10 @@ python -m venv .venv
 .venv\Scripts\python.exe -m unittest discover -s tests -t .
 ```
 
-- **726 тестов** (700+ тестов, unittest), все зелёные (1 skipped); CI — `.github/workflows/ci.yml`
+- **731 тест** (unittest), все зелёные (1 skipped); CI — `.github/workflows/ci.yml`
   (Windows, Python 3.12/3.13).
-- 72 новых теста (5 ключевых направлений):
-  - `test_gsi_edge_cases.py` (краевые случаи GSI-пакетов, битый JSON, spectator-режим);
-  - `test_live_advice_edge_cases.py` (расчёт нехватки золота, матрица контрпиков на все 127 героев, новые предметы 7.36/7.37);
-  - `test_tts_pipeline_hardening.py` (аудио-филлеры раздумий, фонетическая нормализация, лимиты SmartAudioCache, barge-in);
-  - `test_web_api_bridge.py` (вызовы методов AidotaWebApi JS API, офлайн-кэширование иконок, обработка ошибок);
-  - `test_windows_platform_integration.py` (устойчивость HWND, резолв ассетов в PyInstaller, трей).
+- Отдельные наборы: `test_rust_bridge.py`, `test_gsi_edge_cases.py`, `test_live_advice_edge_cases.py`,
+  `test_tts_pipeline_hardening.py`, `test_web_api_bridge.py`, `test_windows_platform_integration.py`,
 - Базовые наборы: `test_beginner_coach.py`, `test_coach_smart.py`,
   `test_tts_comprehensive.py`, `test_tts_utils.py`, `test_gsi_and_patch_db.py`,
   `test_windows_icon.py`, `test_coach_brain.py`, `test_meta_db_extra.py`,
