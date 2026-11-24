@@ -116,15 +116,15 @@
           <span class="status-text" id="coach-status-text">Остановлен</span>
         </div>
         <div class="status-pill skill-pill" id="skill-level-pill" title="Уровень игры, под который подстраивается тренер">
-          <span class="badge-icon">🎓</span>
+          <span class="badge-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 10v6M2 10l10-5 10 5-10 5z"/><path d="M6 12v5c0 2 3 3 6 3s6-1 6-3v-5"/></svg></span>
           <span class="status-text" id="skill-level-text">Новичок</span>
         </div>
         <div class="status-pill rust-pill" id="rust-status-pill" title="Нативное Rust-ускорение активно (aidota_rust.dll)">
-          <span class="badge-icon">⚡</span>
+          <span class="badge-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></span>
           <span class="status-text" id="rust-status-text">Rust Core</span>
         </div>
         <div class="hotkey-badge" id="ptt-badge" title="Клавиша голосового ввода Push-to-Talk">
-          <span class="badge-icon">🎙</span>
+          <span class="badge-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></span>
           <span class="badge-key" id="ptt-key-display">V</span>
         </div>
         <button class="icon-btn" id="btn-minimize-tray" title="Свернуть в системный трей">
@@ -136,28 +136,28 @@
     <!-- Main Navigation Bar -->
     <nav class="app-nav" aria-label="Основная навигация">
       <button class="nav-tab active" data-tab="dashboard">
-        <span class="tab-icon">⚡</span>
+        <span class="tab-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg></span>
         <span class="tab-label">Дашборд</span>
       </button>
       <button class="nav-tab" data-tab="chat">
-        <span class="tab-icon">💬</span>
+        <span class="tab-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>
         <span class="tab-label">ИИ-Чат</span>
         <span class="tab-badge" id="chat-count-badge" style="display:none;">0</span>
       </button>
       <button class="nav-tab" data-tab="timers">
-        <span class="tab-icon">⏱</span>
+        <span class="tab-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></span>
         <span class="tab-label">Тайминги & Радар</span>
       </button>
       <button class="nav-tab" data-tab="meta">
-        <span class="tab-icon">🎯</span>
+        <span class="tab-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg></span>
         <span class="tab-label">Драфт & База знаний</span>
       </button>
       <button class="nav-tab" data-tab="settings">
-        <span class="tab-icon">⚙</span>
+        <span class="tab-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span>
         <span class="tab-label">Настройки</span>
       </button>
       <button class="nav-tab" data-tab="doctor">
-        <span class="tab-icon">🩺</span>
+        <span class="tab-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></span>
         <span class="tab-label">Диагностика</span>
       </button>
     </nav>
@@ -176,7 +176,7 @@
               <div class="hero-portrait-frame">
                 <img id="dashboard-hero-img" src="" alt="Hero Avatar" class="hero-avatar" style="display:none;">
                 <div id="hero-placeholder" class="hero-avatar-placeholder">
-                  <span class="hero-ph-icon">🛡</span>
+                  <span class="hero-ph-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
                   <span class="hero-ph-text">Вне матча</span>
                 </div>
                 <div class="hero-level-badge" id="hero-level-badge">LVL 1</div>
@@ -200,7 +200,7 @@
                   </div>
                   <div class="stat-box">
                     <span class="stat-label">Нетворс</span>
-                    <span class="stat-value nw-val" id="stat-networth">0 💰</span>
+                    <span class="stat-value nw-val" id="stat-networth">0 <svg class="gold-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><path d="M12 7v2m0 6v2"/></svg></span>
                   </div>
                   <div class="stat-box">
                     <span class="stat-label">Золото</span>
@@ -240,7 +240,7 @@
             <!-- v1.2: живые советы «Что купить дальше» (gsi.item_advice) -->
             <div class="hero-advice-block" id="hero-advice-block" aria-live="polite">
               <div class="hero-advice-head">
-                <span class="hero-advice-title">🛒 Что купить дальше</span>
+                <span class="hero-advice-title"><svg class="ui-icon inline-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg> Что купить дальше</span>
                 <span class="hero-advice-hint" id="hero-advice-hint">живые советы ИИ-тренера</span>
               </div>
               <div class="item-advice-list" id="item-advice-list">
@@ -265,19 +265,19 @@
             <!-- Main Big Action Buttons -->
             <div class="action-buttons-grid">
               <button class="btn btn-primary btn-large" id="btn-toggle-assistant">
-                <span class="btn-icon">🚀</span>
+                <span class="btn-icon" id="btn-toggle-assistant-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg></span>
                 <span class="btn-text" id="btn-toggle-assistant-text">Запустить ассистента</span>
               </button>
               <button class="btn btn-secondary" id="btn-test-voice">
-                <span class="btn-icon">🔊</span>
+                <span class="btn-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg></span>
                 <span class="btn-text">Проверить голос</span>
               </button>
               <button class="btn btn-secondary" id="btn-toggle-overlay">
-                <span class="btn-icon">🎯</span>
+                <span class="btn-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg></span>
                 <span class="btn-text">Вкл/Выкл оверлей</span>
               </button>
               <button class="btn btn-secondary" id="btn-install-gsi-quick">
-                <span class="btn-icon">🎮</span>
+                <span class="btn-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="12" x2="10" y2="12"/><line x1="8" y1="10" x2="8" y2="14"/><line x1="15" y1="13" x2="15.01" y2="13"/><line x1="18" y1="11" x2="18.01" y2="11"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg></span>
                 <span class="btn-text">Интеграция Dota 2</span>
               </button>
             </div>
@@ -304,16 +304,16 @@
           <!-- Совет тренера: живые рекомендации под уровень игры -->
           <div class="card tip-card">
             <div class="card-header">
-              <h3 class="card-title">💡 Совет тренера</h3>
+              <h3 class="card-title"><svg class="ui-icon inline-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><line x1="9" y1="18" x2="15" y2="18"/><line x1="10" y1="22" x2="14" y2="22"/><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"/></svg> Совет тренера</h3>
               <span class="card-badge" id="tip-level-badge">Новичок</span>
             </div>
             <div class="tip-body">
               <p class="tip-text" id="tip-text">Загрузка совета…</p>
               <div class="tip-actions">
-                <button type="button" class="pill-btn tip-chip" data-query="Что такое БКБ?">📖 Что такое БКБ?</button>
-                <button type="button" class="pill-btn tip-chip" data-query="Что купить на старте?">🎒 Стартовый закуп</button>
-                <button type="button" class="pill-btn tip-chip" data-query="Кого пикнуть против врагов?">🎯 Кого пикнуть</button>
-                <button type="button" class="pill-btn tip-chip" data-query="Что делать на линии?">⚔ План на линию</button>
+                <button type="button" class="pill-btn tip-chip" data-query="Что такое БКБ?">Что такое БКБ?</button>
+                <button type="button" class="pill-btn tip-chip" data-query="Что купить на старте?">Стартовый закуп</button>
+                <button type="button" class="pill-btn tip-chip" data-query="Кого пикнуть против врагов?">Кого пикнуть</button>
+                <button type="button" class="pill-btn tip-chip" data-query="Что делать на линии?">План на линию</button>
               </div>
             </div>
           </div>
@@ -328,13 +328,13 @@
           <!-- Quick Suggestion Pills -->
           <div class="prompt-suggestions-bar">
             <span class="suggestions-label">Быстрые вопросы:</span>
-            <button type="button" class="pill-btn" data-query="Что купить на первые 600 золота?">🎒 Стартовый закуп</button>
-            <button type="button" class="pill-btn" data-query="Что собирать следующим слотом?">⚡ Что купить дальше?</button>
-            <button type="button" class="pill-btn" data-query="Как правильно стоять эту линию?">⚔ Лайнинг и позиционка</button>
-            <button type="button" class="pill-btn" data-query="Когда делать отводы и стакать?">🌲 Отводы и стаки</button>
-            <button type="button" class="pill-btn" data-query="Кто контрит вражеских героев?">🛡 Контрпики и враги</button>
-            <button type="button" class="pill-btn" data-query="Кого первого фокусить в драке?">💥 Фокус в тимфайте</button>
-            <button type="button" class="pill-btn" data-query="Когда идти на Рошана?">👑 Тайминг Рошана</button>
+            <button type="button" class="pill-btn" data-query="Что купить на первые 600 золота?">Стартовый закуп</button>
+            <button type="button" class="pill-btn" data-query="Что собирать следующим слотом?">Что купить дальше?</button>
+            <button type="button" class="pill-btn" data-query="Как правильно стоять эту линию?">Лайнинг и позиционка</button>
+            <button type="button" class="pill-btn" data-query="Когда делать отводы и стакать?">Отводы и стаки</button>
+            <button type="button" class="pill-btn" data-query="Кто контрит вражеских героев?">Контрпики и враги</button>
+            <button type="button" class="pill-btn" data-query="Кого первого фокусить в драке?">Фокус в тимфайте</button>
+            <button type="button" class="pill-btn" data-query="Когда идти на Рошана?">Тайминг Рошана</button>
           </div>
 
           <!-- Messages Container -->
@@ -351,8 +351,14 @@
                   Привет! Я на связи. Задавай любой вопрос по текущему матчу, предметам, тактике или таймингам — отвечу мгновенно голосом и текстом.
                 </div>
                 <div class="msg-actions">
-                  <button class="msg-action-btn btn-speak-msg" title="Озвучить голосом">🔊 Озвучить</button>
-                  <button class="msg-action-btn btn-copy-msg" title="Копировать текст">📋 Копировать</button>
+                  <button class="msg-action-btn btn-speak-msg" title="Озвучить голосом">
+                    <svg class="ui-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+                    <span>Озвучить</span>
+                  </button>
+                  <button class="msg-action-btn btn-copy-msg" title="Копировать текст">
+                    <svg class="ui-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                    <span>Копировать</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -363,7 +369,7 @@
             <div class="input-wrapper">
               <input type="text" id="chat-text-input" placeholder="Спросите что угодно у Астры/Джарвиса (нажмите Enter)..." autocomplete="off">
               <button type="button" class="btn-mic-input" id="btn-mic-input" title="Голосовой ввод (Push-to-Talk)">
-                🎙
+                <svg class="ui-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
               </button>
             </div>
             <button type="submit" class="btn btn-primary btn-send" id="btn-send-chat">
@@ -386,7 +392,7 @@
             </div>
             <div class="roshan-quick-action">
               <button class="btn btn-danger" id="btn-roshan-killed">
-                <span class="btn-icon">🐉</span>
+                <span class="btn-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a5 5 0 0 1 5 5v3a3 3 0 0 1 3 3v2a4 4 0 0 1-4 4h-1v3h-2v-3h-2v3h-2v-3H8a4 4 0 0 1-4-4v-2a3 3 0 0 1 3-3V7a5 5 0 0 1 5-5z"/><circle cx="9" cy="11" r="1"/><circle cx="15" cy="11" r="1"/></svg></span>
                 <span>Зафиксировать смерть Рошана</span>
               </button>
             </div>
@@ -398,7 +404,7 @@
             <div class="timer-card active-card">
               <div class="timer-card-top">
                 <span class="timer-badge">Каждые 7 минут</span>
-                <span class="timer-icon">📜</span>
+                <span class="timer-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg></span>
               </div>
               <h4 class="timer-title">Руна мудрости</h4>
               <div class="timer-countdown" id="timer-val-wisdom">07:00</div>
@@ -412,7 +418,7 @@
             <div class="timer-card active-card">
               <div class="timer-card-top">
                 <span class="timer-badge">Каждые 2 мин (6:00+)</span>
-                <span class="timer-icon">🔥</span>
+                <span class="timer-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></svg></span>
               </div>
               <h4 class="timer-title">Активная руна реки</h4>
               <div class="timer-countdown" id="timer-val-active-rune">06:00</div>
@@ -426,7 +432,7 @@
             <div class="timer-card">
               <div class="timer-card-top">
                 <span class="timer-badge">20:00 / +10 мин</span>
-                <span class="timer-icon">👾</span>
+                <span class="timer-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 21 8.5 21 15.5 12 22 3 15.5 3 8.5 12 2"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></span>
               </div>
               <h4 class="timer-title">Терзатель (Tormentor)</h4>
               <div class="timer-countdown" id="timer-val-tormentor">20:00</div>
@@ -440,7 +446,7 @@
             <div class="timer-card">
               <div class="timer-card-top">
                 <span class="timer-badge">Каждые 3 минуты</span>
-                <span class="timer-icon">🌸</span>
+                <span class="timer-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><path d="M12 3v5m0 8v5M3 12h5m8 0h5"/></svg></span>
               </div>
               <h4 class="timer-title">Пруд лотосов</h4>
               <div class="timer-countdown" id="timer-val-lotus">03:00</div>
@@ -454,7 +460,7 @@
             <div class="timer-card">
               <div class="timer-card-top">
                 <span class="timer-badge">Каждую минуту</span>
-                <span class="timer-icon">🌲</span>
+                <span class="timer-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg></span>
               </div>
               <h4 class="timer-title">Стаки & Отводы</h4>
               <div class="timer-countdown" id="timer-val-stack">00:53</div>
@@ -468,7 +474,7 @@
             <div class="timer-card">
               <div class="timer-card-top">
                 <span class="timer-badge">7:00 / 17:00 / 27:00...</span>
-                <span class="timer-icon">🛡</span>
+                <span class="timer-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
               </div>
               <h4 class="timer-title">Нейтральные предметы</h4>
               <div class="timer-countdown" id="timer-val-neutral">07:00 (Тир 1)</div>
@@ -489,10 +495,10 @@
           <!-- Sub-view navigation switcher -->
           <div class="meta-subnav">
             <button class="meta-subnav-btn active" data-subtab="draft-picker">
-              <span>⚔ Подбор контрпиков к драфту</span>
+              <span class="btn-flex"><svg class="ui-icon inline-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg> <span>Подбор контрпиков к драфту</span></span>
             </button>
             <button class="meta-subnav-btn" data-subtab="hero-builds">
-              <span>📖 Энциклопедия закупа & Билды</span>
+              <span class="btn-flex"><svg class="ui-icon inline-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg> <span>Энциклопедия закупа & Билды</span></span>
             </button>
           </div>
 
@@ -501,11 +507,11 @@
             <div class="card meta-control-card">
               <div class="meta-card-header">
                 <div class="meta-card-title-group">
-                  <h3 class="card-title">🎯 Анализ вражеского драфта и подбор контрпиков</h3>
+                  <h3 class="card-title"><svg class="ui-icon inline-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg> Анализ вражеского драфта и подбор контрпиков</h3>
                   <p class="card-subtitle">Укажите вражеских героев и свою позицию — ИИ-тренер рассчитает наивысший % эффективности и синергии.</p>
                 </div>
                 <button type="button" class="btn btn-secondary btn-sm" id="btn-sync-gsi-draft" title="Подтянуть героев из текущей игры">
-                  <span>⚡ Взять героев из матча GSI</span>
+                  <span><svg class="ui-icon inline-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> Взять героев из матча GSI</span>
                 </button>
               </div>
 
@@ -537,7 +543,7 @@
 
               <div class="draft-actions-bar">
                 <button type="button" class="btn btn-primary btn-glow" id="btn-calculate-draft">
-                  <span>🚀 Рассчитать лучшие контрпики</span>
+                  <span><svg class="ui-icon inline-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg> Рассчитать лучшие контрпики</span>
                 </button>
                 <button type="button" class="btn btn-secondary btn-sm" id="btn-clear-draft">
                   <span>Очистить</span>
@@ -550,7 +556,7 @@
               <h4 class="results-header" id="draft-results-header">Рекомендуемые герои для победы:</h4>
               <div class="draft-cards-grid" id="draft-cards-grid">
                 <div class="empty-draft-placeholder">
-                  <span class="empty-icon">🛡</span>
+                  <span class="empty-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
                   <p>Добавьте вражеских героев выше или нажмите «Взять героев из матча GSI», чтобы получить персональные контрпики с объяснением.</p>
                 </div>
               </div>
@@ -562,7 +568,7 @@
             <div class="card meta-control-card">
               <div class="meta-card-header">
                 <div class="meta-card-title-group">
-                  <h3 class="card-title">📖 Гайд по закупам и сборкам артефактов</h3>
+                  <h3 class="card-title"><svg class="ui-icon inline-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg> Гайд по закупам и сборкам артефактов</h3>
                   <p class="card-subtitle">Стартовый закуп, лайнинг, ключевые кор-предметы с таймингами, ситуативные контр-артефакты и советы.</p>
                 </div>
               </div>
@@ -608,13 +614,13 @@
       <section class="tab-pane" id="tab-settings">
         <div class="settings-layout">
           <div class="settings-section">
-            <h3 class="section-title">🌟 Выбор ИИ-модели (Пресеты в 1 клик)</h3>
+            <h3 class="section-title"><svg class="ui-icon inline-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg> Выбор ИИ-модели (Пресеты в 1 клик)</h3>
             <p class="section-desc">Выберите удобный готовый пресет или введите собственный OpenAI-совместимый API.</p>
 
             <div class="presets-cards-grid">
               <div class="preset-card active" data-preset="pollinations" role="button" tabindex="0" aria-label="Бесплатный ИИ Без ключа">
                 <div class="preset-header">
-                  <span class="preset-icon">🌟</span>
+                  <span class="preset-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg></span>
                   <span class="preset-badge free-badge">100% БЕСПЛАТНО</span>
                 </div>
                 <h4 class="preset-name">Бесплатный ИИ (Без ключа)</h4>
@@ -623,7 +629,7 @@
 
               <div class="preset-card" data-preset="google_gemini" role="button" tabindex="0" aria-label="Google Gemini 2.5 Flash">
                 <div class="preset-header">
-                  <span class="preset-icon">💎</span>
+                  <span class="preset-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3h12l4 6-10 12L2 9z"/></svg></span>
                   <span class="preset-badge">GOOGLE AI • 150+ tok/s</span>
                 </div>
                 <h4 class="preset-name">Google Gemini 2.5 Flash</h4>
@@ -632,7 +638,7 @@
 
               <div class="preset-card" data-preset="google_gemini_lite" role="button" tabindex="0" aria-label="Gemini 2.5 Flash-Lite">
                 <div class="preset-header">
-                  <span class="preset-icon">⚡</span>
+                  <span class="preset-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></span>
                   <span class="preset-badge">УЛЬТРА-СКОРОСТЬ</span>
                 </div>
                 <h4 class="preset-name">Gemini 2.5 Flash-Lite</h4>
@@ -641,7 +647,7 @@
 
               <div class="preset-card" data-preset="deepseek" role="button" tabindex="0" aria-label="DeepSeek-V3 Chat">
                 <div class="preset-header">
-                  <span class="preset-icon">🧠</span>
+                  <span class="preset-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg></span>
                   <span class="preset-badge">САМЫЙ УМНЫЙ • $0.14/1M</span>
                 </div>
                 <h4 class="preset-name">DeepSeek-V3 Chat</h4>
@@ -650,7 +656,7 @@
 
               <div class="preset-card" data-preset="deepseek_r1" role="button" tabindex="0" aria-label="DeepSeek-R1 Reasoner">
                 <div class="preset-header">
-                  <span class="preset-icon">🧩</span>
+                  <span class="preset-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg></span>
                   <span class="preset-badge">РАССУЖДЕНИЯ R1</span>
                 </div>
                 <h4 class="preset-name">DeepSeek-R1 (Reasoner)</h4>
@@ -659,7 +665,7 @@
 
               <div class="preset-card" data-preset="groq" role="button" tabindex="0" aria-label="Groq Llama 3.3 70B">
                 <div class="preset-header">
-                  <span class="preset-icon">🚀</span>
+                  <span class="preset-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="M12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/></svg></span>
                   <span class="preset-badge">GROQ LPU • 300+ tok/s</span>
                 </div>
                 <h4 class="preset-name">Groq Llama 3.3 70B</h4>
@@ -668,7 +674,7 @@
 
               <div class="preset-card" data-preset="groq_fast" role="button" tabindex="0" aria-label="Groq Llama 3.1 8B Instant">
                 <div class="preset-header">
-                  <span class="preset-icon">⚡</span>
+                  <span class="preset-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></span>
                   <span class="preset-badge">800+ tok/s • МГНОВЕННО</span>
                 </div>
                 <h4 class="preset-name">Groq Llama 3.1 8B Instant</h4>
@@ -677,7 +683,7 @@
 
               <div class="preset-card" data-preset="pollinations_deepseek" role="button" tabindex="0" aria-label="DeepSeek Free Без ключа">
                 <div class="preset-header">
-                  <span class="preset-icon">🔮</span>
+                  <span class="preset-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg></span>
                   <span class="preset-badge free-badge">100% БЕСПЛАТНО</span>
                 </div>
                 <h4 class="preset-name">DeepSeek Free (Без ключа)</h4>
@@ -686,7 +692,7 @@
 
               <div class="preset-card" data-preset="openrouter" role="button" tabindex="0" aria-label="OpenRouter DeepSeek Gemini">
                 <div class="preset-header">
-                  <span class="preset-icon">🌐</span>
+                  <span class="preset-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></span>
                   <span class="preset-badge">OPENROUTER</span>
                 </div>
                 <h4 class="preset-name">OpenRouter (DeepSeek / Gemini)</h4>
@@ -695,7 +701,7 @@
 
               <div class="preset-card" data-preset="ollama" role="button" tabindex="0" aria-label="Ollama Локальный сервер">
                 <div class="preset-header">
-                  <span class="preset-icon">🖥</span>
+                  <span class="preset-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></span>
                   <span class="preset-badge">ОФФЛАЙН</span>
                 </div>
                 <h4 class="preset-name">Ollama (Локальный сервер)</h4>
@@ -716,18 +722,18 @@
               </div>
 
               <div class="form-group full-width">
-                <label>⚡ Быстрый выбор популярной модели:</label>
+                <label>Быстрый выбор популярной модели:</label>
                 <div class="quick-model-chips">
-                  <button type="button" class="model-chip" data-model="gemini-2.5-flash">💎 gemini-2.5-flash</button>
-                  <button type="button" class="model-chip" data-model="gemini-2.5-flash-lite">⚡ gemini-2.5-flash-lite</button>
-                  <button type="button" class="model-chip" data-model="gemini-2.5-pro">💎 gemini-2.5-pro</button>
-                  <button type="button" class="model-chip" data-model="deepseek-chat">🧠 deepseek-chat (V3)</button>
-                  <button type="button" class="model-chip" data-model="deepseek-reasoner">🧩 deepseek-reasoner (R1)</button>
-                  <button type="button" class="model-chip" data-model="llama-3.3-70b-versatile">🚀 llama-3.3-70b (Groq)</button>
-                  <button type="button" class="model-chip" data-model="llama-3.1-8b-instant">⚡ llama-3.1-8b (Groq)</button>
-                  <button type="button" class="model-chip" data-model="gemini">🔮 gemini (Free)</button>
-                  <button type="button" class="model-chip" data-model="deepseek">🌟 deepseek (Free)</button>
-                  <button type="button" class="model-chip" data-model="openai">🌟 openai (Free)</button>
+                  <button type="button" class="model-chip" data-model="gemini-2.5-flash">gemini-2.5-flash</button>
+                  <button type="button" class="model-chip" data-model="gemini-2.5-flash-lite">gemini-2.5-flash-lite</button>
+                  <button type="button" class="model-chip" data-model="gemini-2.5-pro">gemini-2.5-pro</button>
+                  <button type="button" class="model-chip" data-model="deepseek-chat">deepseek-chat (V3)</button>
+                  <button type="button" class="model-chip" data-model="deepseek-reasoner">deepseek-reasoner (R1)</button>
+                  <button type="button" class="model-chip" data-model="llama-3.3-70b-versatile">llama-3.3-70b (Groq)</button>
+                  <button type="button" class="model-chip" data-model="llama-3.1-8b-instant">llama-3.1-8b (Groq)</button>
+                  <button type="button" class="model-chip" data-model="gemini">gemini (Free)</button>
+                  <button type="button" class="model-chip" data-model="deepseek">deepseek (Free)</button>
+                  <button type="button" class="model-chip" data-model="openai">openai (Free)</button>
                 </div>
               </div>
 
@@ -735,14 +741,14 @@
                 <label for="cfg-api-key">API-ключ (для платных/приватных моделей):</label>
                 <div class="password-wrapper">
                   <input type="password" id="cfg-api-key" placeholder="Оставьте пустым для бесплатного ИИ или введите sk-...">
-                  <button type="button" class="btn-toggle-pw" id="btn-toggle-pw" title="Показать/скрыть ключ">👁</button>
+                  <button type="button" class="btn-toggle-pw" id="btn-toggle-pw" title="Показать/скрыть ключ"><svg class="ui-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
                 </div>
                 <span class="field-hint" id="cfg-key-hint">Для бесплатного пресета Pollinations ключ не требуется.</span>
               </div>
 
               <div class="form-actions">
                 <button type="button" class="btn btn-secondary" id="btn-test-llm">
-                  <span>⚡ Проверить связь с ИИ</span>
+                  <span><svg class="ui-icon inline-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> Проверить связь с ИИ</span>
                 </button>
                 <span class="test-result-text" id="test-llm-result"></span>
               </div>
@@ -751,7 +757,7 @@
 
           <!-- Voice & Audio Settings -->
           <div class="settings-section">
-            <h3 class="section-title">🔊 Голосовые модели и синтез речи (TTS)</h3>
+            <h3 class="section-title"><svg class="ui-icon inline-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg> Голосовые модели и синтез речи (TTS)</h3>
 
             <div class="settings-form-grid">
               <div class="form-group">
@@ -795,7 +801,7 @@
               </div>
 
               <div class="form-group">
-                <label for="cfg-skill-level">🎓 Уровень игры (стиль тренера):</label>
+                <label for="cfg-skill-level"><svg class="ui-icon inline-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 10v6M2 10l10-5 10 5-10 5z"/><path d="M6 12v5c0 2 3 3 6 3s6-1 6-3v-5"/></svg> Уровень игры (стиль тренера):</label>
                 <select id="cfg-skill-level">
                   <option value="beginner">Новичок — тренер объясняет термины и даёт простые шаги</option>
                   <option value="amateur">Любитель — баланс объяснений и тактики</option>
@@ -818,7 +824,7 @@
             <!-- Save Settings Button -->
             <div class="save-bar">
               <button type="button" class="btn btn-primary btn-large" id="btn-save-settings">
-                <span>💾 Сохранить все настройки</span>
+                <span><svg class="ui-icon inline-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg> Сохранить все настройки</span>
               </button>
               <span class="save-indicator" id="save-settings-indicator"></span>
             </div>
@@ -837,7 +843,7 @@
               <p class="section-desc">Автоматическая проверка микрофона, озвучки, моделей Vosk, GSI портов и файлов Dota 2.</p>
             </div>
             <button class="btn btn-secondary" id="btn-rerun-doctor">
-              <span>🔄 Перепроверить систему</span>
+              <span><svg class="ui-icon inline-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg> Перепроверить систему</span>
             </button>
           </div>
 
@@ -855,7 +861,7 @@
           <!-- Quick Action Utility Cards -->
           <div class="doctor-utilities-grid">
             <div class="util-card">
-              <div class="util-icon">🎮</div>
+              <div class="util-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.75"><line x1="6" y1="12" x2="10" y2="12"/><line x1="8" y1="10" x2="8" y2="14"/><line x1="15" y1="13" x2="15.01" y2="13"/><line x1="18" y1="11" x2="18.01" y2="11"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg></div>
               <div class="util-body">
                 <h4>Установить конфиг GSI в Dota 2</h4>
                 <p>Автоматически находит каталог Steam и прописывает конфиг gamestate_integration_aidota.cfg.</p>
@@ -864,7 +870,7 @@
             </div>
 
             <div class="util-card">
-              <div class="util-icon">🚀</div>
+              <div class="util-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="M12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/></svg></div>
               <div class="util-body">
                 <h4>Добавить AIDOTA в Steam</h4>
                 <p>Добавляет ярлык приложения в вашу библиотеку игр Steam для быстрого запуска из оверлея.</p>

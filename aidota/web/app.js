@@ -313,7 +313,8 @@ function renderNetworth(gsi) {
   const value = Math.max(0, Number((gsi && gsi.networth) || 0) || 0);
   const estimated = Boolean(gsi && gsi.networth_estimated === true);
 
-  nwElem.textContent = `${estimated ? "≈" : ""}${formatGold(value)} 💰`;
+  const goldSvg = `<svg class="gold-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><path d="M12 7v2m0 6v2"/></svg>`;
+  nwElem.innerHTML = `${estimated ? "≈" : ""}${formatGold(value)} ${goldSvg}`;
   nwElem.classList.toggle("is-estimated", estimated);
   if (estimated) {
     nwElem.setAttribute("title", "Оценка: GSI не прислал net_worth");
@@ -535,10 +536,12 @@ function adviceCardHtml(item, warningText = "") {
   const initials =
     item.item.replace(/[^A-Za-zА-Яа-яЁё0-9]/g, "").slice(0, 2).toUpperCase() || "?";
   const price =
-    item.cost > 0 ? `<span class="advice-price">${formatGold(item.cost)} 💰</span>` : "";
+    item.cost > 0
+      ? `<span class="advice-price">${formatGold(item.cost)} <svg class="gold-icon" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><path d="M12 7v2m0 6v2"/></svg></span>`
+      : "";
   const reason = item.reason || "Тренер рекомендует этот предмет по текущей ситуации.";
   const warning = warningText
-    ? `<div class="advice-warning" title="${escapeHtml(warningText)}">⚠ ${escapeHtml(warningText)}</div>`
+    ? `<div class="advice-warning" title="${escapeHtml(warningText)}"><svg class="ui-icon inline-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> ${escapeHtml(warningText)}</div>`
     : "";
 
   return `
@@ -567,7 +570,7 @@ function adviceCardHtml(item, warningText = "") {
           )}</span>
         </div>
       </div>
-      <span class="advice-open-hint" aria-hidden="true">💬</span>
+      <span class="advice-open-hint" aria-hidden="true"><svg class="ui-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>
     </div>`;
 }
 
@@ -585,7 +588,9 @@ function updateItemAdviceLive(advice) {
       goldElem.classList.toggle("is-short", !item.affordable);
     }
     const priceElem = card.querySelector(".advice-price");
-    if (priceElem && item.cost > 0) priceElem.textContent = `${formatGold(item.cost)} 💰`;
+    if (priceElem && item.cost > 0) {
+      priceElem.innerHTML = `${formatGold(item.cost)} <svg class="gold-icon" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><path d="M12 7v2m0 6v2"/></svg>`;
+    }
   });
 }
 
@@ -745,6 +750,7 @@ elements.btnToggleAssistant.addEventListener("click", async () => {
 function updateAssistantUI(running) {
   const btn = elements.btnToggleAssistant;
   const text = elements.btnToggleAssistantText;
+  const iconSpan = document.getElementById("btn-toggle-assistant-icon") || (btn ? btn.querySelector(".btn-icon") : null);
   const coachDot = document.querySelector(".coach-dot-status");
   const coachStatus = elements.coachStatusText;
   const engineBadge = document.getElementById("coach-engine-badge");
@@ -752,7 +758,10 @@ function updateAssistantUI(running) {
   if (running) {
     btn.classList.remove("btn-primary");
     btn.classList.add("btn-danger");
-    text.textContent = "⏹ Остановить тренера";
+    if (iconSpan) {
+      iconSpan.innerHTML = `<svg class="ui-icon" viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>`;
+    }
+    text.textContent = "Остановить тренера";
     if (coachDot) coachDot.classList.add("online");
     if (coachStatus) coachStatus.textContent = "Активен (Слушает)";
     if (engineBadge) {
@@ -763,7 +772,10 @@ function updateAssistantUI(running) {
   } else {
     btn.classList.remove("btn-danger");
     btn.classList.add("btn-primary");
-    text.textContent = "🚀 Запустить ассистента";
+    if (iconSpan) {
+      iconSpan.innerHTML = `<svg class="ui-icon" viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>`;
+    }
+    text.textContent = "Запустить ассистента";
     if (coachDot) coachDot.classList.remove("online");
     if (coachStatus) coachStatus.textContent = "Остановлен";
     if (engineBadge) {
@@ -911,8 +923,14 @@ function appendChatMessage(role, author, text) {
       <div class="msg-text">${escapeHtml(text)}</div>
       ${!isUser ? `
       <div class="msg-actions">
-        <button class="msg-action-btn btn-speak-msg" onclick="speakMessage('${escapeJsString(text)}')">🔊 Озвучить</button>
-        <button class="msg-action-btn btn-copy-msg" onclick="copyMessage('${escapeJsString(text)}')">📋 Копировать</button>
+        <button class="msg-action-btn btn-speak-msg" onclick="speakMessage('${escapeJsString(text)}')" title="Озвучить голосом">
+          <svg class="ui-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+          <span>Озвучить</span>
+        </button>
+        <button class="msg-action-btn btn-copy-msg" onclick="copyMessage('${escapeJsString(text)}')" title="Копировать текст">
+          <svg class="ui-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          <span>Копировать</span>
+        </button>
       </div>` : ""}
     </div>
   `;
@@ -1181,17 +1199,17 @@ elements.btnTogglePw.addEventListener("click", () => {
   const input = elements.cfgApiKey;
   if (input.type === "password") {
     input.type = "text";
-    elements.btnTogglePw.textContent = "🔒";
+    elements.btnTogglePw.innerHTML = `<svg class="ui-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
   } else {
     input.type = "password";
-    elements.btnTogglePw.textContent = "👁";
+    elements.btnTogglePw.innerHTML = `<svg class="ui-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
   }
 });
 
 elements.btnTestLlm.addEventListener("click", async () => {
   const origHtml = elements.btnTestLlm.innerHTML;
   elements.btnTestLlm.disabled = true;
-  elements.btnTestLlm.innerHTML = "<span>⏳ Проверяю...</span>";
+  elements.btnTestLlm.innerHTML = `<span><svg class="ui-icon ui-spin inline-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a10 10 0 0 1 10 10"/></svg> Проверяю...</span>`;
   elements.testLlmResult.textContent = "Проверяю связь с моделью...";
   elements.testLlmResult.style.color = "var(--color-cyan)";
 
@@ -1209,11 +1227,11 @@ elements.btnTestLlm.addEventListener("click", async () => {
   elements.btnTestLlm.innerHTML = origHtml;
 
   if (res && res.success) {
-    elements.testLlmResult.textContent = `✅ ${res.message || "ИИ отвечает успешно"} (${elapsedMs} мс)`;
+    elements.testLlmResult.innerHTML = `<svg class="ui-icon inline-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="var(--color-radiant)" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg> ${escapeHtml(res.message || "ИИ отвечает успешно")} (${elapsedMs} мс)`;
     elements.testLlmResult.style.color = "var(--color-radiant)";
     showToast(`Подключение к ${payload.model || "ИИ"} успешно (${elapsedMs} мс)!`, "success");
   } else {
-    elements.testLlmResult.textContent = `❌ Ошибка (${elapsedMs} мс): ${res?.message || "Не удалось связаться с сервером"}`;
+    elements.testLlmResult.innerHTML = `<svg class="ui-icon inline-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="var(--color-dire)" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg> Ошибка (${elapsedMs} мс): ${escapeHtml(res?.message || "Не удалось связаться с сервером")}`;
     elements.testLlmResult.style.color = "var(--color-dire)";
     showToast(`Ошибка подключения к ИИ: ${res?.message || "нет ответа"}`, "warn");
   }
@@ -1247,7 +1265,7 @@ window.addEventListener("keydown", (e) => {
 elements.btnSaveSettings.addEventListener("click", async () => {
   const origHtml = elements.btnSaveSettings.innerHTML;
   elements.btnSaveSettings.disabled = true;
-  elements.btnSaveSettings.innerHTML = "<span>⏳ Сохраняю...</span>";
+  elements.btnSaveSettings.innerHTML = `<span><svg class="ui-icon ui-spin inline-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a10 10 0 0 1 10 10"/></svg> Сохраняю...</span>`;
 
   const payload = {
     llm_base_url: (elements.cfgBaseUrl.value || "").trim() || "https://text.pollinations.ai/openai",
@@ -1267,7 +1285,7 @@ elements.btnSaveSettings.addEventListener("click", async () => {
   elements.btnSaveSettings.innerHTML = origHtml;
 
   if (res && res.success) {
-    elements.saveSettingsIndicator.textContent = "✅ Настройки успешно сохранены!";
+    elements.saveSettingsIndicator.innerHTML = `<svg class="ui-icon inline-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="var(--color-radiant)" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg> Настройки успешно сохранены!`;
     showToast("Настройки успешно сохранены!", "success");
     setTimeout(() => { elements.saveSettingsIndicator.textContent = ""; }, 3500);
     highlightMatchingPreset(payload.llm_base_url, payload.llm_model);
@@ -1663,7 +1681,7 @@ if (btnClearDraft) {
     if (grid) {
       grid.innerHTML = `
         <div class="empty-draft-placeholder">
-          <span class="empty-icon">🛡</span>
+          <span class="empty-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
           <p>Добавьте вражеских героев выше или нажмите «Взять героев из матча GSI», чтобы получить персональные контрпики с объяснением.</p>
         </div>`;
     }
@@ -1674,7 +1692,7 @@ if (btnClearDraft) {
 async function triggerDraftCalculation() {
   const grid = document.getElementById("draft-cards-grid");
   if (!grid) return;
-  grid.innerHTML = "<div class='empty-draft-placeholder'><p>⚡ ИИ-тренер рассчитывает идеальные контрпики...</p></div>";
+  grid.innerHTML = "<div class='empty-draft-placeholder'><p><svg class='ui-icon ui-spin inline-icon' viewBox='0 0 24 24' width='14' height='14' fill='none' stroke='currentColor' stroke-width='2'><circle cx='12' cy='12' r='10'/><path d='M12 2a10 10 0 0 1 10 10'/></svg> ИИ-тренер рассчитывает идеальные контрпики...</p></div>";
 
   const res = await callApi("get_draft_recommendation", {
     enemies: selectedEnemyHeroes,
@@ -1693,8 +1711,8 @@ async function triggerDraftCalculation() {
     card.className = "draft-hero-card";
 
     const scoreClass = pick.score >= 75 ? "score-high" : "score-med";
-    const countersHtml = pick.strong_against.map((c) => `<div class="matchup-item"><span class="tag-counter">✔</span> <span>${escapeHtml(c)}</span></div>`).join("");
-    const dangerHtml = (pick.weak_against || []).map((w) => `<div class="matchup-item"><span class="tag-danger">⚠</span> <span>${escapeHtml(w)}</span></div>`).join("");
+    const countersHtml = pick.strong_against.map((c) => `<div class="matchup-item"><span class="tag-counter"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg></span> <span>${escapeHtml(c)}</span></div>`).join("");
+    const dangerHtml = (pick.weak_against || []).map((w) => `<div class="matchup-item"><span class="tag-danger"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span> <span>${escapeHtml(w)}</span></div>`).join("");
     const coresHtml = (pick.core_items || []).map((it) => `<span class="core-chip">${escapeHtml(it)}</span>`).join("");
 
     card.innerHTML = `
@@ -1720,7 +1738,8 @@ async function triggerDraftCalculation() {
 
       <div class="card-footer-actions">
         <button type="button" class="btn btn-secondary btn-sm" onclick="speakPhrase('На ${escapeJsString(pick.ru_name)}: ${escapeJsString(pick.advice)}')">
-          <span>Озвучить 🔊</span>
+          <svg class="ui-icon inline-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+          <span>Озвучить</span>
         </button>
       </div>
     `;
@@ -1759,11 +1778,11 @@ if (btnLoadBuild) {
     }
 
     const b = res.build;
-    const startItemsHtml = (b.starting || []).map((it) => `<div class="item-badge-pill"><span>📦</span> <span>${escapeHtml(it)}</span></div>`).join("");
-    const earlyItemsHtml = (b.early_game || []).map((it) => `<div class="item-badge-pill"><span>👢</span> <span>${escapeHtml(it)}</span></div>`).join("");
+    const startItemsHtml = (b.starting || []).map((it) => `<div class="item-badge-pill"><svg class="ui-icon inline-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="16.5" y1="9.4" x2="7.5" y2="4.21"/><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg> <span>${escapeHtml(it)}</span></div>`).join("");
+    const earlyItemsHtml = (b.early_game || []).map((it) => `<div class="item-badge-pill"><svg class="ui-icon inline-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> <span>${escapeHtml(it)}</span></div>`).join("");
     const coreItemsHtml = (b.core || []).map((it) => `
       <div class="item-badge-pill core-item">
-        <span>⚔</span>
+        <svg class="ui-icon inline-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
         <strong>${escapeHtml(it.item)}</strong>
         <span class="timing-span">${escapeHtml(it.timing)}</span>
       </div>`).join("");
@@ -1780,7 +1799,7 @@ if (btnLoadBuild) {
     container.innerHTML = `
       <div class="build-block-card">
         <div class="build-block-header">
-          <h4>🛒 Стартовый закуп (0:00) & Лайнинг</h4>
+          <h4><svg class="ui-icon inline-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg> Стартовый закуп (0:00) & Лайнинг</h4>
         </div>
         <div class="items-chips-grid">${startItemsHtml}</div>
         <div style="margin-top: 10px;">
@@ -1791,21 +1810,21 @@ if (btnLoadBuild) {
 
       <div class="build-block-card">
         <div class="build-block-header">
-          <h4>⚔ Основные предметы (Core) с таймингами</h4>
+          <h4><svg class="ui-icon inline-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg> Основные предметы (Core) с таймингами</h4>
         </div>
         <div class="items-chips-grid">${coreItemsHtml}</div>
       </div>
 
       <div class="build-block-card">
         <div class="build-block-header">
-          <h4>🛡 Ситуативные предметы и контр-артефакты</h4>
+          <h4><svg class="ui-icon inline-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> Ситуативные предметы и контр-артефакты</h4>
         </div>
         <div class="situational-grid">${sitItemsHtml}</div>
       </div>
 
       <div class="build-block-card">
         <div class="build-block-header">
-          <h4>🔮 Шард & Аганим</h4>
+          <h4><svg class="ui-icon inline-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg> Шард & Аганим</h4>
         </div>
         <p style="font-size: 12px; color: var(--text-main); margin-bottom: 6px;"><strong>Aghanim's Shard:</strong> ${escapeHtml(b.shard || "По таймингу")}</p>
         <p style="font-size: 12px; color: var(--text-dim);"><strong>Aghanim's Scepter:</strong> ${escapeHtml(b.scepter || "По ситуации")}</p>
@@ -1813,7 +1832,7 @@ if (btnLoadBuild) {
 
       <div class="build-block-card" style="border-left: 3px solid var(--color-astra);">
         <div class="build-block-header">
-          <h4>💡 Тактический совет тренера по игре на линии</h4>
+          <h4><svg class="ui-icon inline-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="9" y1="18" x2="15" y2="18"/><line x1="10" y1="22" x2="14" y2="22"/><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"/></svg> Тактический совет тренера по игре на линии</h4>
         </div>
         <p style="font-size: 13px; color: var(--text-main); line-height: 1.5;">${escapeHtml(b.lane_tips || "")}</p>
       </div>

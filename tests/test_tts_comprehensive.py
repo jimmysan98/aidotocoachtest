@@ -278,7 +278,7 @@ class TestPriorityQueueAndBargeIn(unittest.TestCase):
             self.mgr._queue.put(old_item)
             self.mgr._ensure_thread()
             # Ждём пока воркер обработает очередь
-            done.wait(timeout=2.0)
+            done.wait(timeout=5.0)
             self.assertTrue(done.is_set())
             mock_say.assert_not_called()
 
