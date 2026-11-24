@@ -13,6 +13,8 @@
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0ea5e9.svg)](#требования)
 [![Tests](https://img.shields.io/badge/tests-731%20passed-34d399.svg)](#тесты-и-качество)
 [![Version](https://img.shields.io/badge/version-1.2.0-f59e0b.svg)](CHANGELOG.md)
+[![UI: Minimalist Dark](https://img.shields.io/badge/ui-minimalist%20dark-6366f1.svg)](#возможности)
+[![Icons: Vector SVG](https://img.shields.io/badge/icons-vector%20svg-10b981.svg)](#возможности)
 
 [Установка](#установка) · [Возможности](#возможности) · [Скриншоты](#скриншоты) ·
 [Команды](#голосовые-команды) · [Разработка](#разработка) · [Сборка](#сборка-установщика)
@@ -68,8 +70,9 @@
 | 📺 | **Живой HUD в оверлее и дашборде.** Герой, уровень, золото, нетворс, KDA, время матча, инвентарь и кулдаун ультимейта обновляются из GSI в реальном времени. |
 | 🛒 | **Советы по закупке с объяснением «почему».** Блок «Что купить дальше» прямо в дашборде: предмет под текущего врага, его цена, нехватка золота и причина — например, Ghost Scepter против Omnislash Джаггернаута или MKB против уклонений Фантомки. |
 | 🩺 | **Самодиагностика.** Проверка микрофона, звука, модели Vosk, GSI-портов, Dota 2 и доступа к API в один клик. |
+| 🛡️ | **Отказоустойчивый Rust/Python мост.** Защита от критических системных окон Windows (подавление диалогов `Bad Image` 0xc0e90002 через `SEM_FAILCRITICALERRORS`), автоматический и бесшовный fallback на быстрый чистый Python при отсутствии или несовместимости сторонних C/Rust-библиотек. |
 | 💾 | **Память между матчами.** Реплики, уроки разборов и частые ошибки сохраняются локально и учитываются в следующих ответах. |
-| 🎨 | **Минималистичный интерфейс и векторная SVG-графика.** Сдержанная тёмная эстетика без визуального шума, стеклянные панели, деликатные границы, векторные SVG-иконки вместо цветных эмодзи (чёткие на любых High-DPI экранах и работающие 100% оффлайн), плавные переходы, toast-уведомления и поддержка `prefers-reduced-motion`. |
+| 🎨 | **Минималистичный интерфейс и векторная SVG-графика.** Сдержанная тёмная эстетика без визуального шума, стеклянные панели, деликатные границы, векторные SVG-иконки вместо цветных эмодзи (чёткие на любых High-DPI экранах и работающие 100% оффлайн), исключено дублирование значков в кнопках управления, плавные переходы, toast-уведомления и поддержка `prefers-reduced-motion`. |
 
 ## Уровни игры
 
@@ -131,6 +134,8 @@
 
 ```
 main.py                 Точка входа и CLI-команды
+run.bat                 Быстрый запуск в один клик под Windows
+clean_project.py        Глубокая очистка кэшей, артефактов и сжатие ассетов
 build_exe.py            Сборка exe + AIDOTA_Setup.exe (PyInstaller + Inno Setup)
 installer.iss           Скрипт установщика Inno Setup
 AIDOTA.spec             Спецификация PyInstaller
@@ -143,7 +148,7 @@ docs/
 aidota/
   gui_app.py            Главное окно и веб-дашборд (pywebview) + Tk-фолбэк
   web_app.py            API-мост между веб-интерфейсом и ядром
-  web/                  HTML/CSS/JS интерфейс (style-modern.css — дизайн-система)
+  web/                  HTML/CSS/JS интерфейс (style-modern.css — дизайн-система, SVG-иконки)
   tray.py               Системный трей Windows (pystray)
   app.py                Оркестратор: микрофон → команда → тренер → оверлей/TTS
   beginner.py           Уровни игры, глоссарий терминов, планы и упражнения
@@ -153,17 +158,25 @@ aidota/
   meta_db.py            База знаний на 127 героев: билды, контрпики, прокачка
   commands.py           Парсер команд со строгой активацией по имени тренера
   context.py            GSI-контекст, радар угроз, детектор ошибок, авто-подсказки
+  gsi.py                GSI HTTP-сервер для приёма телеметрии из Dota 2
+  live_advice.py        Анализ закупа, советы «Что купить дальше» и объяснения причин
   hotkeys.py            Глобальные клавиши (Win32) — Alt+Z, PTT, мышь
   overlay.py            Игровой оверлей с анимациями и логотипом
   tts.py                Гибридный HumanTTS (Edge-TTS in-memory, Piper TTS fallback, кэш, Barge-In, словарь сленга, RVC)
+  audio.py              Захват звука с микрофона и офлайн-распознавание Vosk
+  rust_bridge.py        Отказоустойчивый мост ускорения вычислений (C-ABI / pure-Python)
+  config.py             Управление конфигурацией (валидация, миграции, сохранение)
+  doctor.py             Комплексная самодиагностика системы (--doctor)
   settings_gui.py       Вспомогательные функции настроек (проверка API, звук)
+  windows_icon.py       Нативная интеграция иконки Windows (AppUserModelID, WM_SETICON)
+  logging_setup.py      Структурированное логирование в консоль и файлы
   dota_api.py           Клиент OpenDota API и кэширование
   dota_install.py       Steam-интеграция, установка GSI, single-instance mutex
   skills/               Макро-таймеры, кулдауны, лайн-матчапы
   roles.py, heroes.py   Роли 1–5, каталог героев и нечёткий поиск
   vision.py             Определение героя под курсором
 data/                   Снапшоты OpenDota (герои, предметы) + рантайм-память
-hero_icons/             Иконки героев
+hero_icons/             Иконки героев (сжатые 8-bit PNG)
 assets/                 Логотип, иконки, баннер и скриншоты для README
 tests/                  Набор из 731 автоматических тестов (unittest)
 ```
@@ -175,10 +188,15 @@ python -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 
 # Запуск из исходников
-.venv\Scripts\python.exe main.py
-.venv\Scripts\python.exe main.py --text       :: текстовый режим
-
-.venv\Scripts\python.exe main.py --doctor     :: диагностика
+.venv\Scripts\python.exe main.py                   :: запуск с веб-интерфейсом и оверлеем
+.venv\Scripts\python.exe main.py --text            :: текстовый режим (ввод команд с клавиатуры)
+.venv\Scripts\python.exe main.py --doctor          :: самодиагностика окружения и портов
+.venv\Scripts\python.exe main.py --doctor --online :: расширенная диагностика со связью
+.venv\Scripts\python.exe main.py --install-gsi     :: установка конфига GSI в Dota 2
+.venv\Scripts\python.exe main.py --add-to-steam    :: добавить AIDOTA в библиотеку Steam
+.venv\Scripts\python.exe main.py --fetch-icons     :: загрузка иконок героев
+.venv\Scripts\python.exe main.py --update-data     :: обновление снапшотов OpenDota
+.venv\Scripts\python.exe clean_project.py          :: глубокая очистка кэшей и оптимизация ассетов
 ```
 
 ### Тесты и качество
@@ -253,6 +271,18 @@ Inno Setup (`installer.iss`) → `AIDOTA_Setup.exe` в корне проекта
 
 Ключ истёк или неверен — обновите его в настройках. Без ключа можно выбрать
 бесплатный пресет (Pollinations) в один клик.
+</details>
+
+<details>
+<summary><b>Ошибка «Bad Image 0xc0e90002» при запуске (aidota_rust.dll)</b></summary>
+
+В версии 1.2.0 модуль загрузки ускорения защищён вызовом `SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX)` и оснащён 100% надёжным чистым Python-движком (pure-Python fallback). Если в вашей системе Windows 11 Smart App Control или Защитник блокировали стороннюю dll, теперь устаревший бинарник автоматически игнорируется и безопасно исключён из репозитория, а все вычисления мгновенно и без сбоев выполняются встроенным модулем Python.
+</details>
+
+<details>
+<summary><b>Как полностью очистить кэши и временные файлы разработки?</b></summary>
+
+Запустите скрипт `.venv\Scripts\python.exe clean_project.py` — он удалит артефакты `__pycache__`, `.pytest_cache`, `.cache`, логи и временные каталоги сборки, а также оптимизирует размер иконок героев через палитровое сжатие PNG.
 </details>
 
 ## Лицензия и благодарности
