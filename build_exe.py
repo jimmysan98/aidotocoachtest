@@ -23,6 +23,28 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
+
+for _stream in (sys.stdout, sys.stderr):
+    if _stream is not None and hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _safe_print(*args: Any, sep: str = " ", end: str = "\n", file: Any = None, flush: bool = False) -> None:
+    """Безопасный вывод в консоль без падений на cp1252/однобайтовых кодировках."""
+    target = sys.stdout if file is None else file
+    try:
+        print(*args, sep=sep, end=end, file=target, flush=flush)
+    except UnicodeEncodeError:
+        enc = getattr(target, "encoding", None) or "ascii"
+        text = sep.join(str(a) for a in args) + end
+        safe_text = text.encode(enc, errors="replace").decode(enc, errors="replace")
+        target.write(safe_text)
+        if flush and hasattr(target, "flush"):
+            target.flush()
 
 ROOT = Path(__file__).resolve().parent
 DIST = ROOT / "dist" / "AIDOTA"
@@ -66,7 +88,7 @@ def app_version() -> str:
 
 
 def run(cmd: list[str]) -> None:
-    print("+ " + " ".join(cmd), flush=True)
+    _safe_print("+ " + " ".join(cmd), flush=True)
     subprocess.run(cmd, cwd=ROOT, check=True)
 
 
@@ -87,7 +109,7 @@ def copy_dist_extras(version: str) -> bool:
     for name in EXTRA_DIRS:
         src = ROOT / name
         if src.is_dir():
-            print(f"  + {name}/")
+            _safe_print(f"  + {name}/")
             shutil.copytree(src, DIST / name, dirs_exist_ok=True)
     # Копируем data/ строго по allowlist (никаких coach_memory.json / player_profile.json).
     dist_data = DIST / "data"
@@ -103,12 +125,12 @@ def copy_dist_extras(version: str) -> bool:
     for fname in ALLOWED_DATA_FILES:
         src_file = src_data / fname
         if src_file.is_file():
-            print(f"  + data/{fname}")
+            _safe_print(f"  + data/{fname}")
             shutil.copy2(src_file, dist_data / fname)
     for name in EXTRA_FILES:
         src = ROOT / name
         if src.is_file():
-            print(f"  + {name}")
+            _safe_print(f"  + {name}")
             shutil.copy2(src, DIST / name)
     (DIST / ".cache").mkdir(parents=True, exist_ok=True)
     (DIST / "logs").mkdir(parents=True, exist_ok=True)
@@ -134,11 +156,11 @@ def copy_dist_extras(version: str) -> bool:
     vosk_small_src = ROOT / "vosk-model-small-ru-0.22"
     vosk_small_dst = DIST / "vosk-model-small-ru-0.22"
     if vosk_small_src.is_dir():
-        print("  + vosk-model-small-ru-0.22/ (компактная модель)")
+        _safe_print("  + vosk-model-small-ru-0.22/ (компактная модель)")
         shutil.copytree(vosk_small_src, vosk_small_dst, dirs_exist_ok=True)
     else:
         model_ok = False
-        print(
+        _safe_print(
             "  [!] ВНИМАНИЕ: vosk-model-small-ru-0.22 не найдена в корне проекта.\n"
             "      Установщик соберётся, но распознавание речи не будет работать\n"
             "      без скачивания модели. Скачайте её: https://alphacephei.com/vosk/models"
@@ -150,27 +172,27 @@ def build_installer(version: str) -> bool:
     """Собирает AIDOTA_Setup.exe через Inno Setup. Возвращает True при успехе."""
     iscc = find_iscc()
     if iscc is None:
-        print(
+        _safe_print(
             "\n[!] Inno Setup (ISCC.exe) не найден — установщик не собран.\n"
             "    Установите Inno Setup 6: winget install --id JRSoftware.InnoSetup\n"
             "    (или скачайте с https://jrsoftware.org/isinfo.php) и повторите сборку."
         )
         return False
 
-    print(f"\nСобираю установщик через Inno Setup: {iscc} …")
+    _safe_print(f"\nСобираю установщик через Inno Setup: {iscc} …")
     setup_exe = ROOT / "AIDOTA_Setup.exe"
     if setup_exe.is_file():
         setup_exe.unlink()
     run([str(iscc), f"/DMyAppVersion={version}", "installer.iss"])
     if not setup_exe.is_file():
-        print("[!] Ошибка: установщик не появился после работы ISCC.")
+        _safe_print("[!] Ошибка: установщик не появился после работы ISCC.")
         return False
     size_mb = setup_exe.stat().st_size / (1024 * 1024)
-    print("\n========================================================")
-    print(f"УСПЕХ! Установщик готов: {setup_exe} ({size_mb:.1f} МБ)")
-    print(f"Версия: {version}")
-    print("Можно отдавать пользователям: установка «из коробки», без настройки Python.")
-    print("========================================================\n")
+    _safe_print("\n========================================================")
+    _safe_print(f"УСПЕХ! Установщик готов: {setup_exe} ({size_mb:.1f} МБ)")
+    _safe_print(f"Версия: {version}")
+    _safe_print("Можно отдавать пользователям: установка «из коробки», без настройки Python.")
+    _safe_print("========================================================\n")
     return True
 
 
@@ -184,22 +206,22 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     version = app_version()
-    print(f"Собираю AIDOTA {version} через PyInstaller…")
+    _safe_print(f"Собираю AIDOTA {version} через PyInstaller…")
     run([sys.executable, "-m", "PyInstaller", "--clean", "--noconfirm", "AIDOTA.spec"])
 
-    print(f"\nКопирую данные в {DIST} …")
+    _safe_print(f"\nКопирую данные в {DIST} …")
     model_ok = copy_dist_extras(version)
     (DIST / "version.txt").write_text(f"{version}\n", encoding="utf-8")
 
     dist_exe = DIST / "AIDOTA.exe"
-    print(f"Приложение: {dist_exe} ({dist_exe.stat().st_size / (1024 * 1024):.1f} МБ)" if dist_exe.is_file() else "[!] exe не найден")
+    _safe_print(f"Приложение: {dist_exe} ({dist_exe.stat().st_size / (1024 * 1024):.1f} МБ)" if dist_exe.is_file() else "[!] exe не найден")
 
     if args.pyinstaller_only:
         return 0 if dist_exe.is_file() else 1
 
     ok = build_installer(version)
     if not model_ok:
-        print("[!] Соберите/скачайте vosk-model-small-ru-0.22 и пересоберите установщик.")
+        _safe_print("[!] Соберите/скачайте vosk-model-small-ru-0.22 и пересоберите установщик.")
     return 0 if ok else 1
 
 

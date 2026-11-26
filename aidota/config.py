@@ -25,6 +25,26 @@ from .security import register_config_secrets
 _OBFUSCATION_KEY = b"AIDOTA_KEY_SALT_2026_XOR"
 
 
+def safe_print(
+    *args: typing.Any,
+    sep: str = " ",
+    end: str = "\n",
+    file: typing.Any = None,
+    flush: bool = False,
+) -> None:
+    """Выводит текст в консоль без падений на cp1252/однобайтовых кодировках."""
+    target = sys.stdout if file is None else file
+    try:
+        print(*args, sep=sep, end=end, file=target, flush=flush)
+    except UnicodeEncodeError:
+        enc = getattr(target, "encoding", None) or "ascii"
+        text = sep.join(str(a) for a in args) + end
+        safe_text = text.encode(enc, errors="replace").decode(enc, errors="replace")
+        target.write(safe_text)
+        if flush and hasattr(target, "flush"):
+            target.flush()
+
+
 def obfuscate_api_key(plain_key: str) -> str:
     """Обфусцирует API-ключ через XOR + Base64 с префиксом enc:."""
     if not plain_key:
@@ -611,7 +631,7 @@ def _from_dict(cls: type, data: dict, path: str = "") -> typing.Any:
             kwargs[key] = _coerce(value, hint, field_path)
     unknown = sorted(set(data) - {f.name for f in dataclasses.fields(cls)})
     for key in unknown:
-        print(
+        safe_print(
             f"Предупреждение: неизвестный ключ конфигурации "
             f"'{path + '.' if path else ''}{key}' — пропущен.",
             file=sys.stderr,
@@ -651,7 +671,7 @@ def load_default_preset() -> dict:
             if isinstance(data, dict):
                 return data
         except Exception as exc:
-            print(f"Предупреждение: ошибка чтения {preset_path}: {exc}", file=sys.stderr)
+            safe_print(f"Предупреждение: ошибка чтения {preset_path}: {exc}", file=sys.stderr)
     return _defaults_dict()
 
 
@@ -732,7 +752,7 @@ def load_config(path: str | Path | None = None, *, create_if_missing: bool = Tru
     if not config_path.is_file():
         if create_if_missing:
             config = reset_to_defaults(config_path)
-            print(f"Создан файл конфигурации по умолчанию: {config_path}")
+            safe_print(f"Создан файл конфигурации по умолчанию: {config_path}")
             return config
         raise ConfigError(f"Файл конфигурации не найден: {config_path}")
 

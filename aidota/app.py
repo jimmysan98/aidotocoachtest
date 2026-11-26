@@ -14,7 +14,7 @@ from . import commands
 from .audio import AudioError, VoiceInput
 from .coach import Coach
 from .commands import Intent
-from .config import DEFAULT_CONFIG_PATH, PROJECT_ROOT, Config, save_config, save_llm_only
+from .config import DEFAULT_CONFIG_PATH, PROJECT_ROOT, Config, safe_print, save_config, save_llm_only
 from .context import AutonomousCoachAgent, _dig, collect_draft, get_game_mode, is_hero_in_combat, is_turbo
 from .dota_api import DotaApi
 from .gsi import GsiError, GsiServer
@@ -648,21 +648,21 @@ class Assistant:
             if self._overlay is not None:
                 self._overlay.update_status(status_text)
             with self._console_lock:
-                print(f"\r{status_text} ", end="", flush=True)
+                safe_print(f"\r{status_text} ", end="", flush=True)
         else:
             status_text = "⏳ Обрабатываю…"
             if self._overlay is not None:
                 self._overlay.update_status(status_text)
                 self._overlay.update_partial("")
             with self._console_lock:
-                print(f"\r{status_text:<60}", flush=True)
+                safe_print(f"\r{status_text:<60}", flush=True)
 
     def _on_partial(self, partial: str) -> None:
         if self._overlay is not None:
             self._overlay.update_status(f"🎙 {partial[:35]}…")
             self._overlay.update_partial(partial)
         with self._console_lock:
-            print(f"\r🎤 {partial[:70]:<70}", end="", flush=True)
+            safe_print(f"\r🎤 {partial[:70]:<70}", end="", flush=True)
 
     def _on_overlay_key_change(self, key_val: str) -> None:
         if key_val in ("free", "off", "none"):
@@ -1049,7 +1049,7 @@ class Assistant:
             self.log.info("Ввод: %s", text)
             if self._use_voice:
                 with self._console_lock:
-                    print(f"Вы: {text}")
+                    safe_print(f"Вы: {text}")
             if self._overlay is not None:
                 self._overlay.add_user_message(text)
             if hasattr(self, "on_log_message") and self.on_log_message:
@@ -1487,7 +1487,7 @@ class Assistant:
     # ================================================================== #
     def _status(self, text: str) -> None:
         with self._console_lock:
-            print(f"… {text}")
+            safe_print(f"… {text}")
         if self._overlay is not None:
             self._overlay.update_status(text)
 
@@ -1549,9 +1549,9 @@ class Assistant:
         )
         with self._say_lock:
             with self._console_lock:
-                print()
-                print("AIDOTA: " + text)
-                print("-" * 64)
+                safe_print()
+                safe_print("AIDOTA: " + text)
+                safe_print("-" * 64)
             if self._overlay is not None:
                 self._overlay.update(text, status=idle_status)
             if hasattr(self, "on_log_message") and self.on_log_message:
@@ -1573,4 +1573,4 @@ class Assistant:
             self._tts_warned = True
             self.log.warning("Озвучка недоступна: %s", self._tts.error)
             with self._console_lock:
-                print(f"(озвучка недоступна: {self._tts.error})")
+                safe_print(f"(озвучка недоступна: {self._tts.error})")

@@ -16,7 +16,21 @@ import unittest
 from pathlib import Path
 
 
+def _configure_utf8_console() -> None:
+    """Принудительно включает UTF-8 для stdout/stderr (защита от cp1252 в Windows CI)."""
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:  # noqa: BLE001
+                pass
+
+
+_configure_utf8_console()
+
+
 def main() -> int:
+    _configure_utf8_console()
     root = Path(__file__).resolve().parent.parent
     os.chdir(root)
     sys.path.insert(0, str(root))
