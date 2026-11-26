@@ -43,13 +43,54 @@ class TurnMetric:
         return data
 
 
+@dataclass(frozen=True, slots=True)
+class ReplicaTrace:
+    """Полный диагностический след одной реплики (Этап 1) в JSONL."""
+
+    ts: float
+    trace_id: str
+    match_id: str | None = None
+    game_time_trigger: int | float | None = None
+    game_time_spoken: int | float | None = None
+    latency_total_ms: int = 0
+    trigger_type: str = "voice"
+    stt_raw: str | None = None
+    stt_normalized: str | None = None
+    model_used: str | None = None
+    route_tier: str | None = None
+    prompt_chars: int = 0
+    prompt_tokens_est: int = 0
+    ms_stt: int = 0
+    ms_llm_ttft: int = 0
+    ms_llm_total: int = 0
+    ms_validator: int = 0
+    ms_tts: int = 0
+    llm_raw: str = ""
+    after_validator: str = ""
+    drop_reason: str | None = None
+
+    def to_safe_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        for field_name, limit in (
+            ("stt_raw", 300),
+            ("stt_normalized", 300),
+            ("llm_raw", 600),
+            ("after_validator", 600),
+            ("drop_reason", 120),
+        ):
+            val = data.get(field_name)
+            if isinstance(val, str) and val:
+                data[field_name] = redact_secrets(val)[:limit]
+        return data
+
+
 def new_turn_id() -> str:
     """Генерирует короткий идентификатор корреляции запроса."""
     return uuid.uuid4().hex[:12]
 
 
 class TelemetrySink:
-    """Потокобезопасный буфер метрик и запись в metrics.jsonl без SQLite."""
+    """Потокобезопасный буфер метрик и запись в metrics.jsonl / coach_traces.jsonl без SQLite."""
 
     def __init__(
         self,
@@ -63,12 +104,19 @@ class TelemetrySink:
         self._lock = threading.Lock()
         self._turns: deque[TurnMetric] = deque(maxlen=max(16, int(ring_size)))
         self._events: deque[dict[str, Any]] = deque(maxlen=max(32, int(ring_size)))
+        self._traces: deque[ReplicaTrace] = deque(maxlen=max(32, int(ring_size)))
 
     @property
     def metrics_path(self) -> Path | None:
         if self._log_dir is None:
             return None
         return self._log_dir / "metrics.jsonl"
+
+    @property
+    def traces_path(self) -> Path | None:
+        if self._log_dir is None:
+            return None
+        return self._log_dir / "coach_traces.jsonl"
 
     def set_log_dir(self, log_dir: Path | None) -> None:
         with self._lock:
@@ -78,7 +126,14 @@ class TelemetrySink:
         payload = {"type": "turn", **metric.to_safe_dict()}
         with self._lock:
             self._turns.append(metric)
-            self._write_line(payload)
+            self._write_line(payload, path=self.metrics_path)
+
+    def record_trace(self, trace: ReplicaTrace) -> None:
+        """Записывает диагностический след одной реплики в coach_traces.jsonl (с ротацией)."""
+        payload = {"type": "trace", **trace.to_safe_dict()}
+        with self._lock:
+            self._traces.append(trace)
+            self._write_line(payload, path=self.traces_path)
 
     def record_event(self, event: str, **fields: Any) -> None:
         safe_fields: dict[str, Any] = {}
@@ -95,21 +150,21 @@ class TelemetrySink:
         }
         with self._lock:
             self._events.append(payload)
-            self._write_line(payload)
+            self._write_line(payload, path=self.metrics_path)
 
-    def _write_line(self, payload: dict[str, Any]) -> None:
-        path = self.metrics_path
-        if path is None:
+    def _write_line(self, payload: dict[str, Any], *, path: Path | None = None) -> None:
+        target = self.metrics_path if path is None else path
+        if target is None:
             return
         line = redact_secrets(json.dumps(payload, ensure_ascii=False)) + "\n"
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            if path.is_file() and path.stat().st_size >= self._max_bytes:
-                backup = path.with_name(path.name + ".1")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.is_file() and target.stat().st_size >= self._max_bytes:
+                backup = target.with_name(target.name + ".1")
                 if backup.exists():
                     backup.unlink()
-                path.replace(backup)
-            with path.open("a", encoding="utf-8") as fh:
+                target.replace(backup)
+            with target.open("a", encoding="utf-8") as fh:
                 fh.write(line)
         except OSError:
             # Каталог может быть доступен только для чтения; продолжаем работать в памяти.
@@ -159,3 +214,38 @@ class TelemetrySink:
         with self._lock:
             items = list(self._turns)[-max(1, limit) :]
         return [t.to_safe_dict() for t in items]
+
+    def recent_traces(self, limit: int = 10) -> list[dict[str, Any]]:
+        with self._lock:
+            items = list(self._traces)[-max(1, limit) :]
+        return [t.to_safe_dict() for t in items]
+
+    def trace_summary(self) -> dict[str, Any]:
+        """Агрегированная сводка диагностических следов реплик (Этап 1)."""
+        with self._lock:
+            traces = list(self._traces)
+        by_trigger: dict[str, int] = {}
+        by_drop: dict[str, int] = {}
+        total_latencies: list[int] = []
+        ttfts: list[int] = []
+        for tr in traces:
+            by_trigger[tr.trigger_type] = by_trigger.get(tr.trigger_type, 0) + 1
+            if tr.drop_reason:
+                by_drop[tr.drop_reason] = by_drop.get(tr.drop_reason, 0) + 1
+            if tr.latency_total_ms > 0:
+                total_latencies.append(tr.latency_total_ms)
+            if tr.ms_llm_ttft > 0:
+                ttfts.append(tr.ms_llm_ttft)
+        return {
+            "total_traces": len(traces),
+            "by_trigger": by_trigger,
+            "by_drop_reason": by_drop,
+            "avg_latency_ms": int(sum(total_latencies) / len(total_latencies)) if total_latencies else 0,
+            "avg_ttft_ms": int(sum(ttfts) / len(ttfts)) if ttfts else 0,
+        }
+
+    def estimate_tokens(self, text: str) -> int:
+        clean = str(text or "")
+        if not clean:
+            return 0
+        return max(1, (len(clean) + 2) // 3)

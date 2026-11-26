@@ -192,27 +192,39 @@ def format_epistemic_item_notice(hero_name: str, item_name: str, state: str, not
     return f"Слоты {hero_name} в тумане войны — исходи из худшего сценария, не считай, что предметов нет."
 
 
-def format_enemy_state_prompt_block(hero_states: list[EnemyHeroState], clock_sec: int) -> str:
-    """Формирует сжатый блок для Seg 2 промпта с чётким разделением confirmed/inferred/unknown."""
+def format_enemy_state_prompt_block(
+    hero_states: list[EnemyHeroState],
+    clock_sec: int,
+    *,
+    compact: bool = False,
+) -> str:
+    """Формирует сжатый блок для Seg 2 промпта без шумного списка неподтверждённых врагов."""
     if not hero_states:
         return "Враги: драфт не определён."
 
-    lines: list[str] = [
-        "СОСТОЯНИЕ ВРАГОВ (ЭПИСТЕМИКА: confirmed=факт, inferred=вероятный тайминг, unknown=туман):"
-    ]
-    for hero in hero_states:
-        if not hero.is_picked:
-            continue
+    picked = [h for h in hero_states if h.is_picked]
+    if not picked:
+        return "Враги: драфт не определён."
+
+    lines: list[str] = []
+    unconfirmed_count = 0
+    for hero in picked:
         conf = [it.display_name for it in hero.confirmed_items()]
         inf = [it.display_name for it in hero.inferred_items()]
-        
+
         parts: list[str] = []
         if conf:
             parts.append(f"ФАКТ: {', '.join(conf)}")
         if inf:
             parts.append(f"ТАЙМИНГ (проверь): {', '.join(inf)}")
         if not conf and not inf:
-            parts.append("ТУМАН ВОЙНЫ (инвентарь скрыт)")
+            unconfirmed_count += 1
+            if compact:
+                if not (hero.ult_cooldown_until_sec and hero.ult_cooldown_until_sec > clock_sec):
+                    continue
+            else:
+                # Сохраняем явные строки только если есть подтверждённые/тайминговые враги или ульт на КД
+                parts.append("ТУМАН ВОЙНЫ (инвентарь скрыт)")
 
         ult_info = ""
         if hero.ult_cooldown_until_sec and hero.ult_cooldown_until_sec > clock_sec:
@@ -220,9 +232,19 @@ def format_enemy_state_prompt_block(hero_states: list[EnemyHeroState], clock_sec
             ult_info = f" [Ульт на КД: ещё ~{left}с]"
 
         lvl_info = f" Lvl {hero.level}" if hero.level else ""
-        lines.append(f"- {hero.hero_name}{lvl_info}: {'; '.join(parts)}{ult_info}")
+        detail_str = "; ".join(parts) if parts else ""
+        if detail_str or ult_info:
+            lines.append(f"- {hero.hero_name}{lvl_info}: {detail_str}{ult_info}".strip())
 
-    return "\n".join(lines)
+    # Если все или часть врагов без подтверждённых слотов — один компактный флаг без "розового слона"
+    if not lines or (unconfirmed_count == len(picked)):
+        return "СОСТОЯНИЕ ВРАГОВ: enemy_items_unconfirmed=true (слоты врагов не подтверждены — не выдумывай их предметы)."
+
+    header = "СОСТОЯНИЕ ВРАГОВ:" if compact else "СОСТОЯНИЕ ВРАГОВ (ЭПИСТЕМИКА: confirmed=факт, inferred=вероятный тайминг, unknown=туман):"
+    out = [header, *lines]
+    if unconfirmed_count > 0:
+        out.append("enemy_items_unconfirmed=true (остальные враги без подтверждённых слотов).")
+    return "\n".join(out)
 
 
 # ---------------------------------------------------------------------------
@@ -527,6 +549,10 @@ class EnemyStateTracker:
         """Формирует данные для WebUI с бейджами статусов."""
         return [hero.to_dict() for hero in self._enemies.values()]
 
-    def build_prompt_context(self, clock_sec: int) -> str:
+    def build_prompt_context(self, clock_sec: int, *, compact: bool = False) -> str:
         """Строит строгий контекст для передачи в системный промпт LLM."""
-        return format_enemy_state_prompt_block(list(self._enemies.values()), clock_sec)
+        return format_enemy_state_prompt_block(
+            list(self._enemies.values()),
+            clock_sec,
+            compact=compact,
+        )

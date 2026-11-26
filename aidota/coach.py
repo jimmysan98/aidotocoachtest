@@ -13,40 +13,51 @@ from __future__ import annotations
 import inspect
 import json
 import logging
+import re
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from . import beginner
 from .coach_brain import (
+    SKIP_TOKEN,
+    StrategyCard,
     build_brief,
+    build_deterministic_strategy_card,
     detect_query_intents,
     detect_query_kind,
+    is_skip_response,
     make_system_prompt,
+    parse_strategy_card_json,
     render_brief,
     render_prompt_assembly,
+    render_strategy_card,
     render_system_prompt,
     resolve_mentioned_hero,
     resolve_mentioned_heroes,
     retrieve_knowledge,
     sanitize_answer,
 )
-from .coach_memory import CoachMemory
+from .coach_memory import CoachMemory, _is_trustworthy_memory_text
 from .config import LlmConfig, OllamaConfig, PlayerProfile
 from .context import (
+    MatchSignalTracker,
     _dig,
     _extract_allplayers,
     analyze_player_mistakes,
     build_gsi_context,
     collect_draft,
+    compute_derived_signals,
     current_hero_npc,
     format_gsi_summary,
     get_game_mode,
     get_live_gsi_snapshot,
     get_player_profile_summary,
     gsi_stale_hint,
+    is_hero_in_combat,
     item_name,
     load_player_profile,
     update_player_profile_mistakes,
@@ -57,8 +68,11 @@ from .heroes import HeroCatalog, normalize
 from .item_validator import (
     analyze_team_draft_gaps,
     extract_player_owned_items,
+    format_allowed_item_candidates,
     pick_deterministic_fallback_item,
     sanitize_voice_or_chat_advice_text,
+    select_prevalidated_item_candidates,
+    validate_llm_item_reply,
 )
 from .live_advice import build_enemy_match_counter_tips, get_enemy_item_hints
 from .llm_router import (
@@ -81,9 +95,12 @@ from .map_timers import (
 )
 from .prompt_assembly import PromptAssembly, build_compact_match_suffix
 from .roles import normalize_position, position_label
-from .telemetry import TelemetrySink, TurnMetric, new_turn_id
+from .telemetry import ReplicaTrace, TelemetrySink, TurnMetric, new_turn_id
 
 log = logging.getLogger("aidota.coach")
+
+DEFAULT_LIVE_TTL_SEC: float = 3.8
+_STREAM_SENTENCE_RE = re.compile(r"(.+?[.!?…])(?:\s+|$)", re.S)
 
 
 def _supports_item_costs(func: Any, name: str = "item_costs") -> bool:
@@ -393,6 +410,53 @@ def _g(data: Any, *keys: str, default: Any = None) -> Any:
     return current
 
 
+_KEY_STRATEGY_ITEMS: frozenset[str] = frozenset({
+    "black_king_bar",
+    "blink",
+    "overwhelming_blink",
+    "swift_blink",
+    "arcane_blink",
+    "bfury",
+    "desolator",
+    "manta",
+    "orchid",
+    "bloodthorn",
+    "sheepstick",
+    "aghs_shard",
+    "ultimate_scepter",
+    "ultimate_scepter_2",
+    "refresher",
+    "satanic",
+    "skadi",
+    "butterfly",
+    "greater_crit",
+    "silver_edge",
+    "radiance",
+    "shivas_guard",
+    "assault",
+    "heart",
+    "monkey_king_bar",
+    "sphere",
+    "ethereal_blade",
+    "octarine_core",
+    "guardian_greaves",
+    "pipe",
+    "crimson_guard",
+    "lotus_orb",
+    "hurricane_pike",
+    "boots_of_bearing",
+    "mjollnir",
+    "gleipnir",
+    "diffusal_blade",
+    "disperser",
+    "nullifier",
+    "revenants_brooch",
+    "khanda",
+    "parasma",
+    "bkb",
+})
+
+
 class Coach:
     def __init__(
         self,
@@ -430,6 +494,19 @@ class Coach:
         self.router = router if router is not None else LlmRouter()
         self.preemption = preemption if preemption is not None else PreemptionController()
         self.delegate_macro_timers = False  # координация до консолидации в Фазе 4
+        self._last_llm_stats: dict[str, Any] = {}
+        self.last_trace: ReplicaTrace | None = None
+        self._strategy_card: StrategyCard | None = None
+        self._strategy_lock = threading.Lock()
+        self._strategy_last_trigger_at: float = 0.0
+        self._strategy_last_trigger_clock: int | None = None
+        self._strategy_last_hero: str = ""
+        self._strategy_last_items_key: tuple[str, ...] = ()
+        self._strategy_last_alive: bool | None = None
+        self._strategy_in_flight: bool = False
+        self._strategy_thread: threading.Thread | None = None
+        self._strategy_interval_sec: float = 75.0
+        self._strategist_stop = threading.Event()
 
         from .paths import bundled_data_dir, uses_isolated_runtime_root, writable_data_dir
 
@@ -475,6 +552,7 @@ class Coach:
         self.cooldown_tracker = CooldownTrackerSkill()
         self.lane_matchup = LaneMatchupSkill()
         self.enemy_state_tracker = EnemyStateTracker()
+        self.signal_tracker = MatchSignalTracker()
 
     def _http_session(self) -> Any:
         """Возвращает потокобезопасную HTTP-сессию (сохраняя injected/init-thread _session)."""
@@ -613,7 +691,7 @@ class Coach:
                 enemy_picks=list(snapshot.get("enemy_picks") or []),
                 catalog=self.catalog,
             )
-            enemy_state_block = self.enemy_state_tracker.build_prompt_context(c_sec)
+            enemy_state_block = self.enemy_state_tracker.build_prompt_context(c_sec, compact=True)
         stage_label = str(snapshot.get("game_stage") or "")
         hero_sec = data.get("hero") if isinstance(data.get("hero"), dict) else {}
         if hero_sec.get("alive") is False:
@@ -646,6 +724,9 @@ class Coach:
         brief_dict: dict[str, Any] | None = None,
         payload: dict[str, Any] | None = None,
         gsi_summary: str = "",
+        strategy_card: str = "",
+        derived_signals: list[str] | tuple[str, ...] | None = None,
+        allowed_items: list[str] | tuple[str, ...] | None = None,
     ) -> PromptAssembly:
         """Единая сборка 3-сегментного PromptAssembly с инвариантным system_prefix (Fork A1)."""
         eff_payload = payload if isinstance(payload, dict) else self.gsi_payload()
@@ -672,6 +753,20 @@ class Coach:
                 )
             if eff_brief_text and eff_gsi_summary:
                 eff_gsi_summary = ""
+        eff_strategy = strategy_card
+        if not eff_strategy:
+            card = self.get_strategy_card()
+            if card is not None and (
+                kind in ("advice", "build", "buy_next", "counter", "skill", "timing", "lane", "game_analysis", "proactive")
+                or (kind == "chat" and bool(match_snapshot))
+            ):
+                eff_strategy = render_strategy_card(card)
+        eff_signals = list(derived_signals) if derived_signals is not None else []
+        if not eff_signals and match_snapshot and isinstance(eff_payload, dict) and hasattr(self, "signal_tracker"):
+            try:
+                eff_signals, _ = self.signal_tracker.observe(eff_payload, position=self.position)
+            except Exception:  # noqa: BLE001
+                eff_signals = []
         return render_prompt_assembly(
             self.coach_name,
             eff_brief_text,
@@ -690,7 +785,171 @@ class Coach:
             enemy_picks=draft.enemy_picks,
             match_snapshot=match_snapshot,
             gsi_summary=eff_gsi_summary,
+            strategy_card=eff_strategy,
+            derived_signals=eff_signals,
+            allowed_items=allowed_items or (),
         )
+
+    def _capture_turn_state(self) -> tuple[float, int | None, bool | None, str]:
+        """Снимает момент, жизнь героя и фазу игры перед вызовом LLM (для TTL/дропа)."""
+        payload = self.gsi_payload()
+        if not isinstance(payload, dict):
+            return (time.monotonic(), None, None, "")
+        clock = self._current_clock_time(payload)
+        alive_raw = _g(payload, "hero", "alive")
+        alive = alive_raw if isinstance(alive_raw, bool) else None
+        g_state = str(_g(payload, "map", "game_state") or "")
+        return (time.monotonic(), clock, alive, g_state)
+
+    def _check_staleness_drop(
+        self,
+        captured: tuple[float, int | None, bool | None, str],
+        *,
+        ttl_seconds: float | None = None,
+        generation_id: int | None = None,
+        check_live_events: bool = False,
+    ) -> str | None:
+        """Проверяет устаревание генерации (preemption, TTL, смерть героя, смена фазы)."""
+        started_at, _prev_clock, was_alive, prev_state = captured
+        if generation_id is not None and not self.preemption.is_current(generation_id):
+            return "preempted"
+        if ttl_seconds is not None and ttl_seconds > 0.0 and (time.monotonic() - started_at) > float(ttl_seconds):
+            return "stale_ttl"
+        if check_live_events:
+            cur_payload = self.gsi_payload()
+            if isinstance(cur_payload, dict):
+                cur_alive = _g(cur_payload, "hero", "alive")
+                if was_alive is True and cur_alive is False:
+                    return "hero_died"
+                cur_state = str(_g(cur_payload, "map", "game_state") or "")
+                if prev_state and cur_state and cur_state != prev_state:
+                    return "phase_changed"
+        return None
+
+    def _post_maybe_stream(
+        self,
+        url: str,
+        payload_data: dict[str, Any],
+        *,
+        headers: dict[str, str] | None = None,
+        timeout: float = 10.0,
+        stream: bool = False,
+    ) -> Any:
+        sess = self._http_session()
+        kwargs: dict[str, Any] = {"json": payload_data, "timeout": timeout}
+        if headers is not None:
+            kwargs["headers"] = headers
+        if stream:
+            try:
+                return sess.post(url, stream=True, **kwargs)
+            except TypeError:
+                pass
+        return sess.post(url, **kwargs)
+
+    def _consume_streaming_response(
+        self,
+        response: Any,
+        *,
+        t_start: float,
+        on_sentence: Callable[[str], None] | None,
+        generation_id: int | None,
+        mode: str,
+    ) -> tuple[str, dict[str, int]]:
+        """Унифицированный парсер SSE (OpenAI) и NDJSON (Ollama) с пофразовым TTS-стримингом."""
+        chunks: list[str] = []
+        buffer = ""
+        ttft_ms: int | None = None
+        usage: dict[str, int] = {}
+
+        def _flush_ready(force: bool = False) -> None:
+            nonlocal buffer
+            if on_sentence is None:
+                return
+            if generation_id is not None and not self.preemption.is_current(generation_id):
+                return
+            while True:
+                m = _STREAM_SENTENCE_RE.match(buffer)
+                if not m:
+                    break
+                sent = " ".join(m.group(1).split()).strip()
+                buffer = buffer[m.end() :]
+                if not sent or is_skip_response(sent):
+                    continue
+                if len(sent) < 4 and sent.upper() in SKIP_TOKEN:
+                    continue
+                clean_s = sanitize_answer(sent, max_chars=220, max_sentences=1, kind="chat")
+                if clean_s and not is_skip_response(clean_s):
+                    try:
+                        on_sentence(clean_s)
+                    except Exception:  # noqa: BLE001
+                        pass
+            if force and buffer.strip():
+                tail = " ".join(buffer.split()).strip()
+                buffer = ""
+                if tail and not is_skip_response(tail):
+                    clean_t = sanitize_answer(tail, max_chars=220, max_sentences=1, kind="chat")
+                    if clean_t and not is_skip_response(clean_t):
+                        try:
+                            on_sentence(clean_t)
+                        except Exception:  # noqa: BLE001
+                            pass
+
+        for raw_line in response.iter_lines(decode_unicode=True):
+            if generation_id is not None and not self.preemption.is_current(generation_id):
+                raise OllamaError("Запрос отменён новым событием")
+            if raw_line is None:
+                continue
+            line = raw_line.decode("utf-8", errors="ignore") if isinstance(raw_line, bytes) else str(raw_line)
+            line = line.strip()
+            if not line:
+                continue
+            delta = ""
+            if mode == "openai":
+                if not line.startswith("data:"):
+                    continue
+                payload_str = line[5:].strip()
+                if payload_str == "[DONE]":
+                    break
+                try:
+                    evt = json.loads(payload_str)
+                except Exception:  # noqa: BLE001
+                    continue
+                evt_usage = evt.get("usage")
+                if isinstance(evt_usage, dict):
+                    usage = {
+                        "prompt_tokens": int(evt_usage.get("prompt_tokens") or 0),
+                        "completion_tokens": int(evt_usage.get("completion_tokens") or 0),
+                    }
+                choices = evt.get("choices") or []
+                if choices and isinstance(choices[0], dict):
+                    delta_obj = choices[0].get("delta") or {}
+                    delta = str(delta_obj.get("content") or "")
+            else:
+                try:
+                    evt = json.loads(line)
+                except Exception:  # noqa: BLE001
+                    continue
+                msg_obj = evt.get("message") or {}
+                if isinstance(msg_obj, dict):
+                    delta = str(msg_obj.get("content") or "")
+                if evt.get("done") is True and not delta:
+                    break
+            if delta:
+                if ttft_ms is None:
+                    ttft_ms = int((time.monotonic() - t_start) * 1000)
+                    with self._lock:
+                        self._last_llm_stats["ms_llm_ttft"] = ttft_ms
+                chunks.append(delta)
+                buffer += delta
+                # Удерживаем буфер, если начало похоже на SKIP
+                up = buffer.strip().upper()
+                if up and not (SKIP_TOKEN.startswith(up) and len(up) <= len(SKIP_TOKEN)):
+                    _flush_ready(force=False)
+
+        full_text = "".join(chunks).strip()
+        if not is_skip_response(full_text):
+            _flush_ready(force=True)
+        return full_text, usage
 
     def _ask_llm(
         self,
@@ -705,11 +964,17 @@ class Coach:
         voice: bool | None = None,
         dynamic_suffix: str = "",
         generation_id: int | None = None,
+        proactive: bool = False,
+        live_urgent: bool = False,
+        allow_skip: bool = False,
+        ttl_seconds: float | None = None,
+        on_sentence: Callable[[str], None] | None = None,
+        enforce_live_freshness: bool = False,
     ) -> str:
         """Запрос к LLM с учётом тиров маршрутизатора, стабильного KV-префикса и чисткой ответа."""
         eff_detail = detail_mode if detail_mode is not None else self.detail_mode
         eff_voice = (
-            kind in ("build", "counter", "skill", "timing", "lane")
+            kind in ("build", "counter", "skill", "timing", "lane", "proactive")
             if voice is None
             else bool(voice)
         )
@@ -731,13 +996,23 @@ class Coach:
             )
         elif kind == "why" and "ДЛЯ ОБЪЯСНЕНИЯ:" not in dynamic_suffix:
             suffix_extra.append("ДЛЯ ОБЪЯСНЕНИЯ: допустимо 2–3 коротких предложения, но без лекций.")
+        if (eff_voice or proactive or live_urgent) and kind not in ("analysis", "draft", "match", "why"):
+            suffix_extra.append(
+                "ФОРМАТ ЖИВОГО ГОЛОСА: ответь 1–2 короткими разговорными фразами (до 20–25 слов), "
+                "без списков, markdown и общих советов."
+            )
+        if allow_skip or proactive:
+            suffix_extra.append(
+                f"ЕСЛИ прямо сейчас нет критичного и неочевидного действия на ближайшие 20–30 секунд — "
+                f"верни ТОЛЬКО токен {SKIP_TOKEN} (одно слово, без пояснений и воды)."
+            )
         eff_suffix = "\n\n".join(suffix_extra)
 
         temperature = self._temperature_for(kind)
         max_tokens = self._max_tokens_for(kind)
 
         stop_filler = None
-        use_filler = eff_voice and kind not in ("draft", "analysis", "match", "pick")
+        use_filler = eff_voice and not proactive and kind not in ("draft", "analysis", "match", "pick")
         if use_filler and hasattr(self, "tts") and self.tts is not None and hasattr(self.tts, "start_filler_timer"):
             stop_filler = self.tts.start_filler_timer(0.8, generation_id=generation_id)
         elif use_filler and hasattr(self, "on_thinking_timer") and callable(self.on_thinking_timer):
@@ -750,6 +1025,39 @@ class Coach:
                 "DOTA_GAMERULES_STATE_PRE_GAME",
                 "DOTA_GAMERULES_STATE_STRATEGY_TIME",
             )
+            captured_state = self._capture_turn_state()
+            eff_ttl = (
+                ttl_seconds
+                if ttl_seconds is not None
+                else (DEFAULT_LIVE_TTL_SEC if (proactive or enforce_live_freshness) else None)
+            )
+            check_live = bool(proactive or enforce_live_freshness)
+
+            stream_cb: Callable[[str], None] | None = None
+            if on_sentence is not None:
+                def _guarded_stream_cb(sentence: str) -> None:
+                    drop_now = self._check_staleness_drop(
+                        captured_state,
+                        ttl_seconds=eff_ttl,
+                        generation_id=generation_id,
+                        check_live_events=check_live,
+                    )
+                    if drop_now is not None:
+                        return
+                    payload_now = self.gsi_payload()
+                    if isinstance(payload_now, dict):
+                        owned_now = extract_player_owned_items(payload_now)
+                        sentence, _ = validate_llm_item_reply(
+                            sentence,
+                            owned_now,
+                            role=self.position,
+                            proactive=proactive,
+                        )
+                    if sentence and not is_skip_response(sentence):
+                        on_sentence(sentence)
+
+                stream_cb = _guarded_stream_cb
+
             raw = self.chat(
                 prompt,
                 system=system,
@@ -761,7 +1069,10 @@ class Coach:
                 detail_mode=eff_detail,
                 dynamic_suffix=eff_suffix,
                 generation_id=generation_id,
-                allow_tools=False if (eff_voice or in_live_match) else None,
+                allow_tools=False if (eff_voice or in_live_match or proactive or live_urgent) else None,
+                proactive=proactive,
+                live_urgent=live_urgent,
+                on_sentence=stream_cb,
             )
         finally:
             if stop_filler is not None:
@@ -770,6 +1081,22 @@ class Coach:
                 except Exception:
                     pass
 
+        drop_reason = self._check_staleness_drop(
+            captured_state,
+            ttl_seconds=eff_ttl,
+            generation_id=generation_id,
+            check_live_events=check_live,
+        )
+        if drop_reason is not None:
+            with self._lock:
+                self._last_llm_stats.update({
+                    "llm_raw": raw,
+                    "after_validator": "",
+                    "drop_reason": drop_reason,
+                })
+            return ""
+
+        t_val_start = time.monotonic()
         clean = sanitize_answer(
             raw,
             max_chars=max_chars,
@@ -777,8 +1104,19 @@ class Coach:
             skill_level=self.skill_level,
             kind=kind,
             detail_mode=eff_detail,
+            allow_skip=allow_skip or proactive,
         )
-        if not clean and allow_retry and not eff_voice:
+        if is_skip_response(clean):
+            ms_validator = int((time.monotonic() - t_val_start) * 1000)
+            with self._lock:
+                self._last_llm_stats.update({
+                    "ms_validator": ms_validator,
+                    "llm_raw": raw,
+                    "after_validator": "",
+                    "drop_reason": "skip",
+                })
+            return ""
+        if not clean and allow_retry and not eff_voice and not proactive:
             retry_note = (
                 "ВАЖНО: ответ должен быть одним-двумя живыми предложениями по-русски, "
                 "без списков, markdown и вводных фраз."
@@ -795,6 +1133,8 @@ class Coach:
                 detail_mode=eff_detail,
                 dynamic_suffix=retry_suffix,
                 generation_id=generation_id,
+                proactive=proactive,
+                live_urgent=live_urgent,
             )
             clean = sanitize_answer(
                 raw,
@@ -803,7 +1143,18 @@ class Coach:
                 skill_level=self.skill_level,
                 kind=kind,
                 detail_mode=eff_detail,
+                allow_skip=allow_skip or proactive,
             )
+            if is_skip_response(clean):
+                clean = ""
+        ms_validator = int((time.monotonic() - t_val_start) * 1000)
+        with self._lock:
+            self._last_llm_stats.update({
+                "ms_validator": ms_validator,
+                "llm_raw": raw,
+                "after_validator": clean,
+                "drop_reason": "validator_rejected" if (raw and not clean) else self._last_llm_stats.get("drop_reason"),
+            })
         return clean
 
     def _cached_brief(
@@ -1641,9 +1992,69 @@ class Coach:
             respawn = 0
         return game_state, hero_alive, respawn
 
+    def _current_clock_time(self, payload: dict | None = None) -> int | None:
+        data = payload if isinstance(payload, dict) else self.gsi_payload()
+        raw = _g(data, "map", "clock_time") if isinstance(data, dict) else None
+        try:
+            return int(raw) if raw is not None and not isinstance(raw, bool) else None
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _estimate_messages_chars(messages: list[dict[str, Any]]) -> int:
+        return sum(len(str(m.get("content") or "")) for m in messages if isinstance(m, dict))
+
+    def record_replica_trace(
+        self,
+        *,
+        trigger_type: str = "voice",
+        match_id: str | None = None,
+        game_time_trigger: int | float | None = None,
+        game_time_spoken: int | float | None = None,
+        latency_total_ms: int = 0,
+        stt_raw: str | None = None,
+        stt_normalized: str | None = None,
+        ms_stt: int = 0,
+        ms_tts: int = 0,
+        llm_raw: str | None = None,
+        after_validator: str | None = None,
+        drop_reason: str | None = None,
+    ) -> ReplicaTrace:
+        """Создаёт и записывает диагностический след реплики в TelemetrySink."""
+        with self._lock:
+            stats = dict(self._last_llm_stats)
+        prompt_chars = int(stats.get("prompt_chars") or 0)
+        prompt_tokens_est = int(stats.get("prompt_tokens_est") or (max(1, (prompt_chars + 2) // 3) if prompt_chars else 0))
+        trace = ReplicaTrace(
+            ts=time.time(),
+            trace_id=new_turn_id(),
+            match_id=match_id if match_id is not None else self._active_match_id,
+            game_time_trigger=game_time_trigger,
+            game_time_spoken=game_time_spoken,
+            latency_total_ms=max(0, int(latency_total_ms)),
+            trigger_type=trigger_type,
+            stt_raw=stt_raw,
+            stt_normalized=stt_normalized,
+            model_used=stats.get("model_used"),
+            route_tier=stats.get("route_tier"),
+            prompt_chars=prompt_chars,
+            prompt_tokens_est=prompt_tokens_est,
+            ms_stt=max(0, int(ms_stt)),
+            ms_llm_ttft=max(0, int(stats.get("ms_llm_ttft") or 0)),
+            ms_llm_total=max(0, int(stats.get("ms_llm_total") or 0)),
+            ms_validator=max(0, int(stats.get("ms_validator") or 0)),
+            ms_tts=max(0, int(ms_tts)),
+            llm_raw=str(stats.get("llm_raw") if llm_raw is None else llm_raw or ""),
+            after_validator=str(stats.get("after_validator") if after_validator is None else after_validator or ""),
+            drop_reason=drop_reason if drop_reason is not None else stats.get("drop_reason"),
+        )
+        self.last_trace = trace
+        self.telemetry.record_trace(trace)
+        return trace
+
     def chat(
         self,
-        user_prompt: str,
+        user_query_or_prompt: str = "",
         system: str | None = None,
         *,
         temperature: float | None = None,
@@ -1655,8 +2066,12 @@ class Coach:
         dynamic_suffix: str = "",
         generation_id: int | None = None,
         allow_tools: bool | None = None,
+        proactive: bool = False,
+        live_urgent: bool = False,
+        on_sentence: Callable[[str], None] | None = None,
     ) -> str:
         """Запрос к LLM через маршрутизатор тиров, breaker, дедлайны и телеметрию."""
+        user_prompt = user_query_or_prompt
         system = system or make_system_prompt(self.coach_name, skill_level=self.skill_level)
         if generation_id is not None and not self.preemption.is_current(generation_id):
             raise OllamaError("Запрос отменён новым событием")
@@ -1680,6 +2095,8 @@ class Coach:
                 respawn_seconds=respawn,
                 requested_max_tokens=max_tokens,
                 allow_tools=allow_tools,
+                proactive=proactive,
+                live_urgent=live_urgent,
             )
 
             # Если маршрутизатор не менял модель на deepseek-chat/reasoner, оставляем base_model.
@@ -1714,13 +2131,14 @@ class Coach:
                         tier=tier_label,
                         kind=kind,
                         turn_id=turn_id,
+                        on_sentence=on_sentence,
                     )
                 return self._ollama_chat(
                     target_model,
                     user_prompt,
                     system,
                     temperature=temperature,
-                    max_tokens=max_tokens,
+                    max_tokens=route.api_max_tokens if (proactive or live_urgent or voice) else max_tokens,
                     include_dynamic=include_dynamic,
                     dynamic_suffix=dynamic_suffix,
                     deadline_seconds=deadline_sec,
@@ -1728,6 +2146,8 @@ class Coach:
                     tier=tier_label,
                     kind=kind,
                     turn_id=turn_id,
+                    allow_tools=bool(route.allow_tools),
+                    on_sentence=on_sentence,
                 )
 
             return _invoke(chosen_model, route.deadline_seconds, tier_label=route.tier)
@@ -1744,6 +2164,9 @@ class Coach:
                 hero_alive=hero_alive,
                 respawn_seconds=respawn,
                 requested_max_tokens=max_tokens,
+                allow_tools=allow_tools,
+                proactive=proactive,
+                live_urgent=live_urgent,
             )
             if fallback_route.tier == "tier2" and fallback_route.fallback_model:
                 log.warning(
@@ -1822,6 +2245,8 @@ class Coach:
         tier: str = "tier1",
         kind: str = "chat",
         turn_id: str | None = None,
+        allow_tools: bool = True,
+        on_sentence: Callable[[str], None] | None = None,
     ) -> str:
         t_start = time.monotonic()
         eff_turn = turn_id or new_turn_id()
@@ -1837,14 +2262,30 @@ class Coach:
             include_dynamic=include_dynamic,
             dynamic_suffix=dynamic_suffix,
         )
+        prompt_chars = self._estimate_messages_chars(messages)
+        with self._lock:
+            self._last_llm_stats = {
+                "model_used": model,
+                "route_tier": tier,
+                "prompt_chars": prompt_chars,
+                "prompt_tokens_est": self.telemetry.estimate_tokens("x" * prompt_chars),
+                "ms_llm_ttft": 0,
+                "ms_llm_total": 0,
+                "ms_validator": 0,
+                "llm_raw": "",
+                "after_validator": "",
+                "drop_reason": None,
+            }
+        use_stream = bool(on_sentence is not None and not allow_tools)
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
-            "stream": False,
+            "stream": use_stream,
             "keep_alive": "10m",
             "options": options,
-            "tools": COACH_TOOLS,
         }
+        if allow_tools:
+            payload["tools"] = COACH_TOOLS
         url = f"{self.llm.base_url.rstrip('/')}/api/chat"
 
         def post() -> Any:
@@ -1857,7 +2298,7 @@ class Coach:
                     raise OllamaError("Истёк тайм-аут запроса Ollama")
                 req_timeout = max(0.2, min(req_timeout, rem))
             try:
-                return self._http_session().post(url, json=payload, timeout=req_timeout)
+                return self._post_maybe_stream(url, payload, timeout=req_timeout, stream=use_stream)
             except Exception as exc:  # noqa: BLE001
                 raise OllamaError(f"Не удалось обратиться к Ollama: {exc}") from exc
 
@@ -1872,16 +2313,49 @@ class Coach:
                     response = post()
                 if getattr(response, "status_code", 0) != 200:
                     raise OllamaError(f"Ollama вернула HTTP {getattr(response, 'status_code', '?')}")
-                try:
-                    data = response.json()
-                    message = data.get("message") or {}
-                except Exception as exc:  # noqa: BLE001
-                    raise OllamaError(f"Некорректный ответ Ollama: {exc}") from exc
-                text = (message.get("content") or "").strip()
-                tool_calls = message.get("tool_calls") or []
+                text = ""
+                tool_calls: list[Any] = []
+                message: dict[str, Any] = {}
+                resp_headers = getattr(response, "headers", None) or {}
+                ctype = str(resp_headers.get("content-type", "") if hasattr(resp_headers, "get") else "").lower()
+                can_stream = use_stream and hasattr(response, "iter_lines")
+                if can_stream and ("ndjson" in ctype or "event-stream" in ctype):
+                    text, _ = self._consume_streaming_response(
+                        response,
+                        t_start=t_start,
+                        on_sentence=on_sentence,
+                        generation_id=generation_id,
+                        mode="ollama",
+                    )
+                else:
+                    try:
+                        data = response.json()
+                        message = data.get("message") or {}
+                        text = (message.get("content") or "").strip()
+                        tool_calls = message.get("tool_calls") or []
+                    except Exception as exc:  # noqa: BLE001
+                        if can_stream:
+                            text, _ = self._consume_streaming_response(
+                                response,
+                                t_start=t_start,
+                                on_sentence=on_sentence,
+                                generation_id=generation_id,
+                                mode="ollama",
+                            )
+                        else:
+                            raise OllamaError(f"Некорректный ответ Ollama: {exc}") from exc
+                    if text and on_sentence is not None and can_stream:
+                        self._emit_sentences_fallback(text, on_sentence)
                 if text:
                     self.router.breaker.record_success("ollama", self.llm.base_url, model)
                     elapsed_ms = int((time.monotonic() - t_start) * 1000)
+                    with self._lock:
+                        cur_ttft = int(self._last_llm_stats.get("ms_llm_ttft") or 0) or elapsed_ms
+                        self._last_llm_stats.update({
+                            "ms_llm_ttft": cur_ttft,
+                            "ms_llm_total": elapsed_ms,
+                            "llm_raw": text,
+                        })
                     self.telemetry.record_turn(
                         TurnMetric(
                             ts=time.time(),
@@ -2019,6 +2493,36 @@ class Coach:
             detail = f": {getattr(response, 'text', '')[:120]}"
         return detail
 
+    @staticmethod
+    def _emit_sentences_fallback(text: str, on_sentence: Callable[[str], None] | None) -> None:
+        """Разбивает целый non-stream ответ на предложения для потоковой очереди TTS."""
+        if on_sentence is None or not text or is_skip_response(text):
+            return
+        rest = text.strip()
+        emitted_any = False
+        while rest:
+            m = _STREAM_SENTENCE_RE.match(rest)
+            if not m:
+                break
+            sent = " ".join(m.group(1).split()).strip()
+            rest = rest[m.end() :]
+            if sent and not is_skip_response(sent):
+                try:
+                    on_sentence(sent)
+                    emitted_any = True
+                except Exception:  # noqa: BLE001
+                    pass
+        if rest and not is_skip_response(rest):
+            try:
+                on_sentence(rest)
+            except Exception:  # noqa: BLE001
+                pass
+        elif not emitted_any and not is_skip_response(text):
+            try:
+                on_sentence(text)
+            except Exception:  # noqa: BLE001
+                pass
+
     def _openai_chat(
         self,
         model: str,
@@ -2036,6 +2540,7 @@ class Coach:
         tier: str = "tier1",
         kind: str = "chat",
         turn_id: str | None = None,
+        on_sentence: Callable[[str], None] | None = None,
     ) -> str:
         t_start = time.monotonic()
         eff_turn = turn_id or new_turn_id()
@@ -2063,6 +2568,20 @@ class Coach:
             include_dynamic=include_dynamic,
             dynamic_suffix=dynamic_suffix,
         )
+        prompt_chars = self._estimate_messages_chars(messages)
+        with self._lock:
+            self._last_llm_stats = {
+                "model_used": model,
+                "route_tier": tier,
+                "prompt_chars": prompt_chars,
+                "prompt_tokens_est": self.telemetry.estimate_tokens("x" * prompt_chars),
+                "ms_llm_ttft": 0,
+                "ms_llm_total": 0,
+                "ms_validator": 0,
+                "llm_raw": "",
+                "after_validator": "",
+                "drop_reason": None,
+            }
         headers = {"Authorization": f"Bearer {self.llm.api_key}"} if self.llm.api_key else {}
         url = f"{base_url}/chat/completions"
 
@@ -2072,11 +2591,14 @@ class Coach:
         if "pollinations" in base_url.lower():
             headers.clear()
 
+        use_stream = bool(on_sentence is not None and not tool_defs and not reasoner_mode)
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
             "max_tokens": tokens,
         }
+        if use_stream:
+            payload["stream"] = True
         if send_temperature and not reasoner_mode:
             payload["temperature"] = temp
         if tool_defs:
@@ -2098,7 +2620,13 @@ class Coach:
                     raise OllamaError("Превышен дедлайн ожидания ответа ИИ")
                 req_timeout = max(0.2, min(req_timeout, rem))
             try:
-                return self._http_session().post(url, json=payload_data, headers=headers, timeout=req_timeout)
+                return self._post_maybe_stream(
+                    url,
+                    payload_data,
+                    headers=headers,
+                    timeout=req_timeout,
+                    stream=bool(payload_data.get("stream")),
+                )
             except Exception as exc:  # noqa: BLE001
                 raise OllamaError(f"Не удалось обратиться к {self.llm.base_url}: {exc}") from exc
 
@@ -2120,16 +2648,44 @@ class Coach:
                     if failure == "billing":
                         raise OllamaError(f"Недостаточно средств / квота API (HTTP {status_code}){err_detail}")
                     raise OllamaError(f"API вернул HTTP {status_code}{err_detail}")
-                try:
-                    data = response.json()
-                    text, tool_calls, reasoning_content, usage = extract_openai_message(data)
-                    if not (data.get("choices") or []):
-                        raise OllamaError("API вернул ответ без choices")
-                    msg = (data.get("choices") or [{}])[0].get("message") or {}
-                except OllamaError:
-                    raise
-                except Exception as exc:  # noqa: BLE001
-                    raise OllamaError(f"Некорректный ответ API: {exc}") from exc
+                text = ""
+                tool_calls: list[Any] = []
+                reasoning_content = ""
+                usage: dict[str, Any] = {}
+                msg: dict[str, Any] = {}
+                resp_headers = getattr(response, "headers", None) or {}
+                ctype = str(resp_headers.get("content-type", "") if hasattr(resp_headers, "get") else "").lower()
+                can_stream = use_stream and hasattr(response, "iter_lines")
+                if can_stream and "text/event-stream" in ctype:
+                    text, usage = self._consume_streaming_response(
+                        response,
+                        t_start=t_start,
+                        on_sentence=on_sentence,
+                        generation_id=generation_id,
+                        mode="openai",
+                    )
+                else:
+                    try:
+                        data = response.json()
+                        text, tool_calls, reasoning_content, usage = extract_openai_message(data)
+                        if not (data.get("choices") or []):
+                            raise OllamaError("API вернул ответ без choices")
+                        msg = (data.get("choices") or [{}])[0].get("message") or {}
+                    except OllamaError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001
+                        if can_stream:
+                            text, usage = self._consume_streaming_response(
+                                response,
+                                t_start=t_start,
+                                on_sentence=on_sentence,
+                                generation_id=generation_id,
+                                mode="openai",
+                            )
+                        else:
+                            raise OllamaError(f"Некорректный ответ API: {exc}") from exc
+                    if text and on_sentence is not None:
+                        self._emit_sentences_fallback(text, on_sentence)
 
                 if reasoning_content:
                     log.debug("DeepSeek reasoning_content (%s chars): %s", len(reasoning_content), reasoning_content[:300])
@@ -2137,6 +2693,14 @@ class Coach:
                 if text:
                     self.router.breaker.record_success("openai_compatible", base_url, model)
                     elapsed_ms = int((time.monotonic() - t_start) * 1000)
+                    with self._lock:
+                        cur_ttft = int(self._last_llm_stats.get("ms_llm_ttft") or 0) or elapsed_ms
+                        self._last_llm_stats.update({
+                            "ms_llm_ttft": cur_ttft,
+                            "ms_llm_total": elapsed_ms,
+                            "llm_raw": text,
+                            "prompt_tokens_est": usage.get("prompt_tokens") or self._last_llm_stats.get("prompt_tokens_est", 0),
+                        })
                     self.telemetry.record_turn(
                         TurnMetric(
                             ts=time.time(),
@@ -2280,11 +2844,24 @@ class Coach:
     # ------------------------------------------------------------------ #
     # Память
     # ------------------------------------------------------------------ #
-    def remember(self, question: str, answer: str) -> None:
+    def remember(
+        self,
+        question: str,
+        answer: str,
+        *,
+        validated: bool = True,
+        source: str = "dialog",
+    ) -> None:
+        clean_q = " ".join(str(question or "").split())[:200]
+        clean_a = " ".join(str(answer or "").split())[:600]
+        if not clean_q or not clean_a or not validated or is_skip_response(clean_a):
+            return
+        if not _is_trustworthy_memory_text(clean_a):
+            return
         with self._lock:
-            self._memory.append({"q": question[:200], "a": answer[:600]})
+            self._memory.append({"q": clean_q, "a": clean_a})
         try:
-            self.long_memory.remember(question, answer)
+            self.long_memory.remember(clean_q, clean_a, validated=validated, source=source)
         except Exception as exc:  # noqa: BLE001 — память не должна ронять ответ
             log.debug("Не удалось записать реплику в долговременную память: %s", exc)
 
@@ -2394,6 +2971,14 @@ class Coach:
         *,
         voice: bool = False,
         generation_id: int | None = None,
+        trigger_type: str | None = None,
+        stt_raw: str | None = None,
+        stt_normalized: str | None = None,
+        ms_stt: int = 0,
+        emit_trace: bool = True,
+        ttl_seconds: float | None = None,
+        on_sentence: Callable[[str], None] | None = None,
+        enforce_live_freshness: bool | None = None,
     ) -> str:
         """Интерактивный диалог с тренером (Астра / Джарвис) по любому вопросу."""
         clean_query = " ".join((user_query or "").split())
@@ -2421,6 +3006,22 @@ class Coach:
         brief_dict, _ = self._cached_brief(payload, hero)
         brief_text, knowledge, kind = self._tactical_context(clean_query, hero=hero)
         eff_detail = "concise" if voice else self.detail_mode
+        owned_items = extract_player_owned_items(payload) if isinstance(payload, dict) else set()
+        draft_picks = collect_draft(payload, self.catalog) if isinstance(payload, dict) else None
+        enemy_picks_list = list(draft_picks.enemy_picks) if draft_picks is not None else []
+        hero_name_str = str((hero or {}).get("localized_name") or current_hero_npc(payload) or "")
+        allowed_item_names: list[str] = []
+        allowed_item_lines: list[str] = []
+        if isinstance(payload, dict) and kind in ("build", "counter", "advice", "chat") and hero_name_str:
+            candidates = select_prevalidated_item_candidates(
+                payload,
+                hero_name=hero_name_str,
+                role=self.position,
+                enemy_heroes=enemy_picks_list,
+                limit=3,
+            )
+            allowed_item_names = [c[0] for c in candidates]
+            allowed_item_lines = format_allowed_item_candidates(candidates)
 
         assembly = self._build_turn_assembly(
             kind=kind,
@@ -2429,6 +3030,7 @@ class Coach:
             knowledge=knowledge,
             brief_dict=brief_dict,
             payload=payload,
+            allowed_items=allowed_item_lines,
         )
         prompt = "\n".join(
             [
@@ -2438,7 +3040,14 @@ class Coach:
         )
 
         max_sentences, max_chars = self._chat_limits(kind, voice=voice)
+        t_call_start = time.monotonic()
+        trigger_clock = self._current_clock_time(payload)
+        eff_trigger_type = trigger_type or ("voice" if voice else "chat")
+        eff_stt_raw = stt_raw if stt_raw is not None else (clean_query if voice else None)
+        eff_stt_norm = stt_normalized if stt_normalized is not None else (clean_query if voice else None)
         try:
+            eff_freshness = bool(voice) if enforce_live_freshness is None else bool(enforce_live_freshness)
+            eff_ttl = DEFAULT_LIVE_TTL_SEC if (voice and ttl_seconds is None) else ttl_seconds
             answer = self._ask_llm(
                 prompt,
                 system=assembly.system_prefix,
@@ -2449,15 +3058,69 @@ class Coach:
                 voice=voice,
                 dynamic_suffix=assembly.dynamic_suffix,
                 generation_id=generation_id,
+                ttl_seconds=eff_ttl,
+                on_sentence=on_sentence,
+                enforce_live_freshness=eff_freshness,
             )
+            with self._lock:
+                drop_now = self._last_llm_stats.get("drop_reason")
+            if not answer and drop_now in ("skip", "stale_ttl", "hero_died", "phase_changed", "preempted"):
+                if emit_trace:
+                    self.record_replica_trace(
+                        trigger_type=eff_trigger_type,
+                        match_id=self._active_match_id,
+                        game_time_trigger=trigger_clock,
+                        latency_total_ms=int((time.monotonic() - t_call_start) * 1000) + max(0, int(ms_stt)),
+                        stt_raw=eff_stt_raw,
+                        stt_normalized=eff_stt_norm,
+                        ms_stt=ms_stt,
+                        after_validator="",
+                        drop_reason=str(drop_now),
+                    )
+                return ""
+            is_start_q = any(tok in clean_query.lower() for tok in ("на старте", "стартов", "старт"))
+            if answer and isinstance(payload, dict) and not is_start_q:
+                answer, _ = validate_llm_item_reply(
+                    answer,
+                    owned_items,
+                    allowed_candidates=allowed_item_names or None,
+                    hero_name=hero_name_str,
+                    role=self.position,
+                    enemy_heroes=enemy_picks_list,
+                    proactive=False,
+                )
             if not answer:
                 answer = self._knowledge_fallback(clean_query, hero, kind, knowledge)
-            self.remember(clean_query, answer)
+            self.remember(clean_query, answer, validated=True, source=eff_trigger_type)
+            if emit_trace:
+                self.record_replica_trace(
+                    trigger_type=eff_trigger_type,
+                    match_id=self._active_match_id,
+                    game_time_trigger=trigger_clock,
+                    latency_total_ms=int((time.monotonic() - t_call_start) * 1000) + max(0, int(ms_stt)),
+                    stt_raw=eff_stt_raw,
+                    stt_normalized=eff_stt_norm,
+                    ms_stt=ms_stt,
+                    after_validator=answer,
+                )
             return answer
         except OllamaError as exc:
             self.last_error = str(exc)
             log.warning("Ошибка LLM при ответе тренера: %s", exc)
             error_text = str(exc).lower()
+            drop = "preempted" if "отменён" in error_text else f"llm_error:{error_text[:60]}"
+            if emit_trace:
+                self.record_replica_trace(
+                    trigger_type=eff_trigger_type,
+                    match_id=self._active_match_id,
+                    game_time_trigger=trigger_clock,
+                    latency_total_ms=int((time.monotonic() - t_call_start) * 1000) + max(0, int(ms_stt)),
+                    stt_raw=eff_stt_raw,
+                    stt_normalized=eff_stt_norm,
+                    ms_stt=ms_stt,
+                    after_validator="",
+                    drop_reason=drop,
+                )
             if "отменён" in error_text:
                 return ""
             if "401" in error_text or "403" in error_text or "истёк" in error_text:
@@ -2757,15 +3420,35 @@ class Coach:
     def advice(self, hero: dict, screen_context: str = "", user_query: str = "") -> str:
         if not hero:
             return "Не понял, для какого героя совет. Назовите героя или наведите на него курсор."
+        payload = self.gsi_payload()
         meta_lines, popularity = self._hero_meta_lines(hero, include_items=False)
         gsi_text = self.gsi_context()
-        history = self.memory_context()
+        brief_dict, _ = self._cached_brief(payload, hero)
         brief_text, knowledge, kind = self._tactical_context(
             user_query or "что купить дальше", hero=hero
         )
+        eff_kind = kind if user_query else "build"
+        owned_items = extract_player_owned_items(payload) if isinstance(payload, dict) else set()
+        hero_name_str = str(hero.get("localized_name") or hero.get("name") or "")
+        enemy_picks = collect_draft(payload, self.catalog).enemy_picks if isinstance(payload, dict) else []
+        candidates = select_prevalidated_item_candidates(
+            owned_items,
+            hero_name=hero_name_str,
+            role=self.position,
+            enemy_heroes=enemy_picks,
+            limit=3,
+        )
+        assembly = self._build_turn_assembly(
+            kind=eff_kind,
+            brief_text=brief_text,
+            knowledge=knowledge,
+            brief_dict=brief_dict,
+            payload=payload,
+            allowed_items=format_allowed_item_candidates(candidates),
+        )
 
         # Проверяем тайминг матча
-        clock = _g(self.gsi_payload(), "map", "clock_time")
+        clock = _g(payload, "map", "clock_time")
         is_pre_game = (clock is None or clock <= 60)
         minute_num = clock // 60 if clock else 0
         hints = self._enemy_hints()
@@ -2775,8 +3458,8 @@ class Coach:
             guidance = (
                 f"Ответь конкретно, свежо и живо на вопрос игрока: «{user_query}». "
                 f"Текущая минута игры: {minute_num}. {threats_str} "
-                "Дай точный тактический совет (способности, позиционирование, тайминги, взаимодействие или ключевой предмет). "
-                "Опирайся на тактический бриф и знания по вопросу; не выдумывай предметы и тайминги. "
+                "Дай точный тактический совет (способности, позиционирование, тайминги, взаимодействие или допустимый слот). "
+                "Опирайся на тактический бриф и знания; не выдумывай предметы и тайминги. "
                 "Строго 1–2 предложения (до 25 слов) для быстрой озвучки голосом."
             )
         elif is_pre_game:
@@ -2807,33 +3490,45 @@ class Coach:
 
         prompt_parts = [
             self._role_block(),
-            f"Игрок на герое {hero.get('localized_name')}.",
+            f"Игрок на герое {hero_name_str}.",
         ]
         if user_query:
             prompt_parts.append(f"Конкретный вопрос игрока: «{user_query}».")
         prompt_parts.extend(meta_lines)
-        if brief_text:
-            prompt_parts.append("Тактический бриф:\n" + brief_text)
-        if knowledge:
-            prompt_parts.append("Знания по вопросу:\n" + "\n".join(f"- {k}" for k in knowledge))
-        prompt_parts.append(f"Ситуация в игре (GSI): {gsi_text}")
+        if "СОСТОЯНИЕ МАТЧА" not in assembly.dynamic_suffix:
+            if brief_text:
+                prompt_parts.append("Тактический бриф:\n" + brief_text)
+            if knowledge:
+                prompt_parts.append("Знания по вопросу:\n" + "\n".join(f"- {k}" for k in knowledge))
+            prompt_parts.append(f"Ситуация в игре (GSI): {gsi_text}")
         if screen_context:
             prompt_parts.append(f"Контекст с экрана: {screen_context}")
-        if history:
-            prompt_parts.append(f"Недавний диалог:\n{history}")
         prompt_parts.append(guidance)
 
         prompt = "\n".join(prompt_parts)
         try:
             answer = self._ask_llm(
                 prompt,
-                kind=kind if user_query else "build",
+                system=assembly.system_prefix,
+                kind=eff_kind,
                 max_sentences=2,
                 max_chars=240,
+                voice=True,
+                dynamic_suffix=assembly.dynamic_suffix,
             )
+            if answer and owned_items:
+                answer, _ = validate_llm_item_reply(
+                    answer,
+                    owned_items,
+                    allowed_candidates=[c[0] for c in candidates],
+                    hero_name=hero_name_str,
+                    role=self.position,
+                    enemy_heroes=enemy_picks,
+                    proactive=False,
+                )
             if not answer:
                 answer = self._fallback_advice(hero, meta_lines, gsi_text, "пустой ответ LLM")
-            self.remember(user_query or f"Совет для {hero.get('localized_name')}", answer)
+            self.remember(user_query or f"Совет для {hero_name_str}", answer, validated=True, source="advice")
             return answer
         except OllamaError as exc:
             log.info("LLM недоступна, использую запасной ответ: %s", exc)
@@ -2980,9 +3675,24 @@ class Coach:
         enemy_picks = collect_draft(payload, self.catalog).enemy_picks
         hints = self._enemy_hints()
         owned_items = extract_player_owned_items(payload)
-        context = build_gsi_context(
-            payload, self.catalog, self.api.items(), age_seconds=self.gsi_age(),
-            position=self.position,
+        brief_dict, _ = self._cached_brief(payload, hero)
+        candidates = select_prevalidated_item_candidates(
+            payload,
+            hero_name=str(hero_name or ""),
+            role=self.position,
+            enemy_heroes=enemy_picks,
+            item_costs=self.api.item_costs() if hasattr(self.api, "item_costs") else None,
+            gold=int(gold or 0),
+            limit=3,
+        )
+        allowed_names = [c[0] for c in candidates]
+        allowed_lines = format_allowed_item_candidates(candidates)
+        assembly = self._build_turn_assembly(
+            kind="build",
+            brief_text="",
+            brief_dict=brief_dict,
+            payload=payload,
+            allowed_items=allowed_lines,
         )
         build_knowledge: list[str] = []
         if hero_name:
@@ -3015,28 +3725,34 @@ class Coach:
                 f"Текущий инвентарь: {', '.join(inventory) or 'не виден'}.",
                 f"Золото: {gold if gold is not None else 'неизвестно'}.",
                 f"Пики врага: {', '.join(enemy_picks) or 'не видны'}.",
-                *([f"Вражеские контр-предметы: {', '.join(hints)}.", ""] if hints else []),
+                *([f"Вражеские контр-предметы: {', '.join(hints)}."] if hints else []),
                 *([f"База билдов: {' '.join(build_knowledge)}"] if build_knowledge else []),
-                "Ситуация (GSI):",
-                context,
                 "",
-                "Назови 1–2 конкретных следующих предмета с объяснением «почему» "
-                "(учитывай вражеский драфт: BKB/Manta/Eul/Lotus против сайленсов, "
-                "Spirit Vessel/Skadi/Shiva против регена, MKB против уклонения и т.д.).",
+                "Выбери 1–2 лучших предмета СТРОГО из списка ДОПУСТИМЫХ КАНДИДАТОВ и коротко объясни «почему» (без уже купленных слотов).",
             ]
         )
         try:
-            answer = self._ask_llm(prompt, kind="build", max_sentences=2, max_chars=240)
+            answer = self._ask_llm(
+                prompt,
+                system=assembly.system_prefix,
+                kind="build",
+                max_sentences=2,
+                max_chars=240,
+                voice=True,
+                dynamic_suffix=assembly.dynamic_suffix,
+            )
             if not answer:
                 raise OllamaError("пустой ответ")
-            answer = sanitize_voice_or_chat_advice_text(
+            answer, _ = validate_llm_item_reply(
                 answer,
                 owned_items,
+                allowed_candidates=allowed_names,
                 hero_name=str(hero_name or ""),
                 role=self.position,
                 enemy_heroes=enemy_picks,
+                proactive=False,
             )
-            self.remember("Что купить дальше", answer)
+            self.remember("Что купить дальше", answer, validated=True, source="buy_next")
             return answer
         except OllamaError as exc:
             self.last_error = str(exc)
@@ -3592,8 +4308,289 @@ class Coach:
 
         return "\n".join(lines)
 
+    # ------------------------------------------------------------------ #
+    # Контур 2 (Фоновый асинхронный стратег) и Контур 1 (Proactive)
+    # ------------------------------------------------------------------ #
+    def get_strategy_card(self) -> StrategyCard | None:
+        """Возвращает текущую макро-карточку матча (StrategyCard)."""
+        with self._strategy_lock:
+            return self._strategy_card
+
+    def set_strategy_card(self, card: StrategyCard | None) -> None:
+        """Устанавливает текущую макро-карточку матча."""
+        with self._strategy_lock:
+            self._strategy_card = card
+
+    def _can_run_strategist_llm(self) -> bool:
+        if self.provider == "ollama":
+            return bool(getattr(self.llm, "model", None) or getattr(self.llm, "base_url", None))
+        return bool(str(getattr(self.llm, "api_key", "") or "").strip())
+
+    def update_strategy_card(
+        self,
+        payload: dict[str, Any] | None = None,
+        *,
+        force_llm: bool = False,
+        reason: str = "periodic",
+    ) -> StrategyCard | None:
+        """Обновляет StrategyCard (0-мс детерминированная база + опциональный тихий JSON-вызов LLM)."""
+        eff_payload = payload if isinstance(payload, dict) else self.gsi_payload()
+        if not isinstance(eff_payload, dict) or not eff_payload:
+            return self.get_strategy_card()
+
+        match_id = self._sync_match_id(eff_payload)
+        hero = self.current_hero()
+        brief_dict, _ = self._cached_brief(eff_payload, hero)
+        owned_items = extract_player_owned_items(eff_payload)
+        clock_sec = self._current_clock_time(eff_payload)
+        hero_name = str(
+            (hero or {}).get("localized_name")
+            or (brief_dict or {}).get("hero_name")
+            or current_hero_npc(eff_payload)
+            or ""
+        )
+
+        base_card = build_deterministic_strategy_card(
+            brief_dict,
+            owned_items=owned_items,
+            clock_sec=clock_sec,
+            match_id=match_id,
+        )
+
+        chosen_card = base_card
+        if force_llm and self._can_run_strategist_llm() and not self._strategist_stop.is_set():
+            t_start = time.monotonic()
+            draft = collect_draft(eff_payload, self.catalog)
+            snapshot = self._compact_match_snapshot(eff_payload, brief=brief_dict)
+            enemy_block = self.enemy_state_tracker.build_prompt_context(clock_sec or 0, compact=True)
+            strat_prompt = "\n".join(
+                part
+                for part in (
+                    f"Повод обновления плана: {reason}.",
+                    f"Герой игрока: {hero_name} (pos {self.position})." if hero_name else f"Позиция игрока: pos {self.position}.",
+                    f"Мои предметы: {', '.join(sorted(owned_items)) or 'старт'}.",
+                    snapshot or "",
+                    enemy_block or "",
+                    (
+                        'Верни ТОЛЬКО валидный JSON строго с ключами: '
+                        '{"win_condition": "...", "main_threat": "...", '
+                        '"playstyle_now": "farm|split|smoke|defend|roshan", '
+                        '"next_items_plan": [{"item": "...", "why": "..."}]}. '
+                        "Максимум 2–3 предмета в next_items_plan, без уже купленных. Без пояснений вне JSON."
+                    ),
+                )
+                if part
+            )
+            try:
+                raw_json = self.chat(
+                    strat_prompt,
+                    system="Ты фоновый макро-стратег Dota 2. Отвечай строго одним JSON-объектом.",
+                    temperature=0.2,
+                    max_tokens=320,
+                    include_dynamic=False,
+                    kind="strategist",
+                    voice=False,
+                    detail_mode="concise",
+                    allow_tools=False,
+                    proactive=False,
+                    live_urgent=False,
+                )
+                chosen_card = parse_strategy_card_json(
+                    raw_json,
+                    fallback_card=base_card,
+                    owned_items=owned_items,
+                    hero_name=hero_name,
+                    role=self.position,
+                    enemy_heroes=list(draft.enemy_picks),
+                    clock_sec=clock_sec,
+                    match_id=match_id,
+                )
+                self.record_replica_trace(
+                    trigger_type="strategist",
+                    match_id=match_id,
+                    game_time_trigger=clock_sec,
+                    game_time_spoken=clock_sec,
+                    latency_total_ms=int((time.monotonic() - t_start) * 1000),
+                    llm_raw=raw_json,
+                    after_validator=render_strategy_card(chosen_card),
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.debug("Фоновый стратег (%s) использует детерминированную базу: %s", reason, exc)
+
+        self.set_strategy_card(chosen_card)
+        return chosen_card
+
+    def maybe_schedule_strategist(
+        self,
+        payload: dict[str, Any] | None = None,
+        *,
+        now_monotonic: float | None = None,
+        force_llm: bool = True,
+    ) -> bool:
+        """Планирует асинхронное обновление StrategyCard на драфте, смерти, покупке слота или каждые 60–90 с."""
+        eff_payload = payload if isinstance(payload, dict) else self.gsi_payload()
+        if not isinstance(eff_payload, dict) or not eff_payload:
+            return False
+
+        game_state = str(_g(eff_payload, "map", "game_state") or "")
+        if not game_state:
+            return False
+
+        clock_sec = self._current_clock_time(eff_payload)
+        hero_name = str(current_hero_npc(eff_payload) or "")
+        alive_raw = _g(eff_payload, "hero", "alive")
+        hero_alive = alive_raw if isinstance(alive_raw, bool) else None
+        owned = tuple(sorted(extract_player_owned_items(eff_payload)))
+        now_m = time.monotonic() if now_monotonic is None else float(now_monotonic)
+
+        reason: str | None = None
+        with self._strategy_lock:
+            if self._strategy_in_flight:
+                return False
+
+            prev_items = set(self._strategy_last_items_key)
+            new_key_items = (set(owned) - prev_items) & _KEY_STRATEGY_ITEMS
+            hero_changed = bool(hero_name and hero_name != self._strategy_last_hero)
+            just_died = hero_alive is False and self._strategy_last_alive is True
+
+            if self._strategy_card is None or hero_changed:
+                reason = "draft" if "HERO_SELECTION" in game_state or "STRATEGY" in game_state else "initial"
+            elif just_died:
+                reason = "death"
+            elif new_key_items:
+                reason = f"key_item:{next(iter(sorted(new_key_items)))}"
+            elif (
+                (now_m - self._strategy_last_trigger_at) >= self._strategy_interval_sec
+                or (
+                    clock_sec is not None
+                    and self._strategy_last_trigger_clock is not None
+                    and abs(clock_sec - self._strategy_last_trigger_clock) >= int(self._strategy_interval_sec)
+                )
+            ):
+                reason = "periodic"
+
+            self._strategy_last_hero = hero_name or self._strategy_last_hero
+            self._strategy_last_items_key = owned
+            if hero_alive is not None:
+                self._strategy_last_alive = hero_alive
+
+            if reason is None:
+                return False
+
+            self._strategy_last_trigger_at = now_m
+            if clock_sec is not None:
+                self._strategy_last_trigger_clock = clock_sec
+            self._strategy_in_flight = True
+
+        snapshot_copy = dict(eff_payload)
+        eff_reason = reason
+
+        # Всегда 0 мс даём детерминированную базу, если карточки ещё не было
+        if self.get_strategy_card() is None:
+            try:
+                self.update_strategy_card(snapshot_copy, force_llm=False, reason=eff_reason)
+            except Exception:  # noqa: BLE001
+                pass
+
+        if not (force_llm and self._can_run_strategist_llm()):
+            with self._strategy_lock:
+                self._strategy_in_flight = False
+            return True
+
+        def _bg_worker() -> None:
+            try:
+                self.update_strategy_card(snapshot_copy, force_llm=True, reason=eff_reason)
+            except Exception as exc:  # noqa: BLE001
+                log.debug("Ошибка фонового потока стратега: %s", exc)
+            finally:
+                with self._strategy_lock:
+                    self._strategy_in_flight = False
+
+        th = threading.Thread(target=_bg_worker, name="aidota-strategist", daemon=True)
+        with self._strategy_lock:
+            self._strategy_thread = th
+        th.start()
+        return True
+
+    def proactive_call(
+        self,
+        trigger_reason: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        generation_id: int | None = None,
+        kind: str = "proactive",
+        ttl_seconds: float | None = None,
+        on_sentence: Callable[[str], None] | None = None,
+    ) -> str:
+        """Контур 1 проактивный вызов с правом тишины SKIP и чтением StrategyCard."""
+        eff_payload = payload if isinstance(payload, dict) else self.gsi_payload()
+        self._sync_match_id(eff_payload)
+        hero = self.current_hero()
+        brief_dict, _ = self._cached_brief(eff_payload, hero)
+        brief_text = render_brief(brief_dict, compact=True) if isinstance(brief_dict, dict) else ""
+
+        assembly = self._build_turn_assembly(
+            kind=kind,
+            brief_text=brief_text,
+            brief_dict=brief_dict,
+            payload=eff_payload,
+        )
+        prompt = (
+            f"Событие матча: {trigger_reason}\n"
+            f"Если действие не критично прямо сейчас (ближайшие 20–30с) — верни только {SKIP_TOKEN}."
+        )
+        t_start = time.monotonic()
+        trigger_clock = self._current_clock_time(eff_payload)
+        try:
+            answer = self._ask_llm(
+                prompt,
+                system=assembly.system_prefix,
+                kind=kind,
+                max_sentences=2,
+                max_chars=180,
+                allow_retry=False,
+                voice=True,
+                dynamic_suffix=assembly.dynamic_suffix,
+                generation_id=generation_id,
+                proactive=True,
+                live_urgent=True,
+                allow_skip=True,
+                ttl_seconds=ttl_seconds if ttl_seconds is not None else DEFAULT_LIVE_TTL_SEC,
+                on_sentence=on_sentence,
+                enforce_live_freshness=True,
+            )
+            self.record_replica_trace(
+                trigger_type="proactive",
+                match_id=self._active_match_id,
+                game_time_trigger=trigger_clock,
+                latency_total_ms=int((time.monotonic() - t_start) * 1000),
+                after_validator=answer,
+            )
+            return answer
+        except OllamaError as exc:
+            err_l = str(exc).lower()
+            drop = "preempted" if "отменён" in err_l else f"llm_error:{err_l[:60]}"
+            self.record_replica_trace(
+                trigger_type="proactive",
+                match_id=self._active_match_id,
+                game_time_trigger=trigger_clock,
+                latency_total_ms=int((time.monotonic() - t_start) * 1000),
+                after_validator="",
+                drop_reason=drop,
+            )
+            return ""
+
     def close(self) -> None:
         """Освобождает ресурсы, включая все потоковые HTTP-сессии."""
+        self._strategist_stop.set()
+        strat_thread: threading.Thread | None = None
+        with self._strategy_lock:
+            strat_thread = self._strategy_thread
+        if strat_thread is not None and strat_thread.is_alive():
+            try:
+                strat_thread.join(timeout=1.0)
+            except Exception:  # noqa: BLE001
+                pass
         if getattr(self.api, "sync_service", None) is not None:
             try:
                 from .meta_db import _LIVE_META_LOCK, _LIVE_META_PROVIDER, set_live_meta_provider

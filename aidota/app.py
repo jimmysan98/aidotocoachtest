@@ -15,7 +15,7 @@ from .audio import AudioError, VoiceInput
 from .coach import Coach
 from .commands import Intent
 from .config import DEFAULT_CONFIG_PATH, PROJECT_ROOT, Config, save_config, save_llm_only
-from .context import AutonomousCoachAgent, _dig, collect_draft, get_game_mode, is_turbo
+from .context import AutonomousCoachAgent, _dig, collect_draft, get_game_mode, is_hero_in_combat, is_turbo
 from .dota_api import DotaApi
 from .gsi import GsiError, GsiServer
 from .heroes import HeroCatalog, HeroMatch
@@ -103,6 +103,8 @@ class Assistant:
             self._gsi = GsiServer(config.gsi.host, config.gsi.port, config.gsi.token)
         coach_name = "Джарвис" if "dmitry" in str(getattr(config.tts, "edge_voice", "")).lower() else "Астра"
         self._telemetry = TelemetrySink(config.logs_path)
+        self._last_trace_tts_ms = 0
+        self._tts.on_event = self._on_tts_event
         self._coach = Coach(
             self._api,
             self._catalog,
@@ -127,6 +129,7 @@ class Assistant:
         self._vision = HeroVision(config.vision, PROJECT_ROOT, self._catalog)
         self._worker: threading.Thread | None = None
         self._text_queue: queue.Queue[str] = queue.Queue()
+        self._last_monitor_hp: float | None = None
 
     # ================================================================== #
     # Жизненный цикл
@@ -365,6 +368,11 @@ class Assistant:
 
             self._greet()
             self._refresh_catalog_in_background()
+            if not self.text_mode and self._tts.enabled:
+                try:
+                    self._tts.prewarm_phrase_cache(background=True)
+                except Exception:  # noqa: BLE001
+                    pass
 
             def _skills_monitor() -> None:
                 while not self.stop_event.is_set():
@@ -376,8 +384,14 @@ class Assistant:
                         self.log.warning("Ошибка чтения GSI в мониторе: %s", exc)
 
                     self._sync_catalog_and_match_swr(payload)
+                    if payload:
+                        try:
+                            self._coach.maybe_schedule_strategist(payload)
+                        except Exception:  # noqa: BLE001
+                            pass
 
                     if payload:
+                        hp_low_triggered_now = False
                         try:
                             # 1. Проверка критического уровня здоровья (< 25% HP) и Barge-In
                             hero_data = payload.get("hero") or {}
@@ -387,10 +401,23 @@ class Assistant:
                                     hp_val = float(hp_pct)
                                     if hp_val < 25.0 and not self._low_hp_alerted:
                                         self._low_hp_alerted = True
+                                        hp_low_triggered_now = True
                                         self._coach.preemption.cancel_current()
+                                        low_hp_msg = "Внимание, критически мало хэпэ! Отойди под вышку или жми стики!"
+                                        t_ref = time.monotonic()
                                         self._say(
-                                            "Внимание, критически мало хэпэ! Отойди под вышку или жми стики!",
+                                            low_hp_msg,
                                             priority=SpeechPriority.CRITICAL,
+                                        )
+                                        clk = _dig(payload, "map", "clock_time")
+                                        self._coach.record_replica_trace(
+                                            trigger_type="reflex",
+                                            match_id=self._coach._active_match_id,
+                                            game_time_trigger=clk,
+                                            game_time_spoken=clk,
+                                            latency_total_ms=int((time.monotonic() - t_ref) * 1000),
+                                            llm_raw="",
+                                            after_validator=low_hp_msg,
                                         )
                                     elif hp_val >= 40.0:
                                         self._low_hp_alerted = False
@@ -400,6 +427,38 @@ class Assistant:
                             self._skills_error_count += 1
                             self.log.warning("Ошибка проверки HP в мониторе: %s", exc)
 
+                        try:
+                            turbo_now = bool(is_turbo(payload))
+                            reflex = self._coach.macro_timer.check_hero_reflexes(
+                                payload,
+                                turbo=turbo_now,
+                                match_id=self._coach._active_match_id,
+                                proactive=not self._agent.is_autonomy_off(),
+                            )
+                            if reflex is not None:
+                                reflex_msg, reflex_prio = reflex
+                                if not (hp_low_triggered_now and reflex_prio == 1):
+                                    t_ref = time.monotonic()
+                                    if reflex_prio == 1:
+                                        self._low_hp_alerted = True
+                                        self._coach.preemption.cancel_current()
+                                        self._say(reflex_msg, priority=SpeechPriority.CRITICAL)
+                                    else:
+                                        self._say(reflex_msg, priority=SpeechPriority.TIMERS, ttl=5.0)
+                                    clk = _dig(payload, "map", "clock_time")
+                                    self._coach.record_replica_trace(
+                                        trigger_type="reflex",
+                                        match_id=self._coach._active_match_id,
+                                        game_time_trigger=clk,
+                                        game_time_spoken=clk,
+                                        latency_total_ms=int((time.monotonic() - t_ref) * 1000),
+                                        llm_raw="",
+                                        after_validator=reflex_msg,
+                                    )
+                        except Exception as exc:  # noqa: BLE001
+                            self._skills_error_count += 1
+                            self.log.warning("Ошибка check_hero_reflexes: %s", exc)
+
                     try:
                         alert = self._coach.check_skills_alerts()
                         if alert:
@@ -407,7 +466,18 @@ class Assistant:
                             if alert != self._last_alert_text or (now_m - self._last_alert_at) > 20.0:
                                 self._last_alert_text = alert
                                 self._last_alert_at = now_m
+                                t_ref = time.monotonic()
                                 self._say(alert, priority=SpeechPriority.TIMERS, ttl=5.0)
+                                clk = _dig(payload, "map", "clock_time") if payload else None
+                                self._coach.record_replica_trace(
+                                    trigger_type="reflex",
+                                    match_id=self._coach._active_match_id,
+                                    game_time_trigger=clk,
+                                    game_time_spoken=clk,
+                                    latency_total_ms=int((time.monotonic() - t_ref) * 1000),
+                                    llm_raw="",
+                                    after_validator=alert,
+                                )
                     except Exception as exc:  # noqa: BLE001
                         self._skills_error_count += 1
                         self.log.warning("Ошибка check_skills_alerts: %s", exc)
@@ -422,6 +492,16 @@ class Assistant:
                             self.log.warning("Ошибка обновления HUD оверлея: %s", exc)
 
                     if payload and hasattr(self, "_agent") and self._agent is not None:
+                        in_combat = is_hero_in_combat(payload, prev_hp_pct=self._last_monitor_hp)
+                        raw_hp_now = _dig(payload, "hero", "health_percent")
+                        try:
+                            self._last_monitor_hp = float(raw_hp_now) if raw_hp_now is not None else self._last_monitor_hp
+                        except (TypeError, ValueError):
+                            pass
+                        if in_combat:
+                            # В активном бою разрешены только критические рефлексы Контура 0 — проактивные реплики подавляем
+                            self.stop_event.wait(1.0)
+                            continue
                         try:
                             agent_advice = self._agent.process_tick(
                                 payload,
@@ -435,7 +515,19 @@ class Assistant:
                                     self._last_alert_text = agent_advice
                                     self._last_alert_at = now_m
                                     self.log.info("Автономный совет тренера: %s", agent_advice)
+                                    t_ag = time.monotonic()
                                     self._say(agent_advice, priority=SpeechPriority.LLM_COACH, ttl=8.0)
+                                    clk = _dig(payload, "map", "clock_time") if payload else None
+                                    ag_type = "death" if "подряд" in agent_advice.lower() or "таверне" in agent_advice.lower() else "proactive"
+                                    self._coach.record_replica_trace(
+                                        trigger_type=ag_type,
+                                        match_id=self._coach._active_match_id,
+                                        game_time_trigger=clk,
+                                        game_time_spoken=clk,
+                                        latency_total_ms=int((time.monotonic() - t_ag) * 1000),
+                                        llm_raw="",
+                                        after_validator=agent_advice,
+                                    )
                         except Exception as exc:  # noqa: BLE001
                             self._skills_error_count += 1
                             self.log.warning("Ошибка автономного агента в мониторе: %s", exc)
@@ -544,6 +636,14 @@ class Assistant:
 
     def _on_ptt_status(self, is_active: bool) -> None:
         if is_active:
+            try:
+                self._coach.preemption.cancel_current()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                self._tts.barge_in(preserve_critical=True)
+            except Exception:  # noqa: BLE001
+                pass
             status_text = f"🎙 Слушаю… (зажата [{self._voice.ptt_key_label}])"
             if self._overlay is not None:
                 self._overlay.update_status(status_text)
@@ -1243,21 +1343,13 @@ class Assistant:
         if kind == commands.CHAT:
             query = (intent.arg or intent.raw).strip()
             self._status(f"{self._coach.coach_name} думает…")
-            gen_id, _ = self._coach.preemption.start_turn()
-            self._tts.bump_generation()
-            answer = self._coach.coach_chat(query, voice=self._use_voice, generation_id=gen_id)
-            if answer:
-                self._answer(answer)
+            self._handle_coach_query(query, voice=self._use_voice)
             return
 
         raw_text = (intent.raw or "").strip()
         if raw_text:
             self._status(f"{self._coach.coach_name} думает…")
-            gen_id, _ = self._coach.preemption.start_turn()
-            self._tts.bump_generation()
-            answer = self._coach.coach_chat(raw_text, voice=self._use_voice, generation_id=gen_id)
-            if answer:
-                self._answer(answer)
+            self._handle_coach_query(raw_text, voice=self._use_voice)
             return
 
         self._say(
@@ -1265,25 +1357,80 @@ class Assistant:
             "Или назовите героя, наведя на него курсор."
         )
 
+    def _handle_coach_query(self, query: str, *, voice: bool) -> None:
+        gen_id, _ = self._coach.preemption.start_turn()
+        if voice:
+            try:
+                self._tts.barge_in(preserve_critical=True)
+            except Exception:  # noqa: BLE001
+                self._tts.bump_generation()
+        else:
+            self._tts.bump_generation()
+
+        streamed_sentences: list[str] = []
+
+        def _on_sentence(sent: str) -> None:
+            if sent and self._coach.preemption.is_current(gen_id):
+                streamed_sentences.append(sent)
+                if self._use_voice and self._tts_enabled:
+                    self._tts.speak(
+                        sent,
+                        priority=SpeechPriority.LLM_COACH,
+                        ttl=3.8,
+                        generation_id=gen_id,
+                    )
+
+        answer = self._coach.coach_chat(
+            query,
+            voice=voice,
+            generation_id=gen_id,
+            stt_raw=getattr(self._voice, "last_stt_raw", None) if voice else None,
+            stt_normalized=getattr(self._voice, "last_stt_normalized", None) if voice else None,
+            ms_stt=int(getattr(self._voice, "last_stt_ms", 0) or 0) if voice else 0,
+            ttl_seconds=3.8 if voice else None,
+            on_sentence=_on_sentence if (voice and self._tts_enabled) else None,
+        )
+        if answer:
+            self._answer(
+                answer,
+                speak=not bool(streamed_sentences),
+                ttl=3.8 if voice else 0.0,
+                generation_id=gen_id,
+            )
+
     def _handle_advice(self, intent: Intent) -> None:
         hero = self._resolve_hero(intent)
         if hero is None:
             query = (intent.raw or "дай совет по игре").strip()
             self._status(f"{self._coach.coach_name} думает…")
-            gen_id, _ = self._coach.preemption.start_turn()
-            self._tts.bump_generation()
-            answer = self._coach.coach_chat(query, voice=self._use_voice, generation_id=gen_id)
-            self._answer(answer)
+            self._handle_coach_query(query, voice=self._use_voice)
             return
         self._last_hero = hero
         self._status(f"Думаю про {hero.get('localized_name')}…")
         screen_context = self._vision_context(exclude=hero)
+        gen_id, _ = self._coach.preemption.start_turn()
+        if self._use_voice:
+            self._tts.barge_in(preserve_critical=True)
         answer = self._coach.advice(hero, screen_context, user_query=intent.raw)
-        self._answer(answer)
+        if answer:
+            self._answer(answer, ttl=3.8 if self._use_voice else 0.0, generation_id=gen_id)
 
-    def _answer(self, text: str) -> None:
+    def _answer(
+        self,
+        text: str,
+        *,
+        speak: bool = True,
+        ttl: float = 0.0,
+        generation_id: int | None = None,
+    ) -> None:
         self._last_answer = text
-        self._say(text, priority=SpeechPriority.LLM_COACH)
+        self._say(
+            text,
+            speak=speak,
+            priority=SpeechPriority.LLM_COACH,
+            ttl=ttl,
+            generation_id=generation_id,
+        )
 
     def _resolve_hero(self, intent: Intent) -> dict | None:
         if intent.hero is not None:
@@ -1343,6 +1490,30 @@ class Assistant:
             print(f"… {text}")
         if self._overlay is not None:
             self._overlay.update_status(text)
+
+    def _on_tts_event(self, kind: str, payload: dict[str, Any]) -> None:
+        """Фиксирует события TTS (ms_tts, drop_reason) в телеметрии и следах реплик."""
+        if kind == "spoken":
+            self._last_trace_tts_ms = int(payload.get("ms_tts") or 0)
+        if not hasattr(self, "_telemetry") or self._telemetry is None:
+            return
+        if kind in ("dropped_ttl_expired", "dropped_ttl_expired_after_synth", "dropped_preempted", "skipped_preempted"):
+            drop_map = {
+                "dropped_ttl_expired": "stale_ttl",
+                "dropped_ttl_expired_after_synth": "stale_ttl",
+                "dropped_preempted": "preempted",
+                "skipped_preempted": "preempted",
+            }
+            gsi = self._coach.gsi_payload() if hasattr(self, "_coach") else None
+            clk = _dig(gsi, "map", "clock_time") if isinstance(gsi, dict) else None
+            self._coach.record_replica_trace(
+                trigger_type="tts_queue",
+                match_id=getattr(self._coach, "_active_match_id", None),
+                game_time_trigger=clk,
+                ms_tts=0,
+                after_validator=str(payload.get("text") or ""),
+                drop_reason=drop_map.get(kind, kind),
+            )
 
     def _on_tts_speaking_changed(self, is_speaking: bool) -> None:
         """Синхронизирует открытый микрофон и статус с реальным состоянием очереди TTS."""

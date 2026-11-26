@@ -131,6 +131,24 @@ FILLERS: tuple[str, ...] = (
     "Хм, слушай...",
 )
 
+# Детерминированные фразы Контура 0 для предварительного кэширования на диск в AppData
+REFLEX_CACHED_PHRASES: tuple[str, ...] = (
+    *FILLERS,
+    "Внимание, критически мало хэпэ! Отойди под вышку или жми стики!",
+    "Не хватает маны на ульт — заряди стики или отступи под вышку.",
+    "Забыт ТП-свиток — доложи в быстрый закуп и привези курьером.",
+    "Внимание: через 30 секунд пропадёт Аегис!",
+    "Внимание: через 30 секунд возможно появление Рошана!",
+    "Внимание! Вражеский мидер достиг шестого уровня! Возможен ганг на боковых линиях.",
+    "Через 20 секунд водные руны на миду, запушь пачку.",
+    "Через 20 секунд активная руна на реке — помогите законтролить спавн.",
+    "Через 20 секунд появятся лотосы (лечение и мана) и руны богатства.",
+    "Через 20 секунд появится Терзатель на двадцатой минуте! Соберитесь за бесплатным Шардом.",
+    "Через 20 секунд волна катапульт — можно давить вышку!",
+    "53-я секунда — время стакать нейтралов.",
+    "Седьмая минута — появились нейтральные предметы 1-го разряда! Зачищайте лесные лагеря за жетонами.",
+)
+
 
 def normalize_for_speech(text: str, max_chars: int = 700) -> str:
     """Нормализует текст строго ПЕРЕД отправкой в TTS:
@@ -216,7 +234,7 @@ def _is_corrupted_static_waveform(data: Any) -> bool:
 class SmartAudioCache:
     """Локальный Smart Cache аудио-фраз на диске (cache/audio/) и в оперативной памяти."""
 
-    def __init__(self, cache_dir: Path | None = None):
+    def __init__(self, cache_dir: Path | None = None, *, max_disk_files: int = 800):
         if cache_dir:
             p = Path(cache_dir)
             self.disk_dir = p if p.name == "audio" else p / "audio"
@@ -227,6 +245,7 @@ class SmartAudioCache:
         except Exception:  # noqa: BLE001
             pass
 
+        self._max_disk_files = max(50, int(max_disk_files))
         self._ram: dict[str, tuple[Any, int]] = {}
         self._save_threads: list[threading.Thread] = []
         self._lock = threading.Lock()
@@ -234,6 +253,14 @@ class SmartAudioCache:
     def _hash_key(self, text: str, voice: str, rate: str, pitch: str, provider: str = "edge") -> str:
         content = f"{provider}|{voice}|{rate}|{pitch}|{text.strip().lower()}"
         return hashlib.md5(content.encode("utf-8")).hexdigest()
+
+    def has(self, text: str, voice: str, rate: str, pitch: str, provider: str = "edge") -> bool:
+        """Быстрая проверка наличия фразы в RAM или дисковом кэше без декодирования."""
+        key = self._hash_key(text, voice, rate, pitch, provider=provider)
+        with self._lock:
+            if key in self._ram:
+                return True
+        return (self.disk_dir / f"{key}.wav").is_file()
 
     def get(self, text: str, voice: str, rate: str, pitch: str, provider: str = "edge") -> tuple[Any, int] | None:
         """Возвращает (numpy_data, samplerate) за <0.01 сек, если фраза уже кэшировалась."""
@@ -294,6 +321,13 @@ class SmartAudioCache:
 
                 wav_path = self.disk_dir / f"{key}.wav"
                 sf.write(str(wav_path), data, sr, format="WAV")
+                try:
+                    existing = sorted(self.disk_dir.glob("*.wav"), key=lambda p: p.stat().st_mtime)
+                    excess = len(existing) - self._max_disk_files
+                    for stale in existing[: max(0, excess)]:
+                        stale.unlink(missing_ok=True)
+                except Exception:  # noqa: BLE001
+                    pass
             except Exception as exc:  # noqa: BLE001
                 log.debug("Не удалось записать аудио-кэш %s: %s", key, exc)
 
@@ -340,6 +374,9 @@ class HumanTTSManager:
         self._stop = threading.Event()
         self._interrupt_event = threading.Event()
         self._is_speaking_event = threading.Event()
+        self._active_priority: int = int(SpeechPriority.NORMAL)
+        self._active_generation: int = 0
+        self._local_adapters: list[tuple[str, Callable[[str], tuple[Any, int]]]] = []
 
         self._engine = None
         self._pyttsx_engine = None
@@ -423,7 +460,9 @@ class HumanTTSManager:
             except Exception:  # noqa: BLE001
                 pass
 
-    def _drain_stale_locked(self, *, min_generation: int) -> int:
+    def _drain_stale_locked(
+        self, *, min_generation: int, preserve_critical: bool = False
+    ) -> int:
         """Очищает из очереди элементы ниже ``min_generation`` (под ``_queue_lock``)."""
         kept: list[_QueueItem] = []
         dropped = 0
@@ -435,7 +474,11 @@ class HumanTTSManager:
             if not isinstance(item, _QueueItem) or item.is_stop:
                 kept.append(item)
                 continue
-            if item.generation_id < min_generation or item.priority > SpeechPriority.CRITICAL:
+            is_critical = item.priority <= SpeechPriority.CRITICAL
+            if preserve_critical and is_critical and item.generation_id >= min_generation:
+                kept.append(item)
+                continue
+            if item.generation_id < min_generation or (not preserve_critical and item.priority > SpeechPriority.CRITICAL):
                 item.success = False
                 item.done_event.set()
                 dropped += 1
@@ -445,16 +488,30 @@ class HumanTTSManager:
             self._queue.put(item)
         return dropped
 
-    def barge_in(self) -> None:
+    def barge_in(self, *, preserve_critical: bool = False) -> None:
         """Мгновенно прерывает текущее воспроизведение и очищает устаревшие фразы (Level 1 CRITICAL)."""
-        log.info("Barge-In: прерывание текущего аудиопотока")
+        log.info("Barge-In: прерывание текущего аудиопотока (preserve_critical=%s)", preserve_critical)
         with self._queue_lock:
             self._generation_id += 1
             gen = self._generation_id
-            dropped = self._drain_stale_locked(min_generation=gen)
-        self._interrupt_event.set()
-        self._stop_current_playback()
-        self._emit_event("barge_in", generation_id=gen, purged=dropped)
+            dropped = self._drain_stale_locked(
+                min_generation=gen, preserve_critical=preserve_critical
+            )
+            critical_active = (
+                preserve_critical
+                and self._is_speaking_event.is_set()
+                and int(getattr(self, "_active_priority", SpeechPriority.NORMAL))
+                <= int(SpeechPriority.CRITICAL)
+            )
+        if not critical_active:
+            self._interrupt_event.set()
+            self._stop_current_playback()
+        self._emit_event(
+            "barge_in",
+            generation_id=gen,
+            purged=dropped,
+            preserved_critical=critical_active,
+        )
 
     def _stop_current_playback(self) -> None:
         """Останавливает звук на текущем бэкенде."""
@@ -697,17 +754,29 @@ class HumanTTSManager:
                 self._interrupt_event.clear()
                 self._active_deadline = (item.enqueued_at + item.ttl) if item.ttl > 0.0 else None
                 self._active_generation = item.generation_id
+                self._active_priority = int(item.priority)
                 self._is_speaking_event.set()
                 self._notify_speaking(True)
+                t_tts_start = time.monotonic()
                 try:
                     self._say(item.text)
                     item.success = not self._speak_failed
                 except Exception:
                     item.success = False
                 finally:
+                    ms_tts = int((time.monotonic() - t_tts_start) * 1000)
                     self._active_deadline = None
+                    self._active_priority = int(SpeechPriority.NORMAL)
                     self._is_speaking_event.clear()
                     self._notify_speaking(False)
+                    self._emit_event(
+                        "spoken" if item.success else "speak_failed",
+                        text=item.text,
+                        ms_tts=ms_tts,
+                        backend=self._backend,
+                        generation_id=item.generation_id,
+                        priority=int(item.priority),
+                    )
                     item.done_event.set()
         finally:
             if pythoncom is not None:
@@ -840,6 +909,87 @@ class HumanTTSManager:
         if self._engine is not None:
             self._apply_audio_output(self._engine, device)
         log.info("Устройство вывода TTS установлено: %s", device)
+
+    def register_local_backend(
+        self,
+        name: str,
+        synthesizer: Callable[[str], tuple[Any, int]],
+    ) -> None:
+        """Регистрирует опциональный локальный офлайн-адаптер TTS (Silero / Coqui / др.)."""
+        clean_name = str(name or "").strip()
+        if not clean_name or not callable(synthesizer):
+            raise ValueError("Укажите непустое имя и вызываемый синтезатор (text -> (audio, sr))")
+        with self._queue_lock:
+            self._local_adapters = [
+                (n, fn) for n, fn in self._local_adapters if n != clean_name
+            ]
+            self._local_adapters.append((clean_name, synthesizer))
+
+    def prewarm_phrase_cache(
+        self,
+        phrases: tuple[str, ...] | list[str] | None = None,
+        *,
+        background: bool = True,
+    ) -> int:
+        """Предзагружает частые детерминированные фразы Контура 0 в дисковый кэш AppData."""
+        if not self.enabled or not bool(getattr(self.config, "cache_audio", True)):
+            return 0
+        target_phrases = tuple(phrases) if phrases is not None else REFLEX_CACHED_PHRASES
+        voice = getattr(self.config, "edge_voice", "ru-RU-DmitryNeural") or "ru-RU-DmitryNeural"
+        rate = getattr(self.config, "rate_str", "+10%")
+        pitch = getattr(self.config, "pitch_str", "-3Hz")
+        current_provider = getattr(self.config, "provider", "edge")
+        piper_exe, _ = self._find_piper_binary_and_model()
+
+        pending: list[str] = []
+        for raw_phrase in target_phrases:
+            norm = normalize_for_speech(raw_phrase)
+            if not norm:
+                continue
+            if self._cache.has(norm, voice, rate, pitch, provider=current_provider):
+                continue
+            if piper_exe is not None and self._cache.has(norm, voice, rate, pitch, provider="piper"):
+                continue
+            pending.append(norm)
+
+        if not pending:
+            return 0
+
+        def _worker() -> None:
+            for phrase in pending:
+                if self._stop.is_set():
+                    break
+                try:
+                    with self._queue_lock:
+                        adapters = list(self._local_adapters)
+                    if current_provider == "local" and adapters:
+                        adapter_name, fn = adapters[0]
+                        data, sr = fn(phrase)
+                        self._cache.put(
+                            phrase, voice, rate, pitch, data, sr,
+                            provider=f"local:{adapter_name}", async_save=False,
+                        )
+                    elif piper_exe is not None and current_provider in ("piper", "edge"):
+                        data, sr = self._synthesize_piper_audio(phrase)
+                        self._cache.put(
+                            phrase, voice, rate, pitch, data, sr,
+                            provider="piper", async_save=False,
+                        )
+                    elif current_provider == "edge" and time.monotonic() >= float(self._edge_cooldown_until or 0.0):
+                        data, sr = self._synthesize_edge_audio(phrase)
+                        self._cache.put(
+                            phrase, voice, rate, pitch, data, sr,
+                            provider="edge", async_save=False,
+                        )
+                except Exception:  # noqa: BLE001
+                    continue
+
+        if background:
+            t = threading.Thread(target=_worker, name="aidota-tts-prewarm", daemon=True)
+            t.start()
+        else:
+            _worker()
+        return len(pending)
 
     # ------------------------------------------------------------------ #
     # Хук под RVC (Voice Conversion)
@@ -1147,9 +1297,11 @@ class HumanTTSManager:
         piper_exe, _ = self._find_piper_binary_and_model()
         has_local_fallback = (piper_exe is not None) or (self._engine is not None) or (self._pyttsx_engine is not None)
 
-        # Проверка Smart Cache (с учётом флага cache_audio и провайдера)
+        # Проверка Smart Cache (с учётом флага cache_audio, провайдера и локального кэша Контура 0)
         if cache_enabled:
             cached = self._cache.get(text, voice, rate, pitch, provider=current_provider)
+            if cached is None and piper_exe is not None and current_provider != "piper":
+                cached = self._cache.get(text, voice, rate, pitch, provider="piper")
             if cached is not None:
                 data, sr = cached
                 if self._play_if_timely(data, sr):
@@ -1157,6 +1309,38 @@ class HumanTTSManager:
                     self._speak_failed = False
                     self._error = None
                 return
+
+        with self._queue_lock:
+            local_adapters = list(self._local_adapters)
+
+        # Опциональный явный локальный провайдер (если выбран current_provider == "local")
+        if current_provider == "local" and local_adapters:
+            for adapter_name, adapter_fn in local_adapters:
+                if cache_enabled:
+                    cached_loc = self._cache.get(
+                        text, voice, rate, pitch, provider=f"local:{adapter_name}"
+                    )
+                    if cached_loc is not None:
+                        data, sr = cached_loc
+                        if self._play_if_timely(data, sr):
+                            self._backend = f"Smart Cache ({adapter_name})"
+                            self._speak_failed = False
+                            self._error = None
+                        return
+                try:
+                    data, samplerate = adapter_fn(text)
+                    data, samplerate = self.apply_rvc_if_enabled(data, samplerate)
+                    if cache_enabled:
+                        self._cache.put(
+                            text, voice, rate, pitch, data, samplerate, provider=f"local:{adapter_name}"
+                        )
+                    if self._play_if_timely(data, samplerate):
+                        self._backend = f"Local ({adapter_name})"
+                        self._speak_failed = False
+                        self._error = None
+                    return
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("Локальный TTS-адаптер %s не удался: %s", adapter_name, exc)
 
         # 1. Основной режим: Edge-TTS (In-Memory Streaming) с cooldown при повторных сбоях
         if current_provider == "edge":
@@ -1210,7 +1394,25 @@ class HumanTTSManager:
                     self._error = None
                 return
             except Exception as exc:  # noqa: BLE001
-                log.warning("Синтез через Piper TTS не удался (%s), переключаюсь на системный SAPI…", exc)
+                log.warning("Синтез через Piper TTS не удался (%s), переключаюсь на локальный резерв…", exc)
+
+        # 2.5 Зарегистрированные локальные офлайн-адаптеры (если не сработали основные)
+        if current_provider != "local" and local_adapters:
+            for adapter_name, adapter_fn in local_adapters:
+                try:
+                    data, samplerate = adapter_fn(text)
+                    data, samplerate = self.apply_rvc_if_enabled(data, samplerate)
+                    if cache_enabled:
+                        self._cache.put(
+                            text, voice, rate, pitch, data, samplerate, provider=f"local:{adapter_name}"
+                        )
+                    if self._play_if_timely(data, samplerate):
+                        self._backend = f"Local ({adapter_name})"
+                        self._speak_failed = False
+                        self._error = None
+                    return
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("Локальный TTS-адаптер %s не удался: %s", adapter_name, exc)
 
         # 3. Локальный SAPI с поддержкой Barge-In прерывания
         if self._engine is not None:

@@ -671,17 +671,187 @@ def sanitize_structured_item_advice(
     return sanitized
 
 
+_APPROX_ITEM_COSTS: dict[str, int] = {
+    "black_king_bar": 4050,
+    "blink": 2250,
+    "overwhelming_blink": 6800,
+    "swift_blink": 6800,
+    "arcane_blink": 6800,
+    "bfury": 4100,
+    "desolator": 3500,
+    "manta_style": 4600,
+    "manta": 4600,
+    "orchid": 3275,
+    "bloodthorn": 6625,
+    "sheepstick": 5200,
+    "aghanims_shard": 1400,
+    "aghs_shard": 1400,
+    "ultimate_scepter": 4200,
+    "satanic": 5050,
+    "skadi": 5300,
+    "butterfly": 5450,
+    "greater_crit": 5150,
+    "silver_edge": 5450,
+    "radiance": 4700,
+    "shivas_guard": 5175,
+    "assault": 5125,
+    "heart": 5100,
+    "monkey_king_bar": 4700,
+    "sphere": 4800,
+    "ethereal_blade": 5200,
+    "octarine_core": 4800,
+    "guardian_greaves": 5250,
+    "pipe_of_insight": 3725,
+    "crimson_guard": 3600,
+    "lotus_orb": 3850,
+    "hurricane_pike": 4450,
+    "boots_of_bearing": 4225,
+    "mjollnir": 5500,
+    "gleipnir": 5650,
+    "diffusal_blade": 2500,
+    "disperser": 6100,
+    "nullifier": 4375,
+    "khanda": 5000,
+    "parasma": 5575,
+    "cyclone": 2625,
+    "force_staff": 2200,
+    "glimmer_cape": 2150,
+    "aether_lens": 2275,
+    "spirit_vessel": 2780,
+    "solar_crest": 2600,
+    "sange_and_yasha": 4100,
+    "kaya_and_yasha": 4100,
+    "sange_and_kaya": 4100,
+    "blade_mail": 2100,
+    "armlet": 2500,
+    "dragon_lance": 1900,
+    "kaya": 2100,
+    "yasha": 2100,
+    "sange": 2100,
+    "magic_wand": 450,
+}
+
+_CONSUMABLE_OR_UTILITY_SLUGS: frozenset[str] = frozenset({
+    "tpscroll",
+    "dust",
+    "ward_observer",
+    "ward_sentry",
+    "smoke_of_deceit",
+    "magic_stick",
+    "magic_wand",
+    "infused_raindrop",
+    "tango",
+    "flask",
+    "clarity",
+    "enchanted_mango",
+    "faerie_fire",
+    "bottle",
+})
+
+
+def select_prevalidated_item_candidates(
+    payload_or_owned: dict[str, Any] | set[str],
+    *,
+    hero_name: str = "",
+    role: int = 1,
+    enemy_heroes: list[str] | None = None,
+    item_costs: dict[str, int] | None = None,
+    gold: int | None = None,
+    limit: int = 3,
+) -> list[tuple[str, str, int]]:
+    """Детерминированно отбирает 2–3 допустимых кандидата ДО генерации LLM.
+
+    Возвращает [(display_name, reason, gold_needed)]. Все кандидаты уже проверены
+    на отсутствие в инвентаре/стэше/поглощённых баффах и реестре удалённых предметов.
+    """
+    if isinstance(payload_or_owned, dict):
+        owned_items = extract_player_owned_items(payload_or_owned)
+        if gold is None:
+            pl = payload_or_owned.get("player")
+            raw_g = pl.get("gold") if isinstance(pl, dict) else 0
+            try:
+                gold = int(raw_g or 0)
+            except (TypeError, ValueError):
+                gold = 0
+    else:
+        owned_items = set(payload_or_owned)
+        gold = 0 if gold is None else int(gold)
+
+    eff_limit = max(1, min(5, int(limit)))
+    raw_candidates: list[tuple[str, str]] = []
+    if hero_name:
+        try:
+            build = get_hero_build(hero_name, role=role, enemy_heroes=enemy_heroes)
+            for slot in (build.get("core") or ()):
+                if isinstance(slot, dict) and slot.get("item"):
+                    timing = str(slot.get("timing") or "мидгейм")
+                    why = str(slot.get("why") or f"кор-слот к {timing}")
+                    raw_candidates.append((str(slot["item"]), why))
+            for slot in (build.get("situational") or ()):
+                if isinstance(slot, dict) and slot.get("item"):
+                    why = str(slot.get("why") or "ситуативный слот под драфт")
+                    raw_candidates.append((str(slot["item"]), why))
+        except Exception:  # noqa: BLE001
+            pass
+
+    for item_nm, reason in _ROLE_FALLBACK_ITEMS.get(role, _ROLE_FALLBACK_ITEMS[1]):
+        raw_candidates.append((item_nm, reason))
+    for universal in ("Black King Bar", "Blink Dagger", "Force Staff", "Glimmer Cape"):
+        raw_candidates.append((universal, "ключевой сейв/инициация под драки"))
+
+    out: list[tuple[str, str, int]] = []
+    seen_slugs: set[str] = set()
+    for raw_name, reason in raw_candidates:
+        valid, resolved_name, _ = validate_item_candidate(raw_name, owned_items)
+        if not valid:
+            continue
+        slug, _, _ = resolve_item_slug_and_name(resolved_name)
+        if not slug or slug in seen_slugs:
+            continue
+        seen_slugs.add(slug)
+        cost = 0
+        if item_costs:
+            cost = int(item_costs.get(resolved_name.lower()) or item_costs.get(slug) or 0)
+        if cost <= 0:
+            cost = int(_APPROX_ITEM_COSTS.get(slug, 0))
+        gold_needed = max(0, cost - gold) if cost > 0 else 0
+        out.append((resolved_name, reason[:95], gold_needed))
+        if len(out) >= eff_limit:
+            break
+
+    if not out:
+        fb_name, fb_why = pick_deterministic_fallback_item(hero_name, role, owned_items, enemy_heroes)
+        out.append((fb_name, fb_why[:95], 0))
+    return out
+
+
+def format_allowed_item_candidates(candidates: list[tuple[str, str, int]]) -> list[str]:
+    """Форматирует предвалидированных кандидатов для вставки в Segment 2."""
+    lines: list[str] = []
+    for name, reason, gold_needed in candidates[:3]:
+        if gold_needed > 0:
+            lines.append(f"{name} (нужно ~{gold_needed} золота): {reason}")
+        else:
+            lines.append(f"{name}: {reason}")
+    return lines
+
+
 def sanitize_voice_or_chat_advice_text(
     text: str,
     owned_items: set[str],
     hero_name: str = "",
     role: int = 1,
     enemy_heroes: list[str] | None = None,
+    *,
+    reject_incoherent: bool = False,
+    proactive: bool = False,
 ) -> str:
     """Проверяет короткие голосовые фразы / ответы LLM на предмет галлюцинаций.
 
-    Если текст советует купить предмет, который уже куплен (например, в стэше)
-    или удалён, фраза детерминированно дополняется/корректируется без ретрая LLM.
+    При ``reject_incoherent=False`` сохраняет обратную совместимость с legacy-форматом
+    (пометка ``(Поправка: ...)``). При ``reject_incoherent=True`` никогда не склеивает
+    противоречивый текст: в проактивном режиме отбрасывает (``""``), иначе чисто
+    заменяет на детерминированный валидный слот.
     """
     if not text:
         return text
@@ -690,7 +860,7 @@ def sanitize_voice_or_chat_advice_text(
     text_lower = text.lower()
 
     # Проверяем намерение рекомендации покупки
-    has_buy_intent = any(w in text_lower for w in ("купи", "собер", "бери", "возьми", "делай", "нужен", "покупай"))
+    has_buy_intent = any(w in text_lower for w in ("купи", "собер", "бери", "возьми", "делай", "нужен", "покупай", "добира"))
     if not has_buy_intent:
         return text
 
@@ -713,11 +883,69 @@ def sanitize_voice_or_chat_advice_text(
     if not invalid_found:
         return text
 
-    # Детерминированная замена без LLM-ретрая
+    if reject_incoherent:
+        if proactive:
+            return ""
+        fb_name, fb_why = pick_deterministic_fallback_item(hero_name, role, owned_items, enemy_heroes)
+        return f"Следующим нужным слотом собирай {fb_name} — {fb_why}"
+
+    # Legacy-режим для совместимости со старыми контрактами тестов
     fb_name, fb_why = pick_deterministic_fallback_item(hero_name, role, owned_items, enemy_heroes)
     corrections = [f"{name} ({reason})" for name, reason in invalid_found[:2]]
     clarification = f" (Поправка: {', '.join(corrections)}. Следующий нужный слот: {fb_name} — {fb_why})"
     return f"{text}{clarification}"
+
+
+def validate_llm_item_reply(
+    text: str,
+    owned_items: set[str],
+    *,
+    allowed_candidates: list[str] | None = None,
+    strict_allowlist: bool = False,
+    hero_name: str = "",
+    role: int = 1,
+    enemy_heroes: list[str] | None = None,
+    proactive: bool = False,
+) -> tuple[str, bool]:
+    """Жёсткий пост-валидатор: не склеивает "(Поправка: ...)", проверяет уже купленные/удалённые слоты."""
+    if not text or not text.strip():
+        return "", False
+
+    cleaned = sanitize_voice_or_chat_advice_text(
+        text,
+        owned_items,
+        hero_name=hero_name,
+        role=role,
+        enemy_heroes=enemy_heroes,
+        reject_incoherent=True,
+        proactive=proactive,
+    )
+    if not cleaned:
+        return "", False
+    if cleaned != text:
+        return cleaned, False
+
+    if strict_allowlist and allowed_candidates:
+        text_lower = cleaned.lower()
+        has_buy_intent = any(w in text_lower for w in ("купи", "собер", "бери", "возьми", "добира", "покупай"))
+        if has_buy_intent:
+            allowed_slugs: set[str] = set()
+            for cand in allowed_candidates:
+                c_slug, _, _ = resolve_item_slug_and_name(cand)
+                if c_slug:
+                    allowed_slugs.add(c_slug)
+            mentioned_major_slugs: list[str] = []
+            for alias, (slug, _) in SLANG_TO_CANONICAL.items():
+                if len(alias) >= 2 and slug not in _CONSUMABLE_OR_UTILITY_SLUGS:
+                    if re.search(r"\b" + re.escape(alias) + r"\b", text_lower):
+                        mentioned_major_slugs.append(slug)
+            if mentioned_major_slugs and not any(s in allowed_slugs for s in mentioned_major_slugs):
+                if proactive:
+                    return "", False
+                fb_name, fb_why = pick_deterministic_fallback_item(hero_name, role, owned_items, enemy_heroes)
+                return f"Под текущий драфт лучше взять {fb_name} — {fb_why}", False
+
+    return cleaned, True
 
 
 # ---------------------------------------------------------------------------

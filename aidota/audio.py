@@ -11,12 +11,13 @@ import json
 import logging
 import os
 import queue
+import re
 import sys
 import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from .config import AudioConfig
 from .hotkeys import HotkeyListener, format_key_name, parse_key
@@ -206,12 +207,51 @@ def is_voice_active(chunk: bytes, sample_rate: int = 16000, rms_threshold: float
         return True
 
 
+DOTA_STT_INITIAL_PROMPT: str = (
+    "Дота 2, БКБ, Манта, даггер, мид, роум, ганг, варды, смок, вижн, лотос, стак, пуш, "
+    "Рошан, Торментор, аегис, баунти, мудрости, шива, рефрешер, орчид, линза, еул, "
+    "форс стафф, сатаник, байбек, хайграунд, крипстат, Джаггернаут, Антимаг, Инвокер, Пудж."
+)
+
+_DOTA_SLANG_FIXES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\b(?:б\s+коб[еэ]|б\s+к\s+б|бэк[еэ]б[еэ]|бакаб[еэ]|бэкаб[еэ]|быкаб[еэ])\b", re.IGNORECASE), "бкб"),
+    (re.compile(r"\b(?:раш[ао]н|рушан)\b", re.IGNORECASE), "рошан"),
+    (re.compile(r"\b(?:тор\s+ментор)\b", re.IGNORECASE), "торментор"),
+    (re.compile(r"\b(?:смоук|с\s+мок|смаук)\b", re.IGNORECASE), "смок"),
+    (re.compile(r"\b(?:да\s+г+ер|да\s+гар)\b", re.IGNORECASE), "даггер"),
+    (re.compile(r"\b(?:э\s+ул|и\s+ул|иул)\b", re.IGNORECASE), "еул"),
+    (re.compile(r"\b(?:ма\s+н\s*та|манто)\b", re.IGNORECASE), "манта"),
+    (re.compile(r"\b(?:вар\s+ды|ворды)\b", re.IGNORECASE), "варды"),
+    (re.compile(r"\b(?:баун\s+ти|баунты)\b", re.IGNORECASE), "баунти"),
+    (re.compile(r"\b(?:бай\s+бек|бай\s*бэк)\b", re.IGNORECASE), "байбек"),
+    (re.compile(r"\b(?:крип\s+стат)\b", re.IGNORECASE), "крипстат"),
+    (re.compile(r"\b(?:ми\s+дер)\b", re.IGNORECASE), "мидер"),
+    (re.compile(r"\b(?:ае\s+гис|аеджис)\b", re.IGNORECASE), "аегис"),
+    (re.compile(r"\b(?:ин\s+вокер|инвокэр)\b", re.IGNORECASE), "инвокер"),
+    (re.compile(r"\b(?:анти\s+маг)\b", re.IGNORECASE), "антимаг"),
+    (re.compile(r"\b(?:форс\s+став|форстаф)\b", re.IGNORECASE), "форс стафф"),
+    (re.compile(r"\b(?:гпм|гэ\s*пэ\s*эм)\b", re.IGNORECASE), "гпм"),
+    (re.compile(r"\b(?:сата\s+ник)\b", re.IGNORECASE), "сатаник"),
+)
+
+
+def normalize_dota_slang(text: str) -> str:
+    """Нормализует частые опечатки STT для русского Dota 2 сленга до парсинга команд и LLM."""
+    clean = " ".join(str(text or "").split())
+    if not clean:
+        return ""
+    for pattern, repl in _DOTA_SLANG_FIXES:
+        clean = pattern.sub(repl, clean)
+    return clean
+
+
 def transcribe_groq_whisper(audio_bytes: bytes, api_key: str, sample_rate: int = 16000) -> str | None:
     """Опциональный гибридный распознаватель речи через быстрый Groq Whisper API."""
     if not api_key or not audio_bytes:
         return None
     try:
         import io
+
         import numpy as np
         import requests
         import soundfile as sf
@@ -226,6 +266,7 @@ def transcribe_groq_whisper(audio_bytes: bytes, api_key: str, sample_rate: int =
         data_payload = {
             "model": "whisper-large-v3-turbo",
             "language": "ru",
+            "prompt": DOTA_STT_INITIAL_PROMPT,
             "response_format": "json",
         }
         resp = requests.post(
@@ -236,7 +277,8 @@ def transcribe_groq_whisper(audio_bytes: bytes, api_key: str, sample_rate: int =
             timeout=8.0,
         )
         if resp.status_code == 200:
-            return (resp.json().get("text") or "").strip()
+            raw_text = (resp.json().get("text") or "").strip()
+            return normalize_dota_slang(raw_text) if raw_text else ""
     except Exception as exc:  # noqa: BLE001
         log.debug("Groq Whisper error: %s", exc)
     return None
@@ -275,6 +317,18 @@ class VoiceInput:
         self.on_partial: Callable[[str], None] | None = None
         self._recognizer_lock = threading.Lock()
         self._last_partial: str = ""
+        self.last_stt_raw: str = ""
+        self.last_stt_normalized: str = ""
+        self.last_stt_ms: int = 0
+        self._ptt_pressed_at: float = 0.0
+
+    def _record_stt(self, raw_text: str, *, stt_ms: int = 0) -> str:
+        raw_clean = " ".join(str(raw_text or "").split())
+        norm = normalize_dota_slang(raw_clean)
+        self.last_stt_raw = raw_clean
+        self.last_stt_normalized = norm
+        self.last_stt_ms = max(0, int(stt_ms))
+        return norm
 
     def _effective_block_size(self) -> int:
         """Ограничивает размер аудио-блока (<=1600 сэмплов / ~100 мс), чтобы PTT не обрезал хвост речи."""
@@ -602,8 +656,9 @@ class VoiceInput:
                 if not text and self._last_partial:
                     text = self._last_partial
                 if text:
-                    log.info("Распознано по клавише PTT: %s", text)
-                    self.phrase_queue.put(text)
+                    norm_text = self._record_stt(text)
+                    log.info("Распознано по клавише PTT: %s", norm_text)
+                    self.phrase_queue.put(norm_text)
                 self._last_partial = ""
             except Exception as exc:  # noqa: BLE001
                 log.debug("Ошибка извлечения фразы PTT: %s", exc)
@@ -738,7 +793,7 @@ class VoiceInput:
                     self._last_partial = ""
                     if self.on_partial is not None:
                         self.on_partial("")
-                    return text
+                    return self._record_stt(text)
                 continue
 
             if self._is_muted:
@@ -758,8 +813,9 @@ class VoiceInput:
                         if self.on_partial is not None:
                             self.on_partial("")
                         if text:
-                            log.info("Распознано: %s", text)
-                            return text
+                            norm = self._record_stt(text)
+                            log.info("Распознано: %s", norm)
+                            return norm
                     else:
                         partial = (json.loads(self._recognizer.PartialResult()).get("partial") or "").strip().lower()
                         if partial:
@@ -794,7 +850,7 @@ class VoiceInput:
                                     self._last_partial = ""
                                     last_change_time = 0.0
                                     if text:
-                                        return text
+                                        return self._record_stt(text)
             except Exception as exc:  # noqa: BLE001
                 log.debug("Ошибка распознавания: %s", exc)
         return None

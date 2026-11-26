@@ -15,10 +15,12 @@ from unittest.mock import MagicMock
 
 from aidota.coach import Coach
 from aidota.config import Config
+from aidota.context import MatchSignalTracker, compute_derived_signals
 from aidota.enemy_state import (
     STATE_CONFIRMED,
     STATE_INFERRED,
     STATE_UNKNOWN,
+    EnemyHeroState,
     EnemyStateTracker,
     format_enemy_state_prompt_block,
     format_epistemic_item_notice,
@@ -27,12 +29,15 @@ from aidota.heroes import HeroCatalog
 from aidota.item_validator import (
     analyze_team_draft_gaps,
     extract_player_owned_items,
+    format_allowed_item_candidates,
     is_item_owned_or_covered,
     pick_deterministic_fallback_item,
     resolve_item_slug_and_name,
     sanitize_structured_item_advice,
     sanitize_voice_or_chat_advice_text,
+    select_prevalidated_item_candidates,
     validate_item_candidate,
+    validate_llm_item_reply,
 )
 from aidota.meta_db import META_HEROES_DB
 
@@ -368,6 +373,98 @@ class BackwardsCompatibilityAndContractGoldenEvals(unittest.TestCase):
         self.assertIn("Сброшено", dismiss_res)
 
         coach.close()
+
+
+class Stage3GroundingAndAntiHallucinationEvals(unittest.TestCase):
+    """Тесты Этапа 3: компактный блок врагов, предвалидация слотов, derived signals."""
+
+    def test_compact_enemy_block_avoids_unknown_noise(self) -> None:
+        heroes = [
+            EnemyHeroState(hero_id=str(i), hero_name=name, is_picked=True)
+            for i, name in enumerate(("Axe", "Pudge", "Lion", "Invoker", "Zeus"), start=1)
+        ]
+        block = format_enemy_state_prompt_block(heroes, clock_sec=300, compact=True)
+        self.assertIn("enemy_items_unconfirmed=true", block)
+        self.assertNotIn("ТУМАН ВОЙНЫ", block)
+        self.assertNotIn("Pudge", block)
+
+    def test_prevalidated_items_and_strict_validator_avoid_incoherent_gluing(self) -> None:
+        owned = {"black_king_bar", "power_treads", "bfury"}
+        candidates = select_prevalidated_item_candidates(
+            owned,
+            hero_name="Anti-Mage",
+            role=1,
+            enemy_heroes=["Storm Spirit", "Lion"],
+            gold=3200,
+            limit=3,
+        )
+        self.assertTrue(candidates)
+        names = [c[0] for c in candidates]
+        self.assertNotIn("Black King Bar", names)
+        self.assertNotIn("Battle Fury", names)
+        formatted = format_allowed_item_candidates(candidates)
+        self.assertTrue(all(isinstance(line, str) and line for line in formatted))
+
+        clean_chat, valid_flag = validate_llm_item_reply(
+            "Срочно купи БКБ до файта!",
+            owned,
+            hero_name="Anti-Mage",
+            role=1,
+            proactive=False,
+        )
+        self.assertFalse(valid_flag)
+        self.assertNotIn("Поправка:", clean_chat)
+        self.assertNotIn("БКБ", clean_chat)
+
+        clean_pro, valid_pro = validate_llm_item_reply(
+            "Возьми БКБ.",
+            owned,
+            hero_name="Anti-Mage",
+            role=1,
+            proactive=True,
+        )
+        self.assertFalse(valid_pro)
+        self.assertEqual(clean_pro, "")
+
+    def test_derived_signals_and_tracker(self) -> None:
+        payload = {
+            "map": {"clock_time": 900, "matchid": "sig_1"},
+            "player": {"gold": 3400, "gpm": 500, "deaths": 3, "last_hits": 40},
+            "hero": {"level": 12, "alive": True, "mana": 90, "health_percent": 85},
+            "abilities": {"ability5": {"ultimate": True, "cost": 200, "cooldown": 0}},
+        }
+        sigs = compute_derived_signals(
+            payload,
+            position=1,
+            next_item_name="Black King Bar",
+            next_item_cost=4050,
+            death_timestamps=[780, 860],
+            lh_idle_sec=75,
+        )
+        joined = "\n".join(sigs)
+        self.assertIn("серия смертей", joined)
+        self.assertIn("Black King Bar", joined)
+        self.assertIn("650 золота", joined)
+        self.assertIn("не хватает маны на ультимейт", joined)
+        self.assertIn("просадка темпа фарма", joined)
+
+        tracker = MatchSignalTracker()
+        tracker.observe(
+            {
+                "map": {"clock_time": 750, "matchid": "sig_2"},
+                "player": {"deaths": 1, "last_hits": 60, "gold": 1000, "gpm": 500},
+                "hero": {"level": 10, "alive": True, "health_percent": 90},
+            }
+        )
+        sigs2, in_combat = tracker.observe(
+            {
+                "map": {"clock_time": 820, "matchid": "sig_2"},
+                "player": {"deaths": 3, "last_hits": 60, "gold": 1000, "gpm": 500},
+                "hero": {"level": 10, "alive": True, "health_percent": 65},
+            }
+        )
+        self.assertTrue(in_combat)
+        self.assertTrue(any("серия смертей" in s for s in sigs2))
 
 
 if __name__ == "__main__":

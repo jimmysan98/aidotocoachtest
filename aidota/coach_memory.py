@@ -28,6 +28,37 @@ _MAX_A = 700
 _MAX_FACT_VALUE = 200
 
 
+_UNTRUSTED_MEMORY_MARKERS: tuple[str, ...] = (
+    "skip",
+    "(поправка:",
+    "не удалось",
+    "ошибка llm",
+    "ошибка api",
+    "http 401",
+    "http 402",
+    "http 403",
+    "http 429",
+    "превышен лимит",
+    "отменён",
+    "бесплатный ии",
+    "pollinations",
+    "temporarily unavailable",
+)
+
+
+def _is_trustworthy_memory_text(text: str) -> bool:
+    """Фильтр против снежного кома галлюцинаций и ошибок в CoachMemory."""
+    clean = " ".join(str(text or "").split()).strip()
+    if not clean or len(clean) < 4:
+        return False
+    low = clean.lower()
+    if low == "skip":
+        return False
+    if any(marker in low for marker in _UNTRUSTED_MEMORY_MARKERS):
+        return False
+    return True
+
+
 class CoachMemory:
     """Потокобезопасная персистентная память тренера.
 
@@ -93,22 +124,43 @@ class CoachMemory:
     # ------------------------------------------------------------------ #
     # Диалог
     # ------------------------------------------------------------------ #
-    def remember(self, question: str, answer: str) -> None:
+    def remember(
+        self,
+        question: str,
+        answer: str,
+        *,
+        validated: bool = True,
+        source: str = "dialog",
+    ) -> None:
         q = " ".join(str(question or "").split())[:_MAX_Q]
         a = " ".join(str(answer or "").split())[:_MAX_A]
-        if not q or not a:
+        if not q or not a or not validated or not _is_trustworthy_memory_text(a):
             return
         with self._lock:
-            self._turns.append({"q": q, "a": a, "ts": int(time.time())})
+            self._turns.append(
+                {
+                    "q": q,
+                    "a": a,
+                    "ts": int(time.time()),
+                    "validated": True,
+                    "source": str(source or "dialog")[:32],
+                }
+            )
             if len(self._turns) > self.max_turns:
                 self._turns = self._turns[-self.max_turns:]
         self._save()
 
     def recall(self, limit: int = 5) -> str:
-        """Компактная выжимка последних реплик для промпта."""
+        """Компактная выжимка последних проверенных реплик для промпта."""
         limit = max(1, int(limit))
         with self._lock:
-            turns = list(self._turns)[-limit:]
+            valid_turns = [
+                t for t in self._turns
+                if isinstance(t, dict)
+                and bool(t.get("validated", True))
+                and _is_trustworthy_memory_text(str(t.get("a") or ""))
+            ]
+            turns = valid_turns[-limit:]
         if not turns:
             return ""
         lines = []
@@ -126,7 +178,7 @@ class CoachMemory:
     # ------------------------------------------------------------------ #
     def remember_lesson(self, text: str, match_id: Any = None) -> None:
         clean = " ".join(str(text or "").split())
-        if not clean:
+        if not clean or not _is_trustworthy_memory_text(clean):
             return
         if match_id:
             clean = f"Матч #{match_id}: {clean}"
@@ -142,18 +194,26 @@ class CoachMemory:
             return list(self._lessons)[-max(1, int(limit)):]
 
     # ------------------------------------------------------------------ #
-    # Факты о игроке
+    # Факты и решения игрока
     # ------------------------------------------------------------------ #
     def remember_fact(self, key: str, value: Any) -> None:
         k = str(key or "").strip().lower()[:60]
         v = " ".join(str(value or "").split())[:_MAX_FACT_VALUE]
-        if not k or not v:
+        if not k or not v or not _is_trustworthy_memory_text(v):
             return
         with self._lock:
             if self._facts.get(k) == v:
                 return
             self._facts[k] = v
         self._save()
+
+    def remember_verified_fact(self, key: str, value: Any) -> None:
+        """Алиас явной записи проверенного игрового факта."""
+        self.remember_fact(key, value)
+
+    def remember_decision(self, decision_key: str, decision_text: str) -> None:
+        """Сохраняет принятое игроком решение (предмет, роль, план), отфильтровывая шум."""
+        self.remember_fact(f"решение_{decision_key}", decision_text)
 
     def facts(self) -> dict[str, str]:
         with self._lock:

@@ -775,6 +775,9 @@ class CanonicalMapTimers:
     _alerted_tormentor: bool = field(default=False, init=False)
     _alerted_mid_lvl6: bool = field(default=False, init=False)
     _custom_timers: list[tuple[int, str]] = field(default_factory=list, init=False)
+    _last_low_hp_at: int | None = field(default=None, init=False)
+    _last_low_mana_at: int | None = field(default=None, init=False)
+    _last_missing_tp_at: int | None = field(default=None, init=False)
 
     def reset(self, *, keep_match_id: bool = False) -> None:
         """Сбрасывает историю всех сработавших алертов (при смене матча или вручную)."""
@@ -796,6 +799,9 @@ class CanonicalMapTimers:
             self._alerted_tormentor = False
             self._alerted_mid_lvl6 = False
             self._custom_timers.clear()
+            self._last_low_hp_at = None
+            self._last_low_mana_at = None
+            self._last_missing_tp_at = None
 
     def sync_match_id(self, match_id: Any) -> bool:
         """Синхронизирует ``match_id`` и автоматически сбрасывает состояние при новом матче."""
@@ -1206,6 +1212,87 @@ class CanonicalMapTimers:
                 turbo=turbo,
                 match_id=eff_match,
             )
+
+    def check_hero_reflexes(
+        self,
+        payload: Mapping[str, Any] | None,
+        *,
+        turbo: bool = False,
+        match_id: Any = None,
+        proactive: bool | None = None,
+    ) -> tuple[str, int] | None:
+        """Контур 0 (0 мс без LLM): критический HP, нехватка маны на ульт и забытый ТП."""
+        if not self.enabled or not isinstance(payload, Mapping):
+            return None
+        allow_proactive = self.proactive_enabled if proactive is None else bool(proactive)
+        if not allow_proactive:
+            return None
+        eff_match = match_id if match_id is not None else extract_match_id(payload)
+        if eff_match is not None:
+            self.sync_match_id(eff_match)
+
+        map_data = payload.get("map")
+        sec = parse_clock_int(map_data.get("clock_time")) if isinstance(map_data, Mapping) else None
+        hero = payload.get("hero")
+        if not isinstance(hero, Mapping) or hero.get("alive") is False:
+            return None
+
+        now_sec = sec if sec is not None else 0
+        with self._lock:
+            # 1. Критическое HP (< 25%) — приоритет 1 (CRITICAL barge-in)
+            hp_pct = parse_clock_float(hero.get("health_percent"))
+            if hp_pct is not None:
+                if hp_pct < 25.0:
+                    if self._last_low_hp_at is None or (now_sec - self._last_low_hp_at) >= 35:
+                        self._last_low_hp_at = now_sec
+                        return ("Внимание, критически мало хэпэ! Отойди под вышку или жми стики!", 1)
+                elif hp_pct >= 40.0:
+                    self._last_low_hp_at = None
+
+            if sec is None or sec < 0:
+                return None
+
+            # 2. Забытый ТП-свиток после 5:00 (4:00 в Turbo)
+            items_section = payload.get("items")
+            raw_hero_items = hero.get("items")
+            raw_items: Mapping[str, Any] = (
+                items_section
+                if isinstance(items_section, Mapping)
+                else (raw_hero_items if isinstance(raw_hero_items, Mapping) else {})
+            )
+            if isinstance(raw_items, Mapping) and raw_items and sec >= (240 if turbo else 300):
+                has_tp = False
+                for k, v in raw_items.items():
+                    if not str(k).startswith(("teleport", "slot")):
+                        continue
+                    iname = str(v.get("name") if isinstance(v, Mapping) else v or "").lower()
+                    if "tpscroll" in iname or "travel_boots" in iname:
+                        has_tp = True
+                        break
+                if not has_tp and (self._last_missing_tp_at is None or (sec - self._last_missing_tp_at) >= 120):
+                    self._last_missing_tp_at = sec
+                    return ("Забыт ТП-свиток — доложи в быстрый закуп и привези курьером.", 2)
+
+            # 3. Нехватка маны на ульт / базовый прокаст
+            hero_lvl = parse_clock_int(hero.get("level")) or 0
+            mana_pct = parse_clock_float(hero.get("mana_percent"))
+            abilities = payload.get("abilities")
+            if hero_lvl >= 6 and mana_pct is not None and mana_pct < 20.0:
+                ult_no_mana = False
+                if isinstance(abilities, Mapping):
+                    for ab in abilities.values():
+                        if isinstance(ab, Mapping) and (ab.get("ultimate") or ab.get("is_ultimate")):
+                            cd = parse_clock_int(ab.get("cooldown")) or 0
+                            if cd == 0 and ab.get("can_cast") is False:
+                                ult_no_mana = True
+                            break
+                if (ult_no_mana or mana_pct < 15.0) and (
+                    self._last_low_mana_at is None or (sec - self._last_low_mana_at) >= 60
+                ):
+                    self._last_low_mana_at = sec
+                    return ("Не хватает маны на ульт — заряди стики или отступи под вышку.", 2)
+
+        return None
 
 
 __all__ = [

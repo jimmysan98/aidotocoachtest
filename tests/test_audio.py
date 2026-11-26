@@ -7,9 +7,9 @@ import queue
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
-from aidota.audio import VoiceInput
+from aidota.audio import DOTA_STT_INITIAL_PROMPT, VoiceInput, normalize_dota_slang, transcribe_groq_whisper
 from aidota.config import AudioConfig
 
 
@@ -157,8 +157,34 @@ class TestPttCaptureAndHangover(unittest.TestCase):
 
         phrase = voice.phrase_queue.get(timeout=1.5)
         self.assertEqual(phrase, "что купить на рубика")
+        self.assertEqual(voice.last_stt_raw, "что купить на рубика")
+        self.assertEqual(voice.last_stt_normalized, "что купить на рубика")
         self.assertFalse(voice._capture.is_set())
         self.assertGreaterEqual(rec.reset_calls, 2)
+
+    def test_dota_slang_normalization_and_whisper_prompt(self) -> None:
+        self.assertEqual(normalize_dota_slang("купи б кобэ и смоук на рашан"), "купи бкб и смок на рошан")
+        self.assertEqual(normalize_dota_slang("да гар и э ул готовы"), "даггер и еул готовы")
+        self.assertEqual(normalize_dota_slang("бай бек есть"), "байбек есть")
+        self.assertEqual(normalize_dota_slang("что купить на рубика"), "что купить на рубика")
+
+        captured: dict = {}
+
+        class _FakeResp:
+            status_code = 200
+
+            def json(self) -> dict:
+                return {"text": "возьми б кобэ и смоук"}
+
+        def fake_post(url: str, **kwargs: object) -> _FakeResp:
+            captured["url"] = url
+            captured["data"] = kwargs.get("data")
+            return _FakeResp()
+
+        with patch("requests.post", side_effect=fake_post):
+            text = transcribe_groq_whisper(b"\x00\x01" * 320, "groq-key-123")
+        self.assertEqual(text, "возьми бкб и смок")
+        self.assertEqual(captured["data"]["prompt"], DOTA_STT_INITIAL_PROMPT)
 
 
 if __name__ == "__main__":

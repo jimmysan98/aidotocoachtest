@@ -214,6 +214,9 @@ def build_dynamic_suffix(
     gsi_summary: str = "",
     brief_text: str = "",
     knowledge: Iterable[str] = (),
+    strategy_card: str = "",
+    derived_signals: Iterable[str] = (),
+    allowed_items: Iterable[str] = (),
     extra_sections: Iterable[str] = (),
 ) -> str:
     """Собирает Segment 2 — динамический хвост конкретного хода/тика."""
@@ -225,12 +228,23 @@ def build_dynamic_suffix(
         parts.append(f"ЛИЧНАЯ ЦЕЛЬ ИГРОКА В ЭТОМ МАТЧЕ: {focus}.")
     if memory_summary and memory_summary.strip():
         parts.append("ДОЛГОВРЕМЕННАЯ ПАМЯТЬ:\n" + memory_summary.strip())
+    if strategy_card and strategy_card.strip():
+        parts.append("ПЛАН МАТЧА (СТРАТЕГ):\n" + strategy_card.strip())
+    signal_list = [str(s).strip() for s in (derived_signals or ()) if str(s).strip()]
+    if signal_list:
+        parts.append("СИГНАЛЫ СЕЙЧАС:\n" + "\n".join(f"- {s}" for s in signal_list[:4]))
     if match_snapshot and match_snapshot.strip():
         parts.append(match_snapshot.strip())
     if gsi_summary and gsi_summary.strip():
         parts.append(f"ТЕКУЩАЯ СИТУАЦИЯ В МАТЧЕ (GSI Live):\n{gsi_summary.strip()}")
     if brief_text and brief_text.strip():
         parts.append(f"ТАКТИЧЕСКИЙ БРИФ:\n{brief_text.strip()}")
+    allowed_list = [str(a).strip() for a in (allowed_items or ()) if str(a).strip()]
+    if allowed_list:
+        parts.append(
+            "ДОПУСТИМЫЕ КАНДИДАТЫ НА СЛЕДУЮЩИЙ СЛОТ (выбирай только из них):\n"
+            + "\n".join(f"- {a}" for a in allowed_list[:3])
+        )
     knowledge_list = [str(k).strip() for k in knowledge if str(k).strip()]
     if knowledge_list:
         parts.append("ЗНАНИЯ ПО ВОПРОСУ:\n" + "\n".join(f"- {k}" for k in knowledge_list))

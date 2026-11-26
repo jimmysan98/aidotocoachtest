@@ -30,7 +30,7 @@ from .map_timers import (
 from .map_timers import (
     roshan_pit_location as _canonical_roshan_pit_location,
 )
-from .roles import position_label
+from .roles import normalize_position, position_label
 
 log = logging.getLogger("aidota.context")
 
@@ -1807,6 +1807,213 @@ def format_gsi_summary(snapshot: dict[str, Any]) -> str:
         f"Герой: {hero}{lvl_str}, KDA {k}/{d}/{a}, Золото {gold}, NW {nw} | "
         f"Роль: Pos {pos} | Инвентарь: {inv} | Союзники: {allies} | Враги: {enemies}]"
     )
+
+
+def is_hero_in_combat(
+    payload: Mapping[str, Any] | None,
+    *,
+    prev_hp_pct: float | None = None,
+) -> bool:
+    """Определяет, находится ли герой в активной драке/под контролем."""
+    if not isinstance(payload, Mapping):
+        return False
+    hero = payload.get("hero")
+    if not isinstance(hero, Mapping) or hero.get("alive") is False:
+        return False
+    for flag in ("stunned", "silenced", "disarmed", "hexed", "rooted", "taunted"):
+        if hero.get(flag):
+            return True
+    cur_hp = _f(hero.get("health_percent"))
+    if cur_hp is not None:
+        if prev_hp_pct is not None and (prev_hp_pct - cur_hp) >= 12.0:
+            return True
+        if cur_hp < 35.0:
+            return True
+    return False
+
+
+def compute_derived_signals(
+    payload: Mapping[str, Any] | None,
+    *,
+    position: int = 1,
+    next_item_name: str | None = None,
+    next_item_cost: int | None = None,
+    death_timestamps: list[int] | tuple[int, ...] | None = None,
+    lh_idle_sec: int | None = None,
+) -> list[str]:
+    """Вычисляет компактные смысловые сигналы до передачи в LLM (меньше сырого шума).
+
+    Покрывает: серию смертей за 3 мин, золото и ETA до целевого слота,
+    нехватку маны на ульт/прокаст, просадку фарма/простой без крипов.
+    """
+    if not isinstance(payload, Mapping):
+        return []
+    map_data = payload.get("map") if isinstance(payload.get("map"), Mapping) else {}
+    player = payload.get("player") if isinstance(payload.get("player"), Mapping) else {}
+    hero = payload.get("hero") if isinstance(payload.get("hero"), Mapping) else {}
+    abilities = payload.get("abilities") if isinstance(payload.get("abilities"), Mapping) else {}
+
+    clock_sec = _i(map_data.get("clock_time"))
+    pos = normalize_position(position)
+    signals: list[str] = []
+
+    # 1. Серия смертей за последние 3 минуты (180 сек)
+    if death_timestamps and clock_sec is not None:
+        recent_deaths = [t for t in death_timestamps if (clock_sec - int(t)) <= 180]
+        if len(recent_deaths) >= 2:
+            signals.append(
+                f"серия смертей: {len(recent_deaths)} смерти за последние 3 мин — играй от безопасного фарма и вижна"
+            )
+
+    # 2. Остаток золота и примерное время (ETA) до следующего ключевого слота
+    gold = _i(player.get("gold")) or 0
+    gpm = _i(player.get("gpm")) or 0
+    if next_item_name and next_item_cost and int(next_item_cost) > 0:
+        missing_gold = max(0, int(next_item_cost) - gold)
+        if missing_gold == 0:
+            signals.append(f"хватает на {next_item_name} — доложи и привези курьером")
+        elif missing_gold <= 1200:
+            eff_gpm = max(250, gpm) if gpm > 0 else (450 if pos in (1, 2) else 320)
+            eta_sec = max(15, int((missing_gold / eff_gpm) * 60))
+            signals.append(
+                f"до {next_item_name} осталось ~{missing_gold} золота (~{eta_sec}с) — избегай лишнего риска до покупки"
+            )
+
+    # 3. Нехватка маны на ультимейт или базовый прокаст
+    hero_lvl = _i(hero.get("level")) or 0
+    cur_mana = _f(hero.get("mana"))
+    mana_pct = _f(hero.get("mana_percent"))
+    if hero_lvl >= 1 and hero.get("alive") is not False:
+        ult_cost = 0
+        ult_cd = 0
+        combo_cost = 0
+        for ab in abilities.values():
+            if not isinstance(ab, Mapping):
+                continue
+            cost = _i(ab.get("cost"))
+            if cost is None:
+                cost = _i(ab.get("mana_cost"))
+            cost_val = max(0, cost or 0)
+            cd_val = _i(ab.get("cooldown")) or 0
+            if ab.get("ultimate") or ab.get("is_ultimate"):
+                ult_cost = cost_val
+                ult_cd = cd_val
+            elif cost_val > 0 and _i(ab.get("level"), 0):
+                combo_cost += cost_val
+
+        if ult_cost > 0 and cur_mana is not None and ult_cd == 0 and cur_mana < ult_cost:
+            signals.append(
+                f"не хватает маны на ультимейт (есть {int(cur_mana)}, нужно {ult_cost}) — заряди ману перед дракой"
+            )
+        elif combo_cost > 0 and cur_mana is not None and cur_mana < min(combo_cost, 180):
+            signals.append(
+                f"мало маны на прокаст (есть {int(cur_mana)}) — не вступай в бой без стиков/регена"
+            )
+        elif hero_lvl >= 6 and mana_pct is not None and mana_pct < 20.0:
+            signals.append("критически мало маны (<20%) — заряди ману до инициации")
+
+    # 4. Темп фарма относительно роли и простой без добитых крипов
+    lh = _i(player.get("last_hits"))
+    if clock_sec is not None and clock_sec >= 240 and lh is not None and pos in (1, 2, 3):
+        minutes = clock_sec / 60.0
+        target_lh_per_min = 6.5 if pos == 1 else (5.8 if pos == 2 else 4.8)
+        expected_lh = int(minutes * target_lh_per_min)
+        if expected_lh >= 20 and lh < int(expected_lh * 0.65):
+            signals.append(
+                f"просадка темпа фарма ({lh} LH к {int(minutes)} мин при норме ~{expected_lh}) — добери линии и стаки"
+            )
+    if lh_idle_sec is not None and lh_idle_sec >= 65 and pos in (1, 2, 3) and clock_sec is not None and clock_sec >= 300:
+        signals.append(f"простой без крипов {lh_idle_sec}с — вернись на фарм, не гуляй впустую")
+
+    return signals[:4]
+
+
+class MatchSignalTracker:
+    """Хранит скользящее окно смертей (3 мин), HP и простоя LH для Контура 1/3."""
+
+    def __init__(self) -> None:
+        self._match_id: str | None = None
+        self._prev_deaths: int = 0
+        self._death_clocks: list[int] = []
+        self._last_lh: int | None = None
+        self._last_lh_clock: int | None = None
+        self._prev_hp_pct: float | None = None
+        self._lock = threading.Lock()
+
+    def reset(self) -> None:
+        with self._lock:
+            self._match_id = None
+            self._prev_deaths = 0
+            self._death_clocks.clear()
+            self._last_lh = None
+            self._last_lh_clock = None
+            self._prev_hp_pct = None
+
+    def observe(
+        self,
+        payload: Mapping[str, Any] | None,
+        *,
+        position: int = 1,
+        next_item_name: str | None = None,
+        next_item_cost: int | None = None,
+    ) -> tuple[list[str], bool]:
+        if not isinstance(payload, Mapping):
+            return [], False
+        map_data = payload.get("map") if isinstance(payload.get("map"), Mapping) else {}
+        player = payload.get("player") if isinstance(payload.get("player"), Mapping) else {}
+        hero = payload.get("hero") if isinstance(payload.get("hero"), Mapping) else {}
+
+        match_id = extract_match_id(payload)
+        clock_sec = _i(map_data.get("clock_time"))
+        deaths = _i(player.get("deaths")) or 0
+        lh = _i(player.get("last_hits"))
+        hp_pct = _f(hero.get("health_percent"))
+
+        with self._lock:
+            if match_id and self._match_id != match_id:
+                self._match_id = match_id
+                self._prev_deaths = deaths
+                self._death_clocks.clear()
+                self._last_lh = lh
+                self._last_lh_clock = clock_sec
+                self._prev_hp_pct = hp_pct
+
+            in_combat = is_hero_in_combat(payload, prev_hp_pct=self._prev_hp_pct)
+            if hp_pct is not None:
+                self._prev_hp_pct = hp_pct
+
+            if deaths > self._prev_deaths:
+                delta = min(5, deaths - self._prev_deaths)
+                stamp = clock_sec if clock_sec is not None else 0
+                for _ in range(delta):
+                    self._death_clocks.append(stamp)
+                self._prev_deaths = deaths
+            elif deaths < self._prev_deaths:
+                self._prev_deaths = deaths
+                self._death_clocks.clear()
+
+            if clock_sec is not None:
+                self._death_clocks = [t for t in self._death_clocks if (clock_sec - t) <= 180]
+
+            lh_idle_sec = 0
+            if lh is not None and clock_sec is not None:
+                if self._last_lh is None or lh > self._last_lh:
+                    self._last_lh = lh
+                    self._last_lh_clock = clock_sec
+                elif self._last_lh_clock is not None and clock_sec > self._last_lh_clock:
+                    lh_idle_sec = clock_sec - self._last_lh_clock
+
+            clocks_snapshot = list(self._death_clocks)
+
+        signals = compute_derived_signals(
+            payload,
+            position=position,
+            next_item_name=next_item_name,
+            next_item_cost=next_item_cost,
+            death_timestamps=clocks_snapshot,
+            lh_idle_sec=lh_idle_sec,
+        )
+        return signals, in_combat
 
 
 # --------------------------------------------------------------------------- #

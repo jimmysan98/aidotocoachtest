@@ -338,6 +338,8 @@ class LlmRouter:
         respawn_seconds: int = 0,
         requested_max_tokens: int | None = None,
         allow_tools: bool | None = None,
+        proactive: bool = False,
+        live_urgent: bool = False,
     ) -> RouteDecision:
         """Выбирает Tier 1 vs Tier 2 строго по правилам боевых и стратегических путей."""
         provider = str(getattr(llm, "provider", "ollama") or "ollama").strip().lower()
@@ -345,12 +347,13 @@ class LlmRouter:
         model = str(getattr(llm, "model", "") or "").strip()
         api_key = str(getattr(llm, "api_key", "") or "").strip()
         routing_mode = str(getattr(llm, "routing_mode", "auto") or "auto").strip().lower()
+        fast_live = bool(voice or proactive or live_urgent)
         # Pollinations допускается только при отсутствии облачного API-ключа
         # и вне горячего голосового пути (Fork B / Decision #1).
         cfg_allow_poll = getattr(llm, "allow_pollinations_fallback", None)
         allow_poll = (
             (not bool(api_key))
-            and (not voice)
+            and (not fast_live)
             and (True if cfg_allow_poll is None else bool(cfg_allow_poll))
         )
         tier1_override = str(getattr(llm, "tier1_model", "") or "").strip()
@@ -363,7 +366,7 @@ class LlmRouter:
             hero_alive is False and respawn_seconds >= 15
         )
         wants_tier2 = False
-        if not voice and routing_mode != "fast_only":
+        if not fast_live and routing_mode != "fast_only":
             if kind in _DEEP_STRATEGIC_KINDS:
                 wants_tier2 = True
             elif kind in _CHAT_DEEP_KINDS and (detail_mode == "detailed" or in_tavern):
@@ -375,8 +378,8 @@ class LlmRouter:
         if kind == "pick":
             wants_tier2 = False
 
-        # В бою / при voice=True deepseek-reasoner строго запрещён.
-        if voice:
+        # В бою / при voice=True / proactive=True / live_urgent=True reasoning-модели строго запрещены.
+        if fast_live:
             wants_tier2 = False
 
         if is_deepseek:
@@ -415,16 +418,18 @@ class LlmRouter:
                 send_temperature=not is_reasoning_model(deep_model),
             )
 
-        # Tier 1: боевой/голосовой или срочный лайв-драфт.
-        if voice:
+        # Tier 1: боевой/голосовой, проактивный или срочный лайв-драфт.
+        if fast_live:
             t1_deadline = float(
                 getattr(llm, "tier1_timeout", TIER1_VOICE_DEADLINE_SEC)
                 or TIER1_VOICE_DEADLINE_SEC
             )
-            allow_tools = False
+            eff_allow_tools = False
+            t1_max_tokens = max(60, min(req_tokens, 180))
         elif kind == "pick":
             t1_deadline = TIER1_PICK_DEADLINE_SEC
-            allow_tools = False
+            eff_allow_tools = False
+            t1_max_tokens = max(60, min(req_tokens, 260))
         else:
             # Текстовый чат без reasoner: допускаем стандартный таймаут провайдера.
             cfg_timeout = float(getattr(llm, "timeout", 60.0) or 60.0)
@@ -434,6 +439,7 @@ class LlmRouter:
                 if allow_tools is None
                 else bool(allow_tools)
             )
+            t1_max_tokens = max(60, min(req_tokens, 900))
 
         chosen_t1 = fast_model
         if is_reasoning_model(chosen_t1) and is_deepseek:
@@ -445,8 +451,8 @@ class LlmRouter:
             fallback_model=None,
             deadline_seconds=t1_deadline,
             fallback_deadline_seconds=0.0,
-            allow_tools=eff_allow_tools if not voice and kind != "pick" else False,
+            allow_tools=eff_allow_tools,
             allow_pollinations_failover=allow_poll,
-            api_max_tokens=max(60, min(req_tokens, 900)),
+            api_max_tokens=t1_max_tokens,
             send_temperature=not is_reasoning_model(chosen_t1),
         )

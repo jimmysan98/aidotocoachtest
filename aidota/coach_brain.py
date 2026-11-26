@@ -20,8 +20,11 @@ Coach передаёт свои legacy-подсказки параметрами
 from __future__ import annotations
 
 import inspect
+import json
 import logging
 import re
+import time
+from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping
 
 from .beginner import level_label, normalize_skill_level
@@ -35,6 +38,269 @@ from .prompt_assembly import (
 from .roles import position_label
 
 log = logging.getLogger("aidota.coach_brain")
+
+_THINK_MARK_RE = re.compile(r"<think>.*?</think>", re.S | re.I)
+SKIP_TOKEN = "SKIP"
+_SKIP_TEXT_RE = re.compile(r"^[\s\[\(<\"'«]*skip[\s\]\)>\"'»\.\!\?…]*$", re.I)
+VALID_PLAYSTYLES: tuple[str, ...] = ("farm", "split", "smoke", "defend", "roshan")
+
+
+def is_skip_response(text: str | None) -> bool:
+    """True, если LLM законно выбрала промолчать (спецтокен SKIP)."""
+    if not isinstance(text, str):
+        return False
+    cleaned = _THINK_MARK_RE.sub("", text).strip()
+    if not cleaned:
+        return False
+    return bool(_SKIP_TEXT_RE.match(cleaned))
+
+
+@dataclass(slots=True)
+class StrategyCard:
+    """Компактная JSON-карточка макро-стратегии матча от фонового Стратега (Контур 2)."""
+
+    win_condition: str
+    main_threat: str
+    playstyle_now: str
+    next_items_plan: list[dict[str, str]] = field(default_factory=list)
+    updated_at_game_time: int = 0
+    match_id: str | None = None
+    updated_at_wall: float = field(default_factory=time.time)
+    source: str = "deterministic"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "win_condition": self.win_condition,
+            "main_threat": self.main_threat,
+            "playstyle_now": self.playstyle_now,
+            "next_items_plan": list(self.next_items_plan),
+            "updated_at_game_time": int(self.updated_at_game_time),
+            "match_id": self.match_id,
+            "source": self.source,
+        }
+
+    def render_compact(self) -> str:
+        items_str = "; ".join(
+            f"{entry['item']} ({entry['why']})" if entry.get("why") else entry["item"]
+            for entry in self.next_items_plan[:3]
+            if isinstance(entry, Mapping) and entry.get("item")
+        )
+        lines = [
+            f"Темп сейчас: {self.playstyle_now}. Условие победы: {self.win_condition}.",
+            f"Главная угроза: {self.main_threat}.",
+        ]
+        if items_str:
+            lines.append(f"План слотов: {items_str}.")
+        return " ".join(lines)
+
+    def is_stale(
+        self,
+        *,
+        clock_sec: int | None,
+        match_id: str | None = None,
+        max_game_age_sec: int = 90,
+        max_wall_age_sec: float = 90.0,
+    ) -> bool:
+        if match_id and self.match_id and str(match_id) != str(self.match_id):
+            return True
+        if clock_sec is not None and abs(int(clock_sec) - int(self.updated_at_game_time)) >= max_game_age_sec:
+            return True
+        return (time.time() - float(self.updated_at_wall)) >= max_wall_age_sec
+
+
+def _normalize_playstyle(raw: Any, fallback: str = "farm") -> str:
+    text = str(raw or "").strip().lower()
+    if text in VALID_PLAYSTYLES:
+        return text
+    for style in VALID_PLAYSTYLES:
+        if style in text:
+            return style
+    return fallback if fallback in VALID_PLAYSTYLES else "farm"
+
+
+def build_deterministic_strategy_card(
+    brief: Mapping[str, Any] | None,
+    *,
+    owned_items: set[str] | None = None,
+    clock_sec: int | None = None,
+    match_id: str | None = None,
+) -> StrategyCard:
+    """0-мс детерминированная карточка плана матча (fallback и база для Стратега)."""
+    data = brief if isinstance(brief, Mapping) else {}
+    stage = str(data.get("stage") or "laning")
+    pos = _as_int(data.get("position")) or 1
+    eff_clock = _as_int(data.get("clock_seconds")) if clock_sec is None else int(clock_sec)
+    eff_clock = 0 if eff_clock is None else eff_clock
+
+    if stage == "laning":
+        playstyle = "smoke" if pos in (4, 5) else "farm"
+        win_cond = "уверенно отстоять линии и не отдавать руны/лотосы" if pos in (4, 5) else "набрать ранний нетворс до первого ключевого слота"
+    elif stage == "midgame":
+        playstyle = "farm" if pos == 1 and eff_clock < 1100 else ("smoke" if pos in (2, 3, 4, 5) else "split")
+        win_cond = "забрать Т2 вышки и перевести преимущество на Рошана"
+    else:
+        playstyle = "defend" if data.get("alive") is False else "roshan"
+        win_cond = "играть от Рошана, вижна и байбека на решающей драке"
+
+    threats = [str(t).strip() for t in (data.get("threats") or []) if str(t).strip()]
+    main_threat = threats[0][:140] if threats else "скрытая инициация врага в тумане войны"
+
+    plan: list[dict[str, str]] = []
+    for entry in (data.get("item_advice") or [])[:3]:
+        if isinstance(entry, Mapping) and entry.get("item"):
+            item_name_str = str(entry["item"]).strip()
+            if owned_items is not None:
+                try:
+                    from .item_validator import validate_item_candidate
+
+                    ok, resolved_name, _ = validate_item_candidate(item_name_str, owned_items)
+                    if not ok:
+                        continue
+                    item_name_str = resolved_name
+                except Exception:  # noqa: BLE001
+                    pass
+            plan.append({
+                "item": item_name_str,
+                "why": str(entry.get("reason") or "слот под текущий матчап")[:120],
+            })
+    if not plan and owned_items is not None:
+        try:
+            from .item_validator import pick_deterministic_fallback_item
+
+            fb_item, fb_why = pick_deterministic_fallback_item(
+                str(data.get("hero_name") or ""),
+                pos,
+                owned_items,
+                enemy_heroes=list(data.get("enemy_picks") or []),
+            )
+            plan.append({"item": fb_item, "why": fb_why[:120]})
+        except Exception:  # noqa: BLE001
+            pass
+
+    return StrategyCard(
+        win_condition=win_cond,
+        main_threat=main_threat,
+        playstyle_now=playstyle,
+        next_items_plan=plan[:3],
+        updated_at_game_time=eff_clock,
+        match_id=match_id,
+        source="deterministic",
+    )
+
+
+def parse_strategy_card_json(
+    raw_text: str,
+    *,
+    fallback_card: StrategyCard,
+    owned_items: set[str] | None = None,
+    hero_name: str = "",
+    role: int = 1,
+    enemy_heroes: list[str] | None = None,
+    clock_sec: int | None = None,
+    match_id: str | None = None,
+) -> StrategyCard:
+    """Безопасно парсит JSON от фонового Стратега и фильтрует предметы через item_validator."""
+    cleaned = _THINK_MARK_RE.sub("", str(raw_text or "")).strip()
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start < 0 or end <= start:
+        return fallback_card
+    try:
+        parsed = json.loads(cleaned[start : end + 1])
+    except (ValueError, TypeError):
+        return fallback_card
+    if not isinstance(parsed, Mapping):
+        return fallback_card
+
+    win_condition = " ".join(str(parsed.get("win_condition") or fallback_card.win_condition).split())[:160]
+    main_threat = " ".join(str(parsed.get("main_threat") or fallback_card.main_threat).split())[:160]
+    playstyle = _normalize_playstyle(parsed.get("playstyle_now"), fallback=fallback_card.playstyle_now)
+
+    validated_plan: list[dict[str, str]] = []
+    seen_slugs: set[str] = set()
+    raw_plan = parsed.get("next_items_plan")
+    if isinstance(raw_plan, list):
+        for entry in raw_plan:
+            if isinstance(entry, Mapping):
+                item_raw = str(entry.get("item") or "").strip()
+                why_raw = " ".join(str(entry.get("why") or "").split())[:120]
+            elif isinstance(entry, str):
+                item_raw = entry.strip()
+                why_raw = "слот по плану матча"
+            else:
+                continue
+            if not item_raw:
+                continue
+            resolved_name = item_raw
+            slug_key = item_raw.lower()
+            if owned_items is not None:
+                try:
+                    from .item_validator import resolve_item_slug_and_name, validate_item_candidate
+
+                    ok, cand_name, _ = validate_item_candidate(item_raw, owned_items)
+                    if not ok:
+                        continue
+                    slug_key, resolved_name, _ = resolve_item_slug_and_name(cand_name)
+                except Exception:  # noqa: BLE001
+                    pass
+            if slug_key in seen_slugs:
+                continue
+            seen_slugs.add(slug_key)
+            validated_plan.append({"item": resolved_name, "why": why_raw or "под текущий матчап"})
+            if len(validated_plan) >= 3:
+                break
+
+    if not validated_plan:
+        validated_plan = list(fallback_card.next_items_plan)
+        if not validated_plan and owned_items is not None:
+            try:
+                from .item_validator import pick_deterministic_fallback_item
+
+                fb_item, fb_why = pick_deterministic_fallback_item(
+                    hero_name, role, owned_items, enemy_heroes=enemy_heroes
+                )
+                validated_plan = [{"item": fb_item, "why": fb_why[:120]}]
+            except Exception:  # noqa: BLE001
+                pass
+
+    return StrategyCard(
+        win_condition=win_condition or fallback_card.win_condition,
+        main_threat=main_threat or fallback_card.main_threat,
+        playstyle_now=playstyle,
+        next_items_plan=validated_plan[:3],
+        updated_at_game_time=clock_sec if clock_sec is not None else fallback_card.updated_at_game_time,
+        match_id=match_id if match_id is not None else fallback_card.match_id,
+        source="llm",
+    )
+
+
+def render_strategy_card(card: StrategyCard | Mapping[str, Any] | None) -> str:
+    """Компактно рендерит StrategyCard для инъекции в Segment 2."""
+    if card is None:
+        return ""
+    if isinstance(card, StrategyCard):
+        return card.render_compact()
+    if isinstance(card, Mapping):
+        playstyle = _normalize_playstyle(card.get("playstyle_now"))
+        win_c = str(card.get("win_condition") or "").strip()
+        threat = str(card.get("main_threat") or "").strip()
+        plan = card.get("next_items_plan") or []
+        parts = [f"Темп сейчас: {playstyle}."]
+        if win_c:
+            parts.append(f"Условие победы: {win_c}.")
+        if threat:
+            parts.append(f"Главная угроза: {threat}.")
+        if isinstance(plan, list) and plan:
+            items_txt = "; ".join(
+                f"{p.get('item')} ({p.get('why')})" if isinstance(p, Mapping) and p.get("why") else str(p.get("item") if isinstance(p, Mapping) else p)
+                for p in plan[:3]
+                if (isinstance(p, Mapping) and p.get("item")) or isinstance(p, str)
+            )
+            if items_txt:
+                parts.append(f"План слотов: {items_txt}.")
+        return " ".join(parts)
+    return ""
+
 
 # --------------------------------------------------------------------------- #
 # 1. Понимание вопроса
@@ -1566,6 +1832,10 @@ def render_prompt_assembly(
     match_snapshot: str = "",
     gsi_summary: str = "",
     memory_summary: str = "",
+    strategy_card: str = "",
+    derived_signals: Iterable[str] = (),
+    allowed_items: Iterable[str] = (),
+    extra_dynamic_sections: Iterable[str] = (),
 ) -> PromptAssembly:
     """Собирает 3-сегментный PromptAssembly с байтово-стабильным префиксом (Fork A1)."""
     level = normalize_skill_level(skill_level)
@@ -1593,6 +1863,10 @@ def render_prompt_assembly(
         enemy_picks=enemy_picks,
     )
     kind_hint = _KIND_HINTS.get(kind) or _KIND_HINTS["chat"]
+    extras = [f"ЗАДАЧА И ФОРМАТ ХОДА: {kind_hint}"]
+    for sec in extra_dynamic_sections:
+        if sec and str(sec).strip():
+            extras.append(str(sec).strip())
     dynamic_suffix = build_dynamic_suffix(
         profile_text=profile_text,
         custom_focus=custom_focus,
@@ -1601,7 +1875,10 @@ def render_prompt_assembly(
         gsi_summary=gsi_summary,
         brief_text=brief_text,
         knowledge=knowledge or (),
-        extra_sections=(f"ЗАДАЧА И ФОРМАТ ХОДА: {kind_hint}",),
+        strategy_card=strategy_card,
+        derived_signals=derived_signals,
+        allowed_items=allowed_items,
+        extra_sections=tuple(extras),
     )
     return PromptAssembly(
         static_prefix="\n\n".join(static_parts),
@@ -1779,16 +2056,18 @@ def sanitize_answer(
     skill_level: str = "beginner",
     kind: str = "chat",
     detail_mode: str = "auto",
+    allow_skip: bool = False,
 ) -> str:
     """Чистит ответ LLM для голосовой озвучки.
 
     Убирает markdown/эмодзи/нумерацию, отрезает вводные фразы, обрезает по
-    границе предложения. Лимиты зависят от уровня игрока и типа ответа
-    (см. :func:`_answer_limits`). Возвращает ``""``, если ответ — пустая «вода»
-    или отказ, чтобы Coach мог запросить повтор/взять запасной ответ.
+    границе предложения. При ``allow_skip=True`` возвращает легальный спецтокен
+    ``SKIP`` без мутаций; иначе трактует ``SKIP`` как пустой ответ.
     """
     if not isinstance(text, str):
         return ""
+    if is_skip_response(text):
+        return SKIP_TOKEN if allow_skip else ""
     max_chars_eff, max_sentences_eff = _answer_limits(
         skill_level, kind, max_chars, max_sentences, detail_mode=detail_mode
     )
