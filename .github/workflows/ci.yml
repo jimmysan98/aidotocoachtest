@@ -29,8 +29,73 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
 
-      - name: Run unit tests
+      - name: Lint (ruff on Phase 1 refactored modules and tests)
+        run: >
+          python -m ruff check
+          aidota/security.py
+          aidota/telemetry.py
+          aidota/prompt_assembly.py
+          aidota/llm_router.py
+          aidota/logging_setup.py
+          aidota/paths.py
+          aidota/meta_sync.py
+          aidota/dota_api.py
+          aidota/coach_memory.py
+          aidota/config.py
+          aidota/doctor.py
+          aidota/tts.py
+          aidota/coach_brain.py
+          aidota/coach.py
+          aidota/app.py
+          aidota/web_app.py
+          main.py
+          build_exe.py
+          tests/test_phase1_router_and_security.py
+          tests/test_phase2_paths_and_meta_sync.py
+          tests/test_coach.py
+          tests/test_coach_memory.py
+          tests/test_coach_smart.py
+          tests/test_live_item_prompt.py
+          tests/test_config_preset.py
+          tests/test_gsi_and_patch_db.py
+          tests/test_coach_intelligence_upgrade.py
+          tests/test_coach_upgrade_qa.py
+          tests/test_web_api_bridge.py
+          tests/test_release_readiness.py
+
+      - name: Typecheck (mypy)
+        run: python -m mypy
+
+      - name: Run unit tests (pytest)
+        run: python -m pytest
+
+      - name: Run CI runner (tools/run_tests.py)
         run: python tools/run_tests.py
 
       - name: Compile check
         run: python -m compileall -q aidota main.py build_exe.py
+
+  packaging:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    needs: tests
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: PyInstaller smoke build
+        run: python build_exe.py --pyinstaller-only
+
+      - name: Frozen app CLI smoke (--doctor / --version)
+        run: .\dist\AIDOTA\AIDOTA.exe --help

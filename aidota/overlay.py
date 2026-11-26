@@ -21,13 +21,13 @@ from .hotkeys import format_key_name, parse_key
 
 log = logging.getLogger("aidota.overlay")
 
-_BG = "#080b13"
-_FG = "#eaf0ff"
-_MUTED = "#93a2bd"
-_ACCENT = "#a855f7"
-_ACCENT_ALT = "#38bdf8"
-_BTN_BG = "#121a28"
-_BTN_HOVER = "#1c2941"
+_BG = "#0b0c10"
+_FG = "#f5f5f7"
+_MUTED = "#a1a1a8"
+_ACCENT = "#bf5af2"
+_ACCENT_ALT = "#0a84ff"
+_BTN_BG = "#161822"
+_BTN_HOVER = "#232636"
 _CLOSE = object()
 
 _KEYSYM_MAP: dict[str, str] = {
@@ -221,7 +221,7 @@ class Overlay:
 
             clear_btn = tk.Button(
                 btn_box,
-                text="🗑",
+                text="Очистить",
                 bg=_BTN_BG,
                 fg=_MUTED,
                 activebackground=_BTN_HOVER,
@@ -239,7 +239,7 @@ class Overlay:
 
             ct_btn = tk.Button(
                 btn_box,
-                text="🖱",
+                text="Клик",
                 bg=_BTN_BG,
                 fg=_MUTED,
                 activebackground=_BTN_HOVER,

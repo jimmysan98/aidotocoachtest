@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#070a12">
+  <meta name="theme-color" content="#090a0f">
   <title>AIDOTA — голосовой ИИ-тренер Dota 2</title>
   <link rel="icon" type="image/x-icon" href="favicon.ico">
   <link rel="icon" type="image/png" href="icon.png">
@@ -83,12 +83,12 @@
 
         <!-- Coach Persona Toggle -->
         <div class="coach-switcher" role="radiogroup" aria-label="Выбор тренера">
-          <button class="coach-btn active" id="coach-astra-btn" data-coach="Астра" title="Астра — аналитический, уверенный 7000+ MMR тренер">
+          <button type="button" class="coach-btn active" id="coach-astra-btn" data-coach="Астра" role="radio" aria-checked="true" title="Астра — аналитический, уверенный 7000+ MMR тренер">
             <span class="coach-dot astra-dot"></span>
             <span class="coach-name">Астра</span>
             <span class="coach-tag">PRO</span>
           </button>
-          <button class="coach-btn" id="coach-jarvis-btn" data-coach="Джарвис" title="Джарвис — боевой тактический кибернетический ассистент">
+          <button type="button" class="coach-btn" id="coach-jarvis-btn" data-coach="Джарвис" role="radio" aria-checked="false" title="Джарвис — боевой тактический кибернетический ассистент">
             <span class="coach-dot jarvis-dot"></span>
             <span class="coach-name">Джарвис</span>
             <span class="coach-tag">TAC</span>
@@ -98,11 +98,11 @@
 
       <!-- Center: Role Selector -->
       <div class="role-selector" role="radiogroup" aria-label="Позиция в матче">
-        <button class="role-btn" data-pos="1" title="Позиция 1: Керри (Safe lane core)"><span class="role-num">1</span> <span class="role-lbl">Carry</span></button>
-        <button class="role-btn" data-pos="2" title="Позиция 2: Мидер (Mid lane core)"><span class="role-num">2</span> <span class="role-lbl">Mid</span></button>
-        <button class="role-btn" data-pos="3" title="Позиция 3: Оффлейнер (Hard lane core)"><span class="role-num">3</span> <span class="role-lbl">Offlane</span></button>
-        <button class="role-btn" data-pos="4" title="Позиция 4: Частичная поддержка (Soft support)"><span class="role-num">4</span> <span class="role-lbl">Soft Sup</span></button>
-        <button class="role-btn" data-pos="5" title="Позиция 5: Полная поддержка (Hard support)"><span class="role-num">5</span> <span class="role-lbl">Hard Sup</span></button>
+        <button type="button" class="role-btn" data-pos="1" title="Позиция 1: Керри (Safe lane core)"><span class="role-num">1</span> <span class="role-lbl">Carry</span></button>
+        <button type="button" class="role-btn" data-pos="2" title="Позиция 2: Мидер (Mid lane core)"><span class="role-num">2</span> <span class="role-lbl">Mid</span></button>
+        <button type="button" class="role-btn" data-pos="3" title="Позиция 3: Оффлейнер (Hard lane core)"><span class="role-num">3</span> <span class="role-lbl">Offlane</span></button>
+        <button type="button" class="role-btn" data-pos="4" title="Позиция 4: Частичная поддержка (Soft support)"><span class="role-num">4</span> <span class="role-lbl">Soft Sup</span></button>
+        <button type="button" class="role-btn" data-pos="5" title="Позиция 5: Полная поддержка (Hard support)"><span class="role-num">5</span> <span class="role-lbl">Hard Sup</span></button>
       </div>
 
       <!-- Right: Status Badges & Controls -->
@@ -119,7 +119,7 @@
           <span class="badge-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 10v6M2 10l10-5 10 5-10 5z"/><path d="M6 12v5c0 2 3 3 6 3s6-1 6-3v-5"/></svg></span>
           <span class="status-text" id="skill-level-text">Новичок</span>
         </div>
-        <div class="status-pill rust-pill" id="rust-status-pill" title="Нативное Rust-ускорение активно (aidota_rust.dll)">
+        <div class="status-pill rust-pill" id="rust-status-pill" style="display:none;" title="Legacy Rust DLL (отключён по умолчанию)">
           <span class="badge-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></span>
           <span class="status-text" id="rust-status-text">Rust Core</span>
         </div>
@@ -127,36 +127,36 @@
           <span class="badge-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></span>
           <span class="badge-key" id="ptt-key-display">V</span>
         </div>
-        <button class="icon-btn" id="btn-minimize-tray" title="Свернуть в системный трей">
+        <button type="button" class="icon-btn" id="btn-minimize-tray" title="Свернуть в системный трей" aria-label="Свернуть в системный трей">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/></svg>
         </button>
       </div>
     </header>
 
     <!-- Main Navigation Bar -->
-    <nav class="app-nav" aria-label="Основная навигация">
-      <button class="nav-tab active" data-tab="dashboard">
+    <nav class="app-nav" role="tablist" aria-label="Основная навигация">
+      <button type="button" class="nav-tab active" data-tab="dashboard" role="tab" aria-selected="true">
         <span class="tab-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg></span>
         <span class="tab-label">Дашборд</span>
       </button>
-      <button class="nav-tab" data-tab="chat">
+      <button type="button" class="nav-tab" data-tab="chat" role="tab" aria-selected="false">
         <span class="tab-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>
         <span class="tab-label">ИИ-Чат</span>
         <span class="tab-badge" id="chat-count-badge" style="display:none;">0</span>
       </button>
-      <button class="nav-tab" data-tab="timers">
+      <button type="button" class="nav-tab" data-tab="timers" role="tab" aria-selected="false">
         <span class="tab-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></span>
         <span class="tab-label">Тайминги & Радар</span>
       </button>
-      <button class="nav-tab" data-tab="meta">
+      <button type="button" class="nav-tab" data-tab="meta" role="tab" aria-selected="false">
         <span class="tab-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg></span>
         <span class="tab-label">Драфт & База знаний</span>
       </button>
-      <button class="nav-tab" data-tab="settings">
+      <button type="button" class="nav-tab" data-tab="settings" role="tab" aria-selected="false">
         <span class="tab-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span>
         <span class="tab-label">Настройки</span>
       </button>
-      <button class="nav-tab" data-tab="doctor">
+      <button type="button" class="nav-tab" data-tab="doctor" role="tab" aria-selected="false">
         <span class="tab-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></span>
         <span class="tab-label">Диагностика</span>
       </button>
@@ -168,7 +168,7 @@
       <!-- ======================================================== -->
       <!-- TAB 1: DASHBOARD -->
       <!-- ======================================================== -->
-      <section class="tab-pane active" id="tab-dashboard">
+      <section class="tab-pane active" id="tab-dashboard" role="tabpanel">
         <div class="dashboard-grid">
           <!-- Hero HUD Banner -->
           <div class="card hero-banner-card">
@@ -291,9 +291,9 @@
             </div>
             <div class="feed-container" id="advice-feed-list">
               <div class="feed-item welcome-feed-item">
-                <div class="feed-icon">✦</div>
+                <div class="feed-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.8L20 10.5l-6.1 1.7L12 18l-1.9-5.8L4 10.5l6.1-1.7L12 3z"/></svg></div>
                 <div class="feed-content">
-                  <div class="feed-title">Добро пожаловать в AIDOTA PRO!</div>
+                  <div class="feed-title">Добро пожаловать в AIDOTA PRO</div>
                   <div class="feed-body">Запустите Dota 2 или выберите героя вручную. Нажмите «Запустить ассистента» или зажмите клавишу [V] для голосового запроса.</div>
                   <div class="feed-time">Только что</div>
                 </div>
@@ -323,13 +323,14 @@
       <!-- ======================================================== -->
       <!-- TAB 2: INTERACTIVE AI CHAT -->
       <!-- ======================================================== -->
-      <section class="tab-pane" id="tab-chat">
+      <section class="tab-pane" id="tab-chat" role="tabpanel">
         <div class="chat-layout">
           <!-- Quick Suggestion Pills -->
           <div class="prompt-suggestions-bar">
             <span class="suggestions-label">Быстрые вопросы:</span>
             <button type="button" class="pill-btn" data-query="Что купить на первые 600 золота?">Стартовый закуп</button>
             <button type="button" class="pill-btn" data-query="Что собирать следующим слотом?">Что купить дальше?</button>
+            <button type="button" class="pill-btn" data-query="Разбери матчап моей линии против врага">Матчап на линии</button>
             <button type="button" class="pill-btn" data-query="Как правильно стоять эту линию?">Лайнинг и позиционка</button>
             <button type="button" class="pill-btn" data-query="Когда делать отводы и стакать?">Отводы и стаки</button>
             <button type="button" class="pill-btn" data-query="Кто контрит вражеских героев?">Контрпики и враги</button>
@@ -340,7 +341,7 @@
           <!-- Messages Container -->
           <div class="chat-messages-container" id="chat-messages-container">
             <div class="chat-msg coach-msg">
-              <div class="msg-avatar astra-avatar">✦</div>
+              <div class="msg-avatar astra-avatar"><svg class="ui-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.8L20 10.5l-6.1 1.7L12 18l-1.9-5.8L4 10.5l6.1-1.7L12 3z"/></svg></div>
               <div class="msg-bubble">
                 <div class="msg-header">
                   <span class="msg-author" id="chat-welcome-author">Астра</span>
@@ -348,14 +349,14 @@
                   <span class="msg-time" id="chat-welcome-time">12:00</span>
                 </div>
                 <div class="msg-text">
-                  Привет! Я на связи. Задавай любой вопрос по текущему матчу, предметам, тактике или таймингам — отвечу мгновенно голосом и текстом.
+                  Привет! Я на связи. Задавай любой вопрос по текущему матчу, предметам, матчапам или таймингам — отвечу мгновенно голосом и текстом. Можешь также написать «запомни: ...» или задать личную цель в настройках.
                 </div>
                 <div class="msg-actions">
-                  <button class="msg-action-btn btn-speak-msg" title="Озвучить голосом">
+                  <button type="button" class="msg-action-btn btn-speak-msg" title="Озвучить голосом">
                     <svg class="ui-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
                     <span>Озвучить</span>
                   </button>
-                  <button class="msg-action-btn btn-copy-msg" title="Копировать текст">
+                  <button type="button" class="msg-action-btn btn-copy-msg" title="Копировать текст">
                     <svg class="ui-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
                     <span>Копировать</span>
                   </button>
@@ -383,7 +384,7 @@
       <!-- ======================================================== -->
       <!-- TAB 3: TIMERS & RADAR -->
       <!-- ======================================================== -->
-      <section class="tab-pane" id="tab-timers">
+      <section class="tab-pane" id="tab-timers" role="tabpanel">
         <div class="timers-dashboard">
           <div class="timers-header-row">
             <div>
@@ -490,7 +491,7 @@
       <!-- ======================================================== -->
       <!-- TAB: META DB & DRAFT COACH -->
       <!-- ======================================================== -->
-      <section class="tab-pane" id="tab-meta">
+      <section class="tab-pane" id="tab-meta" role="tabpanel">
         <div class="meta-layout">
           <!-- Sub-view navigation switcher -->
           <div class="meta-subnav">
@@ -611,14 +612,14 @@
       <!-- ======================================================== -->
       <!-- TAB 4: SETTINGS -->
       <!-- ======================================================== -->
-      <section class="tab-pane" id="tab-settings">
+      <section class="tab-pane" id="tab-settings" role="tabpanel">
         <div class="settings-layout">
           <div class="settings-section">
             <h3 class="section-title"><svg class="ui-icon inline-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg> Выбор ИИ-модели (Пресеты в 1 клик)</h3>
             <p class="section-desc">Выберите удобный готовый пресет или введите собственный OpenAI-совместимый API.</p>
 
             <div class="presets-cards-grid">
-              <div class="preset-card active" data-preset="pollinations" role="button" tabindex="0" aria-label="Бесплатный ИИ Без ключа">
+              <div class="preset-card" data-preset="pollinations" role="button" tabindex="0" aria-label="Бесплатный ИИ Без ключа">
                 <div class="preset-header">
                   <span class="preset-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg></span>
                   <span class="preset-badge free-badge">100% БЕСПЛАТНО</span>
@@ -645,13 +646,13 @@
                 <p class="preset-desc">Самая дешёвая и быстрая модель Google с минимальным откликом для живого матча.</p>
               </div>
 
-              <div class="preset-card" data-preset="deepseek" role="button" tabindex="0" aria-label="DeepSeek-V3 Chat">
+              <div class="preset-card active" data-preset="deepseek" role="button" tabindex="0" aria-label="DeepSeek-V3 Chat">
                 <div class="preset-header">
                   <span class="preset-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg></span>
-                  <span class="preset-badge">САМЫЙ УМНЫЙ • $0.14/1M</span>
+                  <span class="preset-badge">ОСНОВНОЙ • АВТО-ТИРЫ</span>
                 </div>
-                <h4 class="preset-name">DeepSeek-V3 Chat</h4>
-                <p class="preset-desc">671B флагманский ИИ: превосходит многие топ-модели, глубокое знание Dota 2 и меты.</p>
+                <h4 class="preset-name">DeepSeek Авто (V3 + R1)</h4>
+                <p class="preset-desc">Быстрый deepseek-chat (≤3с) для голоса в бою и deepseek-reasoner для чата, драфта и разбора.</p>
               </div>
 
               <div class="preset-card" data-preset="deepseek_r1" role="button" tabindex="0" aria-label="DeepSeek-R1 Reasoner">
@@ -819,6 +820,37 @@
                   <option value="off">Только по запросу (Тишина, пока не спросите)</option>
                 </select>
               </div>
+
+              <div class="form-group">
+                <label for="cfg-coach-tone">Характер и стиль подачи тренера:</label>
+                <select id="cfg-coach-tone">
+                  <option value="balanced">Сбалансированный — уверенно и по ситуации</option>
+                  <option value="tactical">Тактический — чётко про темп карты и экономику</option>
+                  <option value="supportive">Поддерживающий — спокойно и без тильта</option>
+                  <option value="brief">Ультра-краткий — только команды и тайминги</option>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label for="cfg-detail-mode">Глубина ответов в чате:</label>
+                <select id="cfg-detail-mode">
+                  <option value="auto">Авто — адаптивно под вопрос и уровень игры</option>
+                  <option value="concise">Кратко — 1–2 фразы для быстрого взгляда в бою</option>
+                  <option value="detailed">Подробно — разбор причины и пошаговый план</option>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label for="cfg-custom-focus">Личный фокус / цель на матч:</label>
+                <input type="text" id="cfg-custom-focus" maxlength="200" placeholder="Например: стакать на :53, не драться без БКБ">
+              </div>
+
+              <div class="form-group form-toggle-row">
+                <label class="toggle-switch-label" for="cfg-speak-chat">
+                  <input type="checkbox" id="cfg-speak-chat" checked>
+                  <span>Озвучивать ответы в текстовом чате голосом</span>
+                </label>
+              </div>
             </div>
 
             <!-- Save Settings Button -->
@@ -835,7 +867,7 @@
       <!-- ======================================================== -->
       <!-- TAB 5: SYSTEM DOCTOR -->
       <!-- ======================================================== -->
-      <section class="tab-pane" id="tab-doctor">
+      <section class="tab-pane" id="tab-doctor" role="tabpanel">
         <div class="doctor-layout">
           <div class="doctor-header-card">
             <div>
@@ -849,11 +881,11 @@
 
           <div class="doctor-checks-grid" id="doctor-checks-grid">
             <!-- Dynamically populated checks -->
-            <div class="check-item ok-item">
-              <span class="check-badge ok-badge">OK</span>
+            <div class="check-item warn-item">
+              <span class="check-badge warn-badge">...</span>
               <div class="check-info">
-                <span class="check-name">Python 3.15</span>
-                <span class="check-desc">Интерпретатор работает в 64-битном режиме</span>
+                <span class="check-name">Самодиагностика</span>
+                <span class="check-desc">Нажмите «Перепроверить систему» для запуска проверок окружения</span>
               </div>
             </div>
           </div>

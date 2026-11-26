@@ -26,6 +26,7 @@ from typing import Any, Iterable, Mapping
 
 from .beginner import level_label, normalize_skill_level
 from .heroes import HeroCatalog, normalize
+from .prompt_assembly import PromptAssembly, build_dynamic_suffix, build_match_stable_prefix
 from .roles import position_label
 
 log = logging.getLogger("aidota.coach_brain")
@@ -41,6 +42,10 @@ _QUERY_KIND_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "кого пикнуть", "кого взять", "кого брать", "что пикнуть", "контрпик",
             "кого банить", "пикни", "какого героя", "кого поставить", "кого лучше взять",
         ),
+    ),
+    (
+        "matchup",
+        ("матчап", "матчапм", "кто сильнее", "кто кого", "сравни героев", "сильный ли"),
     ),
     (
         "counter",
@@ -100,10 +105,6 @@ _QUERY_KIND_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "why",
         ("почему", "зачем", "в чём смысл", "в чем смысл"),
     ),
-    (
-        "matchup",
-        ("матчап", "матчапм", "кто сильнее", "кто кого", "сравни героев", "сильный ли"),
-    ),
 )
 
 _KIND_PRIORITY = {kind: index for index, (kind, _) in enumerate(_QUERY_KIND_PATTERNS)}
@@ -113,6 +114,34 @@ def _prepare_text(text: str) -> str:
     return " ".join(str(text or "").lower().replace("ё", "е").split())
 
 
+def detect_query_intents(text: str, *, limit: int = 2) -> list[str]:
+    """Возвращает до ``limit`` подходящих намерений в порядке релевантности."""
+    prepared = _prepare_text(text)
+    if not prepared:
+        return ["chat"]
+    scored: list[tuple[float, str]] = []
+    for kind, patterns in _QUERY_KIND_PATTERNS:
+        hits = sum(1 for pattern in patterns if pattern in prepared)
+        if hits:
+            score = (100.0 - _KIND_PRIORITY[kind]) + min(hits - 1, 3) * 0.25
+            scored.append((score, kind))
+    if not scored:
+        return ["chat"]
+    scored.sort(key=lambda pair: -pair[0])
+    # Сохраняем строгий приоритет главного намерения («против» побеждает «билд»)
+    first = next(
+        kind for kind, patterns in _QUERY_KIND_PATTERNS
+        if any(p in prepared for p in patterns)
+    )
+    intents = [first]
+    for _, kind in scored:
+        if kind not in intents:
+            intents.append(kind)
+        if len(intents) >= max(1, int(limit)):
+            break
+    return intents
+
+
 def detect_query_kind(text: str) -> str:
     """Определяет тип вопроса игрока.
 
@@ -120,21 +149,7 @@ def detect_query_kind(text: str) -> str:
     ``lane``, ``timing``, ``analysis``, ``status``, ``explain``, ``why``,
     ``matchup`` или ``chat``.
     """
-    prepared = _prepare_text(text)
-    if not prepared:
-        return "chat"
-    best: tuple[float, str] | None = None
-    for kind, patterns in _QUERY_KIND_PATTERNS:
-        for pattern in patterns:
-            if pattern in prepared:
-                score = 100.0 - _KIND_PRIORITY[kind]
-                best = (score, kind)
-                break
-        if best is not None:
-            break
-    # «что купить против пуджа» должно уйти в counter, а не в build:
-    # counter имеет более высокий приоритет, чем build, и стоит раньше в списке.
-    return best[1] if best else "chat"
+    return detect_query_intents(text, limit=1)[0]
 
 
 # --------------------------------------------------------------------------- #
@@ -551,6 +566,49 @@ def _hero_key(hero: Mapping[str, Any] | None) -> str:
     return normalize(str(hero.get("localized_name", "") or raw))
 
 
+def resolve_mentioned_heroes(
+    text: str, catalog: HeroCatalog | None, *, max_heroes: int = 3
+) -> list[dict]:
+    """Находит всех героев, упомянутых в фразе («на сфе против квопы» -> [SF, QoP])."""
+    if not text or catalog is None or not getattr(catalog, "available", False):
+        return []
+    found: list[dict] = []
+    seen_ids: set[str] = set()
+
+    def _add(hero: dict | None) -> None:
+        if not isinstance(hero, dict):
+            return
+        hid = str(hero.get("name") or hero.get("localized_name") or "").lower()
+        if hid and hid not in seen_ids:
+            seen_ids.add(hid)
+            found.append(hero)
+
+    try:
+        primary = catalog.find(text) or catalog.find_in_tokens(text)
+        if primary is not None:
+            _add(primary.hero)
+    except Exception:  # noqa: BLE001
+        pass
+
+    words = [w for w in re.split(r"[^0-9a-zа-яё\-]+", text.lower()) if len(w) >= 2]
+    # Пробуем биграммы и одиночные слова для поиска второго и третьего героя
+    candidates: list[str] = []
+    for idx in range(len(words)):
+        if idx + 1 < len(words):
+            candidates.append(f"{words[idx]} {words[idx + 1]}")
+        candidates.append(words[idx])
+    for chunk in candidates:
+        if len(found) >= max_heroes:
+            break
+        try:
+            m = catalog.find(chunk, threshold=0.82)
+            if m is not None:
+                _add(m.hero)
+        except Exception:  # noqa: BLE001
+            continue
+    return found[:max_heroes]
+
+
 def resolve_mentioned_hero(text: str, catalog: HeroCatalog | None) -> dict | None:
     """Находит героя, упомянутого в свободной фразе игрока.
 
@@ -677,6 +735,7 @@ def build_brief(
         "ult_ready": None,
         "my_picks": [],
         "enemy_picks": [],
+        "enemy_items": [],
         "bans": [],
         "threats": [],
         "mistakes": [],
@@ -845,10 +904,45 @@ def build_brief(
     if isinstance(mistakes, list):
         brief["mistakes"] = [str(m) for m in mistakes][:4]
 
-    # Ближайшая макро-цель
+    brief["objectives"] = ""
     objectives = _safe_call(ctx, "objectives_context", clock_sec, game_mode)
     if isinstance(objectives, str):
         brief["objectives"] = objectives
+
+    # Замеченные ключевые предметы врагов (из spectator / allplayers GSI)
+    enemy_items_list: list[str] = []
+    my_team_norm = str(brief.get("my_team") or "").strip().lower()
+    if my_team_norm in ("radiant", "dire"):
+        allplayers = _safe_call(ctx, "_extract_allplayers", payload) or []
+        ignored_item_keys = {
+            "tango", "clarity", "flask", "branches", "tpscroll",
+            "ward_observer", "ward_sentry", "ward_dispenser", "faerie_fire",
+            "enchanted_mango", "smoke_of_deceit", "dust",
+        }
+        for entry in allplayers:
+            if not isinstance(entry, Mapping):
+                continue
+            eteam = str(entry.get("team") or "").strip().lower()
+            if not eteam or eteam == my_team_norm:
+                continue
+            raw_eitems = [
+                it for it in (entry.get("items") or [])
+                if isinstance(it, str) and not _is_empty_item(it, ctx)
+            ]
+            notable: list[str] = []
+            for raw_it in raw_eitems:
+                short_it = raw_it.replace("item_", "")
+                if short_it in ignored_item_keys:
+                    continue
+                notable.append(_display_item(raw_it, display_items, ctx))
+            if notable:
+                e_npc = entry.get("npc") or entry.get("name")
+                e_disp = _safe_call(ctx, "hero_name_for", e_npc, catalog) or str(e_npc or "").replace("npc_dota_hero_", "")
+                if e_disp:
+                    enemy_items_list.append(f"{e_disp}: {', '.join(notable[:4])}")
+            if len(enemy_items_list) >= 3:
+                break
+    brief["enemy_items"] = enemy_items_list
 
     # Паверспайки по уже собранным предметам
     spikes = [f"{item}: {_OWN_POWER_SPIKES[item]}" for item in inventory if item in _OWN_POWER_SPIKES]
@@ -992,6 +1086,8 @@ def render_brief(brief: dict[str, Any], *, max_chars: int = 1100) -> str:
         lines.append("Драфт — " + "; ".join(draft_bits) + ".")
     if brief.get("threats"):
         lines.append("Угрозы: " + _join_sentences(brief["threats"]) + ".")
+    if brief.get("enemy_items"):
+        lines.append("Предметы врагов: " + "; ".join(brief["enemy_items"][:3]) + ".")
     if brief.get("power_spikes"):
         lines.append("Паверспайк: " + _join_sentences(brief["power_spikes"]) + ".")
     if brief.get("mistakes"):
@@ -1081,9 +1177,16 @@ def retrieve_knowledge(
     lane_plan: str | None = None,
     catalog: HeroCatalog | None = None,
     max_snippets: int = 4,
+    secondary_intents: Iterable[str] | None = None,
+    matchup_heroes: tuple[str, str] | None = None,
 ) -> list[str]:
     """Возвращает только те знания, которые нужны для ответа на вопрос."""
-    kind = detect_query_kind(query)
+    intents = detect_query_intents(query, limit=2)
+    kind = intents[0]
+    active_kinds = {kind}
+    for extra_intent in (list(intents[1:]) + list(secondary_intents or [])):
+        if extra_intent and extra_intent != "chat":
+            active_kinds.add(str(extra_intent))
     hero_name = None
     if isinstance(hero, Mapping):
         hero_name = str(hero.get("localized_name") or hero.get("name") or "") or None
@@ -1096,8 +1199,20 @@ def retrieve_knowledge(
     except Exception:  # noqa: BLE001
         meta_db = None  # type: ignore[assignment]
 
+    # --- сравнение двух героев / прямой матчап ----------------------------- #
+    if meta_db is not None and (kind == "matchup" or matchup_heroes is not None):
+        pair: tuple[str, str] | None = matchup_heroes
+        if pair is None and hero_name and enemies:
+            pair = (hero_name, enemies[0])
+        elif pair is None and len(enemies) >= 2:
+            pair = (enemies[0], enemies[1])
+        if pair is not None and pair[0] and pair[1] and normalize(pair[0]) != normalize(pair[1]):
+            cmp_res = _safe_call(meta_db, "compare_hero_matchup", pair[0], pair[1], role_a=position)
+            if isinstance(cmp_res, Mapping) and cmp_res.get("summary"):
+                snippets.append(f"Матчап: {cmp_res['summary']}")
+
     # --- билд / предметы -------------------------------------------------- #
-    if kind in ("build", "chat", "why") and hero_name and meta_db is not None:
+    if active_kinds & {"build", "chat", "why"} and hero_name and meta_db is not None:
         build = _safe_call(meta_db, "get_hero_build", hero_name, role=position, enemy_heroes=enemies)
         if isinstance(build, Mapping):
             snippet = _format_build_snippet(build)
@@ -1105,7 +1220,7 @@ def retrieve_knowledge(
                 snippets.append(snippet)
 
     # --- контр-предметы против врагов ------------------------------------ #
-    if kind in ("counter", "why", "chat", "analysis"):
+    if active_kinds & {"counter", "why", "chat", "analysis"}:
         for enemy in enemies[:3]:
             counters = None
             if meta_db is not None:
@@ -1128,7 +1243,7 @@ def retrieve_knowledge(
                 snippets.append(f"Против {enemy}: {legacy}")
 
     # --- порядок прокачки ------------------------------------------------- #
-    if kind == "skill" and hero_name:
+    if active_kinds & {"skill"} and hero_name:
         skill = None
         if meta_db is not None:
             skill = _safe_call(meta_db, "get_skill_order", hero_name)
@@ -1148,7 +1263,7 @@ def retrieve_knowledge(
                 snippets.append(str(tip))
 
     # --- контрпики -------------------------------------------------------- #
-    if kind == "pick" and meta_db is not None:
+    if active_kinds & {"pick"} and meta_db is not None:
         picks = _safe_call(meta_db, "recommend_picks", enemies, role=position, top_k=3)
         if isinstance(picks, list) and picks:
             bits = []
@@ -1166,7 +1281,7 @@ def retrieve_knowledge(
                 snippets.append("Контрпики на поз. " + str(position) + ": " + "; ".join(bits) + ".")
 
     # --- линия ------------------------------------------------------------ #
-    if kind == "lane" and hero_name and meta_db is not None:
+    if active_kinds & {"lane", "matchup"} and hero_name and meta_db is not None:
         tip = _safe_call(meta_db, "get_lane_tips", hero_name, position, enemies)
         if isinstance(tip, str) and tip.strip():
             snippets.append(f"Лейн: {tip.strip()}")
@@ -1179,7 +1294,7 @@ def retrieve_knowledge(
             snippets.append(f"План на линию: {plan_text}")
 
     # --- «почему»: ключевые слоты/угрозы ---------------------------------- #
-    if kind == "why" and hero_name and meta_db is not None and not snippets:
+    if "why" in active_kinds and hero_name and meta_db is not None and not snippets:
         build = _safe_call(meta_db, "get_hero_build", hero_name, role=position, enemy_heroes=enemies)
         if isinstance(build, Mapping):
             snippet = _format_build_snippet(build)
@@ -1187,7 +1302,7 @@ def retrieve_knowledge(
                 snippets.append(snippet)
 
     # --- тайминги --------------------------------------------------------- #
-    if kind == "timing":
+    if "timing" in active_kinds:
         hints: list[str] = []
         if hero_name and meta_db is not None:
             build = _safe_call(meta_db, "get_hero_build", hero_name, role=position, enemy_heroes=enemies)
@@ -1276,11 +1391,21 @@ DISCORD_COACH_SYSTEM_PROMPT = (
 DISCORD_TEAMMATE_SYSTEM_PROMPT = DISCORD_COACH_SYSTEM_PROMPT
 
 
+_TONE_INSTRUCTIONS: dict[str, str] = {
+    "balanced": "",
+    "tactical": "ТОН ТРЕНЕРА: говори максимально чётко, уверенно и по-турнирному — только конкретика по темпу, таймингам и решениям.",
+    "supportive": "ТОН ТРЕНЕРА: говори спокойно, доброжелательно и мотивирующе — сначала поддержи хорошее решение, потом аккуратно поправь ошибку.",
+    "brief": "ТОН ТРЕНЕРА: режим быстрой команды в бою — одно сверхкороткое, телеграфное предложение без вводных слов.",
+}
+
+
 def make_system_prompt(
     coach_name: str = "Дмитрий",
     dynamic_context: str = "",
     *,
     skill_level: str = "beginner",
+    coach_tone: str = "balanced",
+    custom_focus: str = "",
 ) -> str:
     """Базовый системный промпт личности тренера (профессиональный тренер в Discord)."""
     name_clean = (coach_name or "Дмитрий").strip()
@@ -1319,6 +1444,12 @@ def make_system_prompt(
     level_rules = _level_rules(skill_level)
     if level_rules:
         blocks.append(level_rules)
+    tone_rule = _TONE_INSTRUCTIONS.get(str(coach_tone or "balanced").strip().lower(), "")
+    if tone_rule:
+        blocks.append(tone_rule)
+    focus_clean = " ".join(str(custom_focus or "").split())[:180]
+    if focus_clean:
+        blocks.append(f"ЛИЧНАЯ ЦЕЛЬ ИГРОКА В ЭТОМ МАТЧЕ: {focus_clean}.")
     if dynamic_context:
         blocks.append(str(dynamic_context))
     return "\n\n".join(blocks)
@@ -1333,10 +1464,102 @@ _KIND_HINTS: dict[str, str] = {
     "timing": "Назови конкретное окно/тайминг и что успеть сделать.",
     "explain": "Объясни термин просто: что это и зачем это нужно в игре.",
     "why": "Объясни причину в 2–3 коротких предложениях, без лекций.",
+    "matchup": "Сравни двух героев в матчапе: кто сильнее на линии и за счёт каких слотов выигрывать.",
     "analysis": "Дай 2–3 конкретные ошибки и одно действие на ближайшие минуты.",
     "status": "Назови ключевые факты и одно действие прямо сейчас.",
     "chat": "Ответь живо, по делу и с конкретикой под текущую ситуацию.",
 }
+
+
+def _format_rule_for_prompt(
+    *,
+    kind: str = "chat",
+    level: str = "beginner",
+    coach_tone: str = "balanced",
+    detail_mode: str = "auto",
+    include_kind_hint: bool = True,
+) -> str:
+    """Формирует единую инструкцию формата ответа (для legacy и PromptAssembly)."""
+    detail = str(detail_mode or "auto").strip().lower()
+    hint = (_KIND_HINTS.get(kind) or _KIND_HINTS["chat"]) if include_kind_hint else ""
+    prefix = f"ФОРМАТ ОТВЕТА: {hint} " if hint else "ФОРМАТ ОТВЕТА: "
+    if detail == "concise" or coach_tone == "brief":
+        return prefix + "Максимум 1–2 сверхкоротких предложения (до 180 символов), без списков и markdown."
+    if detail == "detailed" or (level in ("advanced", "expert") and kind in ("chat", "explain", "matchup")):
+        return (
+            prefix
+            + "Допустимо 3–5 коротких предложений (до 500 символов) с конкретикой: тайминги, темп карты, решения. "
+            "Без объяснения базовых терминов, без списков и markdown."
+        )
+    if level == "beginner" and kind == "explain":
+        return (
+            prefix
+            + "Объясни в 1–2 коротких предложениях и добавь короткий пример из игры. "
+            "Только живой русский текст, без списков и markdown."
+        )
+    return prefix + "Только живой русский текст, 1–2 предложения, без списков и markdown."
+
+
+def render_prompt_assembly(
+    coach_name: str = "Астра",
+    brief_text: str = "",
+    knowledge: Iterable[str] | None = None,
+    *,
+    kind: str = "chat",
+    profile_text: str = "",
+    skill_level: str = "beginner",
+    coach_tone: str = "balanced",
+    detail_mode: str = "auto",
+    custom_focus: str = "",
+    position: int = 1,
+    mmr_bracket: str = "",
+    hero_pool: dict[str, list[str]] | None = None,
+    signature_heroes: Iterable[str] = (),
+    my_picks: Iterable[str] = (),
+    enemy_picks: Iterable[str] = (),
+    gsi_summary: str = "",
+    memory_summary: str = "",
+) -> PromptAssembly:
+    """Собирает 3-сегментный PromptAssembly с байтово-стабильным префиксом (Fork A1)."""
+    level = normalize_skill_level(skill_level)
+    static_parts = [
+        make_system_prompt(
+            coach_name,
+            skill_level=level,
+            coach_tone=coach_tone,
+            custom_focus="",  # личный фокус может меняться по ходу игры — выносим в суффикс
+        ),
+        _format_rule_for_prompt(
+            kind="chat",
+            level=level,
+            coach_tone=coach_tone,
+            detail_mode=detail_mode,
+            include_kind_hint=False,
+        ),
+    ]
+    match_prefix = build_match_stable_prefix(
+        position=position,
+        mmr_bracket=mmr_bracket,
+        hero_pool=hero_pool,
+        signature_heroes=signature_heroes,
+        my_picks=my_picks,
+        enemy_picks=enemy_picks,
+    )
+    kind_hint = _KIND_HINTS.get(kind) or _KIND_HINTS["chat"]
+    dynamic_suffix = build_dynamic_suffix(
+        profile_text=profile_text,
+        custom_focus=custom_focus,
+        memory_summary=memory_summary,
+        gsi_summary=gsi_summary,
+        brief_text=brief_text,
+        knowledge=knowledge or (),
+        extra_sections=(f"ЗАДАЧА И ФОРМАТ ХОДА: {kind_hint}",),
+    )
+    return PromptAssembly(
+        static_prefix="\n\n".join(static_parts),
+        match_prefix=match_prefix,
+        dynamic_suffix=dynamic_suffix,
+    )
 
 
 def render_system_prompt(
@@ -1347,10 +1570,21 @@ def render_system_prompt(
     kind: str = "chat",
     profile_text: str = "",
     skill_level: str = "beginner",
+    coach_tone: str = "balanced",
+    detail_mode: str = "auto",
+    custom_focus: str = "",
 ) -> str:
     """Собирает системный промпт: личность + правила уровня + бриф + знания + формат."""
     level = normalize_skill_level(skill_level)
-    parts = [make_system_prompt(coach_name, skill_level=level)]
+    detail = str(detail_mode or "auto").strip().lower()
+    parts = [
+        make_system_prompt(
+            coach_name,
+            skill_level=level,
+            coach_tone=coach_tone,
+            custom_focus=custom_focus,
+        )
+    ]
     if profile_text:
         parts.append("ПРОФИЛЬ ИГРОКА И ДОЛГОВРЕМЕННАЯ ПАМЯТЬ:\n" + str(profile_text))
     if brief_text:
@@ -1358,23 +1592,15 @@ def render_system_prompt(
     knowledge_list = [str(k).strip() for k in (knowledge or []) if str(k).strip()]
     if knowledge_list:
         parts.append("ЗНАНИЯ ПО ВОПРОСУ:\n" + "\n".join(f"- {k}" for k in knowledge_list))
-    hint = _KIND_HINTS.get(kind) or _KIND_HINTS["chat"]
-    if level in ("advanced", "expert") and kind in ("chat", "explain"):
-        parts.append(
-            "ФОРМАТ ОТВЕТА: " + hint
-            + " Допустимо 3–5 коротких предложений (до 500 символов) с конкретикой: тайминги, темп карты, решения. "
-            "Без объяснения базовых терминов, без списков и markdown."
+    parts.append(
+        _format_rule_for_prompt(
+            kind=kind,
+            level=level,
+            coach_tone=coach_tone,
+            detail_mode=detail,
+            include_kind_hint=True,
         )
-    elif level == "beginner" and kind == "explain":
-        parts.append(
-            "ФОРМАТ ОТВЕТА: " + hint
-            + " Объясни в 1–2 коротких предложениях и добавь короткий пример из игры. "
-            "Только живой русский текст, без списков и markdown."
-        )
-    else:
-        parts.append(
-            "ФОРМАТ ОТВЕТА: " + hint + " Только живой русский текст, 1–2 предложения, без списков и markdown."
-        )
+    )
     return "\n\n".join(parts)
 
 
@@ -1459,17 +1685,25 @@ def _answer_limits(
     kind: str,
     max_chars: int | None,
     max_sentences: int | None,
+    detail_mode: str = "auto",
 ) -> tuple[int, int]:
     """Лимиты ответа с учётом уровня игрока и режима.
 
     - новичок + explain/chat: до 3 предложений / 320 символов;
     - опытный/профи + explain/chat (чат-режим): до 5 предложений / 500 символов;
+    - detail_mode == 'detailed': до 6 предложений / 650 символов;
+    - detail_mode == 'concise': до 2 предложений / 200 символов;
     - остальные режимы: прежние лимиты (240 / 2), если вызывающий не задал свои.
     Явные меньшие лимиты вызывающего уважаются всегда.
     """
     level = normalize_skill_level(skill_level)
+    detail = str(detail_mode or "auto").strip().lower()
     cap_chars, cap_sentences = 240, 2
-    if kind in ("explain", "chat"):
+    if detail == "detailed":
+        cap_chars, cap_sentences = 650, 6
+    elif detail == "concise":
+        cap_chars, cap_sentences = 200, 2
+    elif kind in ("explain", "chat", "matchup"):
         if level == "beginner":
             cap_chars, cap_sentences = 320, 3
         elif level in ("advanced", "expert"):
@@ -1477,13 +1711,13 @@ def _answer_limits(
     if max_chars is None:
         chars = cap_chars
     else:
-        chars = min(int(max_chars), cap_chars) if kind in ("explain", "chat") and level != "amateur" else int(max_chars)
+        chars = min(int(max_chars), cap_chars) if (detail != "auto" or (kind in ("explain", "chat") and level != "amateur")) else int(max_chars)
     if max_sentences is None:
         sentences = cap_sentences
     else:
         sentences = (
             min(int(max_sentences), cap_sentences)
-            if kind in ("explain", "chat") and level != "amateur"
+            if (detail != "auto" or (kind in ("explain", "chat") and level != "amateur"))
             else int(max_sentences)
         )
     return max(60, chars), max(1, sentences)
@@ -1496,6 +1730,7 @@ def sanitize_answer(
     max_sentences: int | None = None,
     skill_level: str = "beginner",
     kind: str = "chat",
+    detail_mode: str = "auto",
 ) -> str:
     """Чистит ответ LLM для голосовой озвучки.
 
@@ -1506,7 +1741,9 @@ def sanitize_answer(
     """
     if not isinstance(text, str):
         return ""
-    max_chars_eff, max_sentences_eff = _answer_limits(skill_level, kind, max_chars, max_sentences)
+    max_chars_eff, max_sentences_eff = _answer_limits(
+        skill_level, kind, max_chars, max_sentences, detail_mode=detail_mode
+    )
     raw = _EMOJI_RE.sub(" ", text)
     raw = _strip_markdown(raw)
     raw = raw.replace("\r", " ").replace("\n", " ").replace("«", "").replace("»", "")

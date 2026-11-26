@@ -1,0 +1,63 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-q --timeout=30 --strict-markers"
+markers = [
+    "slow: slow integration or packaging tests",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 110
+exclude = [
+    ".venv",
+    "dist",
+    "build",
+    "aidota-core",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "B", "I", "UP"]
+ignore = [
+    "E501",  # длинные русские строки подсказок и промптов
+    "B008",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"aidota/coach.py" = ["E402", "F401", "F841", "UP"]
+"aidota/coach_brain.py" = ["F401", "F841", "UP"]
+"aidota/context.py" = ["F401", "F841", "UP"]
+"aidota/live_advice.py" = ["F401", "F841", "UP"]
+"aidota/meta_db.py" = ["F401", "F841", "UP"]
+"aidota/gui_app.py" = ["E402", "F401", "F841", "B023", "UP"]
+"aidota/audio.py" = ["F401", "F841", "UP"]
+"aidota/vision.py" = ["F401", "F841", "UP"]
+"aidota/overlay.py" = ["F401", "F841", "UP"]
+"aidota/tray.py" = ["F401", "F841", "UP"]
+"aidota/hotkeys.py" = ["F401", "F841", "UP"]
+"aidota/settings_gui.py" = ["F401", "F841", "UP"]
+"aidota/skills/*.py" = ["UP"]
+"tests/*.py" = ["E402", "F401", "F841", "B023", "UP"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+strict_equality = true
+ignore_missing_imports = true
+follow_imports = "silent"
+files = [
+    "aidota/security.py",
+    "aidota/telemetry.py",
+    "aidota/prompt_assembly.py",
+    "aidota/llm_router.py",
+    "aidota/logging_setup.py",
+    "aidota/paths.py",
+    "aidota/meta_sync.py",
+    "aidota/dota_api.py",
+    "aidota/doctor.py",
+    "aidota/coach_memory.py",
+]

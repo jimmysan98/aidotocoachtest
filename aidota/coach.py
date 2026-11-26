@@ -22,17 +22,22 @@ from typing import Any
 from . import beginner
 from .coach_brain import (
     build_brief,
+    detect_query_intents,
     detect_query_kind,
     make_system_prompt,
     render_brief,
+    render_prompt_assembly,
     render_system_prompt,
     resolve_mentioned_hero,
+    resolve_mentioned_heroes,
     retrieve_knowledge,
     sanitize_answer,
 )
 from .coach_memory import CoachMemory
 from .config import LlmConfig, OllamaConfig, PlayerProfile
 from .context import (
+    _dig,
+    _extract_allplayers,
     analyze_player_mistakes,
     build_gsi_context,
     collect_draft,
@@ -45,11 +50,24 @@ from .context import (
     item_name,
     load_player_profile,
     update_player_profile_mistakes,
-    _extract_allplayers,
 )
 from .dota_api import DotaApi
 from .heroes import HeroCatalog, normalize
+from .llm_router import (
+    DEEPSEEK_CHAT_MODEL,
+    REASONER_MIN_API_MAX_TOKENS,
+    EndpointBreaker,
+    LlmRouter,
+    PreemptionController,
+    classify_http_failure,
+    detect_provider_by_key,
+    extract_openai_message,
+    is_deepseek_endpoint,
+    is_reasoning_model,
+)
+from .prompt_assembly import PromptAssembly
 from .roles import normalize_position, position_label
+from .telemetry import TelemetrySink, TurnMetric, new_turn_id
 
 log = logging.getLogger("aidota.coach")
 
@@ -359,6 +377,37 @@ COACH_TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "compare_hero_matchup",
+            "description": "Сравнить двух героев (матчап): кто сильнее на линии, сильные и слабые стороны, контр-предметы.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "hero_a": {"type": "string", "description": "Герой игрока или первый герой"},
+                    "hero_b": {"type": "string", "description": "Вражеский герой или второй герой"},
+                    "role_a": {"type": "integer", "description": "Позиция первого героя (1-5)"},
+                },
+                "required": ["hero_a", "hero_b"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remember_player_preference",
+            "description": "Запомнить важный факт или предпочтение игрока в долговременную память (любимый герой, цель, стиль игры, нелюбимый предмет).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "fact_key": {"type": "string", "description": "Короткий ключ факта (например, 'любимый герой', 'стиль игры')"},
+                    "fact_value": {"type": "string", "description": "Значение факта"},
+                },
+                "required": ["fact_key", "fact_value"],
+            },
+        },
+    },
 ]
 
 
@@ -417,6 +466,10 @@ class Coach:
         memory_size: int = 20,
         session: Any | None = None,
         memory_path: Path | str | None = None,
+        state_dir: Path | str | None = None,
+        telemetry: TelemetrySink | None = None,
+        router: LlmRouter | None = None,
+        preemption: PreemptionController | None = None,
     ):
         self.api = api
         self.catalog = catalog
@@ -430,16 +483,49 @@ class Coach:
         self.last_error: str | None = None
         self._position: int | None = None  # переопределение на время матча
         self._manual_hero: dict | None = None  # герой, выбранный вручную или из чата
+        self._brief_cache: tuple[Any, float, dict[str, Any], str] | None = None
+        self._item_costs_cache: tuple[int, int, dict[str, int]] | None = None
+        self.telemetry = telemetry if telemetry is not None else TelemetrySink(None)
+        self.router = router if router is not None else LlmRouter()
+        self.preemption = preemption if preemption is not None else PreemptionController()
+        self.delegate_macro_timers = False  # координация до консолидации в Фазе 4
+
+        from .paths import bundled_data_dir, uses_isolated_runtime_root, writable_data_dir
+
+        api_data_dir = getattr(api, "data_dir", None)
+        resolved_state_dir: Path | None = Path(state_dir) if state_dir is not None else None
+        if resolved_state_dir is None and api_data_dir is not None:
+            cand = Path(api_data_dir)
+            if uses_isolated_runtime_root():
+                try:
+                    if cand.resolve() == bundled_data_dir().resolve():
+                        cand = writable_data_dir()
+                except OSError:
+                    cand = writable_data_dir()
+            resolved_state_dir = cand
+        self._state_dir: Path | None = resolved_state_dir
 
         if memory_path is None:
-            data_dir = getattr(api, "data_dir", None)
-            memory_path = Path(data_dir) / "coach_memory.json" if data_dir is not None else None
+            memory_path = (resolved_state_dir / "coach_memory.json") if resolved_state_dir is not None else None
         self.long_memory = CoachMemory(memory_path)
 
+        if getattr(api, "sync_service", None) is not None:
+            try:
+                from .meta_db import set_live_meta_provider
+
+                set_live_meta_provider(api)
+            except Exception:  # noqa: BLE001
+                pass
+
+        self._injected_session = session
+        self._init_thread_id = threading.get_ident()
+        self._local_session = threading.local()
+        self._owned_sessions: list[Any] = []
         if session is None:
             import requests
 
             session = requests.Session()
+            self._owned_sessions.append(session)
         self._session = session
 
         from .skills import CooldownTrackerSkill, LaneMatchupSkill, MacroTimerSkill
@@ -447,6 +533,20 @@ class Coach:
         self.macro_timer = MacroTimerSkill()
         self.cooldown_tracker = CooldownTrackerSkill()
         self.lane_matchup = LaneMatchupSkill()
+
+    def _http_session(self) -> Any:
+        """Возвращает потокобезопасную HTTP-сессию (сохраняя injected/init-thread _session)."""
+        if self._injected_session is not None or threading.get_ident() == self._init_thread_id:
+            return self._session
+        sess = getattr(self._local_session, "session", None)
+        if sess is None:
+            import requests
+
+            sess = requests.Session()
+            self._local_session.session = sess
+            with self._lock:
+                self._owned_sessions.append(sess)
+        return sess
 
     # ------------------------------------------------------------------ #
     @staticmethod
@@ -493,6 +593,9 @@ class Coach:
         signatures = [str(h) for h in (self.profile.signature_heroes or []) if str(h).strip()]
         if signatures:
             parts.append("сигнатурные герои: " + ", ".join(signatures[:5]))
+        focus = " ".join(str(getattr(self.profile, "custom_focus", "") or "").split())
+        if focus:
+            parts.append("личная цель: " + focus[:160])
         mistakes = [str(m) for m in (self.profile.common_mistakes or []) if str(m).strip()]
         if mistakes:
             parts.append("частые ошибки: " + "; ".join(mistakes[:3]))
@@ -510,14 +613,19 @@ class Coach:
 
     def _max_tokens_for(self, kind: str = "chat") -> int:
         configured = int(getattr(self.llm, "max_tokens", 350) or 350)
+        detail = self.detail_mode
         if kind == "match":
             return max(configured, 550)
         if kind in ("analysis", "draft"):
             return max(configured, 420)
+        if detail == "detailed" and kind in ("chat", "explain", "matchup", "why"):
+            return max(configured, 520)
+        if detail == "concise" or self.coach_tone == "brief":
+            return max(70, min(configured, 150))
         if kind in ("why", "build", "counter", "pick"):
             return max(90, min(configured, 260))
         # Опытным игрокам в чат-режиме можно ответить развёрнуто (до 500 символов).
-        if kind in ("chat", "explain") and self.skill_level in ("advanced", "expert"):
+        if kind in ("chat", "explain", "matchup") and self.skill_level in ("advanced", "expert"):
             return max(configured, 480)
         return max(80, min(configured, 200))
 
@@ -530,9 +638,24 @@ class Coach:
         max_sentences: int = 2,
         max_chars: int = 240,
         allow_retry: bool = True,
+        detail_mode: str | None = None,
+        voice: bool | None = None,
+        dynamic_suffix: str = "",
+        generation_id: int | None = None,
     ) -> str:
-        """Запрос к LLM с «холодной» температурой и чисткой ответа для озвучки."""
-        system = system or make_system_prompt(self.coach_name, skill_level=self.skill_level)
+        """Запрос к LLM с учётом тиров маршрутизатора и чисткой ответа."""
+        eff_detail = detail_mode if detail_mode is not None else self.detail_mode
+        eff_voice = (
+            kind in ("build", "counter", "skill", "timing", "lane")
+            if voice is None
+            else bool(voice)
+        )
+        system = system or make_system_prompt(
+            self.coach_name,
+            skill_level=self.skill_level,
+            coach_tone=self.coach_tone,
+            custom_focus="" if dynamic_suffix else self.custom_focus,
+        )
         if kind in ("analysis", "draft", "match"):
             system += (
                 "\n\nДЛЯ РАЗБОРА: допустимо 3–4 коротких предложения — сначала главная проблема, "
@@ -544,9 +667,10 @@ class Coach:
         max_tokens = self._max_tokens_for(kind)
 
         stop_filler = None
-        if hasattr(self, "tts") and self.tts is not None and hasattr(self.tts, "start_filler_timer"):
-            stop_filler = self.tts.start_filler_timer(0.8)
-        elif hasattr(self, "on_thinking_timer") and callable(self.on_thinking_timer):
+        use_filler = eff_voice and kind not in ("draft", "analysis", "match", "pick")
+        if use_filler and hasattr(self, "tts") and self.tts is not None and hasattr(self.tts, "start_filler_timer"):
+            stop_filler = self.tts.start_filler_timer(0.8, generation_id=generation_id)
+        elif use_filler and hasattr(self, "on_thinking_timer") and callable(self.on_thinking_timer):
             stop_filler = self.on_thinking_timer(0.8)
 
         try:
@@ -556,6 +680,11 @@ class Coach:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 include_dynamic=False,
+                kind=kind,
+                voice=eff_voice,
+                detail_mode=eff_detail,
+                dynamic_suffix=dynamic_suffix,
+                generation_id=generation_id,
             )
         finally:
             if stop_filler is not None:
@@ -570,8 +699,9 @@ class Coach:
             max_sentences=max_sentences,
             skill_level=self.skill_level,
             kind=kind,
+            detail_mode=eff_detail,
         )
-        if not clean and allow_retry:
+        if not clean and allow_retry and not eff_voice:
             retry_system = (
                 system
                 + "\n\nВАЖНО: ответ должен быть одним-двумя живыми предложениями по-русски, "
@@ -583,27 +713,50 @@ class Coach:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 include_dynamic=False,
+                kind=kind,
+                voice=eff_voice,
+                detail_mode=eff_detail,
+                dynamic_suffix=dynamic_suffix,
+                generation_id=generation_id,
             )
             clean = sanitize_answer(
-            raw,
-            max_chars=max_chars,
-            max_sentences=max_sentences,
-            skill_level=self.skill_level,
-            kind=kind,
-        )
+                raw,
+                max_chars=max_chars,
+                max_sentences=max_sentences,
+                skill_level=self.skill_level,
+                kind=kind,
+                detail_mode=eff_detail,
+            )
         return clean
 
-    def _tactical_context(self, query: str, *, hero: dict | None = None) -> tuple[str, list[str], str]:
-        """Собирает бриф и релевантные знания под конкретный вопрос.
-
-        Если игрок назвал героя в вопросе («что собрать против фантомки»,
-        «что качать на пудже»), знания берутся именно по этому герою, а не
-        только по герою из GSI.
-        Возвращает (brief_text, knowledge, kind).
-        """
-        kind = detect_query_kind(query)
-        payload = self.gsi_payload()
-        enemies = self.enemy_picks()
+    def _cached_brief(
+        self, payload: dict | None, hero: dict | None
+    ) -> tuple[dict[str, Any], str]:
+        """Кэширует build_brief + render_brief на неизменном GSI-снимке для скорости."""
+        map_data = payload.get("map") if isinstance(payload, dict) and isinstance(payload.get("map"), dict) else {}
+        player = payload.get("player") if isinstance(payload, dict) and isinstance(payload.get("player"), dict) else {}
+        hero_sec = payload.get("hero") if isinstance(payload, dict) and isinstance(payload.get("hero"), dict) else {}
+        costs = self.item_costs() or None
+        gsi_seq = getattr(self.gsi, "count", None) if self.gsi is not None else None
+        api_ver = int(getattr(self.api, "cache_version", 0) or 0)
+        cache_key = (
+            gsi_seq if gsi_seq is not None else len(payload or {}),
+            api_ver,
+            map_data.get("clock_time"),
+            map_data.get("game_state"),
+            player.get("gold"),
+            player.get("deaths"),
+            hero_sec.get("name"),
+            hero_sec.get("health_percent"),
+            (hero or {}).get("localized_name"),
+            self.position,
+            len(costs) if costs else 0,
+        )
+        now = time.monotonic()
+        with self._lock:
+            cached = self._brief_cache
+            if cached is not None and cached[0] == cache_key and (now - cached[1]) < 1.5:
+                return cached[2], cached[3]
         brief = build_brief(
             payload,
             self.catalog,
@@ -611,26 +764,97 @@ class Coach:
             position=self.position,
             profile=self.profile,
             hero=hero,
-            item_costs=self.item_costs() or None,
+            item_costs=costs,
         )
+        brief_text = render_brief(brief)
+        with self._lock:
+            self._brief_cache = (cache_key, now, brief, brief_text)
+        return brief, brief_text
+
+    def _enqueue_match_heroes_from_gsi(self, payload: dict | None) -> None:
+        """Неблокирующе ставит до 10 героев текущего матча в фоновый SWR-кэш."""
+        enqueue_fn = getattr(self.api, "enqueue_match_heroes", None)
+        if not callable(enqueue_fn) or not isinstance(payload, dict) or not payload:
+            return
+        try:
+            draft = collect_draft(payload, self.catalog)
+            ids: list[int] = []
+            for name in (*draft.my_picks, *draft.enemy_picks):
+                match = self.catalog.find(name)
+                if match is not None and isinstance(match.hero.get("id"), int):
+                    hid = int(match.hero["id"])
+                    if hid > 0 and hid not in ids:
+                        ids.append(hid)
+                if len(ids) >= 10:
+                    break
+            if ids:
+                enqueue_fn(ids)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _tactical_context(self, query: str, *, hero: dict | None = None) -> tuple[str, list[str], str]:
+        """Собирает бриф и релевантные знания под конкретный вопрос.
+
+        Если игрок назвал одного или двух героев («что собрать против фантомки»,
+        «стою на пудже против антимага», «сравни сларка и фантомку»), знания
+        берутся именно по этим героям и матчапу, а не только по герою из GSI.
+        Возвращает (brief_text, knowledge, kind).
+        """
+        intents = detect_query_intents(query, limit=2)
+        kind = intents[0]
+        payload = self.gsi_payload()
+        enemies = self.enemy_picks()
+        self._enqueue_match_heroes_from_gsi(payload)
+        _, brief_text = self._cached_brief(payload, hero)
 
         knowledge_hero = hero
         knowledge_enemies = list(enemies)
-        mentioned = resolve_mentioned_hero(query, self.catalog)
-        if mentioned is not None:
+        mentioned_list = resolve_mentioned_heroes(query, self.catalog, max_heroes=3)
+        if not mentioned_list:
+            single = resolve_mentioned_hero(query, self.catalog)
+            if single is not None:
+                mentioned_list = [single]
+
+        matchup_pair: tuple[str, str] | None = None
+        current_name = str((hero or {}).get("localized_name") or "").strip()
+        q_low = (query or "").lower()
+
+        if len(mentioned_list) >= 2:
+            name_a = str(mentioned_list[0].get("localized_name") or mentioned_list[0].get("name") or "").strip()
+            name_b = str(mentioned_list[1].get("localized_name") or mentioned_list[1].get("name") or "").strip()
+            if name_a and name_b:
+                # Проверяем предлог «против X»: герой после «против» — враг
+                idx_vs = q_low.find("против ")
+                if idx_vs >= 0:
+                    after_vs = query[idx_vs + 7:]
+                    vs_hero = resolve_mentioned_hero(after_vs, self.catalog)
+                    vs_name = str((vs_hero or {}).get("localized_name") or "").strip()
+                    if vs_name and normalize(vs_name) == normalize(name_a):
+                        name_a, name_b = name_b, name_a
+                knowledge_hero = next(
+                    (h for h in mentioned_list if normalize(h.get("localized_name", "")) == normalize(name_a)),
+                    mentioned_list[0],
+                )
+                knowledge_enemies = [name_b] + [
+                    e for e in knowledge_enemies if normalize(e) != normalize(name_b)
+                ]
+                matchup_pair = (name_a, name_b)
+        elif len(mentioned_list) == 1:
+            mentioned = mentioned_list[0]
             mentioned_name = str(mentioned.get("localized_name") or mentioned.get("name") or "").strip()
-            current_name = str((hero or {}).get("localized_name") or "").strip()
             if mentioned_name and normalize(mentioned_name) != normalize(current_name):
                 if kind in ("build", "skill", "lane", "why", "timing", "matchup"):
                     knowledge_hero = mentioned
-                if kind in ("counter", "pick", "matchup") or "против" in query.lower():
+                if kind in ("counter", "pick", "matchup") or "против" in q_low:
                     knowledge_enemies = [mentioned_name] + [
                         enemy for enemy in knowledge_enemies
                         if normalize(enemy) != normalize(mentioned_name)
                     ]
+                    if current_name:
+                        matchup_pair = (current_name, mentioned_name)
 
         lane_plan = ""
-        if kind == "lane":
+        if "lane" in intents:
             try:
                 lane_plan = self.lane_plan()
             except Exception:  # noqa: BLE001
@@ -644,14 +868,16 @@ class Coach:
             legacy_skill_tips=_HERO_SKILL_TIPS,
             lane_plan=lane_plan,
             catalog=self.catalog,
+            secondary_intents=intents[1:],
+            matchup_heroes=matchup_pair,
         )
         # Точечные подсказки там, где общие теги врут (BKB не спасает от
         # Omnislash/Duel/Doom и т.п.) — попадают в блок «ЗНАНИЯ ПО ВОПРОСУ».
-        if kind in ("counter", "why", "build", "chat") and knowledge_enemies:
+        if kind in ("counter", "why", "build", "chat", "matchup") and knowledge_enemies:
             precise = self._enemy_item_hints_for(knowledge_enemies, limit=2)
             if precise:
                 knowledge = list(knowledge) + precise
-        return render_brief(brief), knowledge, kind
+        return brief_text, knowledge, kind
 
     # ------------------------------------------------------------------ #
     # Позиция и профиль
@@ -683,7 +909,7 @@ class Coach:
         """Нормализует и запоминает уровень игрока в профиле. Возвращает код уровня."""
         normalized = beginner.normalize_skill_level(level)
         try:
-            setattr(self.profile, "skill_level", normalized)
+            self.profile.skill_level = normalized
         except Exception as exc:  # noqa: BLE001 — профиль не должен ронять настройку
             log.debug("Не удалось сохранить skill_level в профиль: %s", exc)
         return normalized
@@ -692,6 +918,50 @@ class Coach:
     def level_label(self) -> str:
         """Человеческое название уровня игрока."""
         return beginner.level_label(self.skill_level)
+
+    @property
+    def coach_tone(self) -> str:
+        from .config import normalize_coach_tone
+
+        return normalize_coach_tone(getattr(self.profile, "coach_tone", "balanced"))
+
+    def set_coach_tone(self, tone: Any) -> str:
+        from .config import normalize_coach_tone
+
+        normalized = normalize_coach_tone(tone)
+        try:
+            self.profile.coach_tone = normalized
+        except Exception:  # noqa: BLE001
+            pass
+        return normalized
+
+    @property
+    def detail_mode(self) -> str:
+        from .config import normalize_detail_mode
+
+        return normalize_detail_mode(getattr(self.profile, "detail_mode", "auto"))
+
+    def set_detail_mode(self, mode: Any) -> str:
+        from .config import normalize_detail_mode
+
+        normalized = normalize_detail_mode(mode)
+        try:
+            self.profile.detail_mode = normalized
+        except Exception:  # noqa: BLE001
+            pass
+        return normalized
+
+    @property
+    def custom_focus(self) -> str:
+        return " ".join(str(getattr(self.profile, "custom_focus", "") or "").split())[:200]
+
+    def set_custom_focus(self, focus: Any) -> str:
+        clean = " ".join(str(focus or "").split())[:200]
+        try:
+            self.profile.custom_focus = clean
+        except Exception:  # noqa: BLE001
+            pass
+        return clean
 
     @property
     def provider(self) -> str:
@@ -728,14 +998,20 @@ class Coach:
             return None
 
     def item_costs(self) -> dict[str, int]:
-        """Цены предметов из ``DotaApi.item_costs`` (пустой dict, если API их не умеет).
-
-        Нужны, чтобы советы по закупкам показывали цену и нехватку золота,
-        а нетворс при отсутствии ``player.net_worth`` считался по предметам.
-        """
+        """Цены предметов из ``DotaApi.item_costs`` (с инвалидацией по ``cache_version``)."""
         getter = getattr(self.api, "item_costs", None)
         if not callable(getter):
+            self._item_costs_cache = None
             return {}
+        getter_id = id(getter)
+        api_ver = int(getattr(self.api, "cache_version", 0) or 0)
+        with self._lock:
+            if (
+                self._item_costs_cache is not None
+                and self._item_costs_cache[0] == getter_id
+                and self._item_costs_cache[1] == api_ver
+            ):
+                return self._item_costs_cache[2]
         try:
             costs = getter()
         except Exception:  # noqa: BLE001 — цены не должны ронять бриф
@@ -748,6 +1024,9 @@ class Coach:
                 result[str(name)] = int(value)
             except (TypeError, ValueError):
                 continue
+        if result:
+            with self._lock:
+                self._item_costs_cache = (getter_id, api_ver, result)
         return result
 
     def _live_snapshot(self, payload: dict | None) -> dict[str, Any]:
@@ -847,18 +1126,22 @@ class Coach:
         for p in players:
             p_team = p.get("team")
             if team_name and p_team and p_team != team_name:
-                lvl = p.get("level")
-                if lvl:
-                    enemy_mid_lvl = max(enemy_mid_lvl or 0, lvl)
+                lane_val = p.get("lane")
+                is_mid = bool(p.get("is_mid")) or lane_val in (2, "mid", "middle")
+                if is_mid:
+                    lvl = p.get("level")
+                    if lvl:
+                        enemy_mid_lvl = max(enemy_mid_lvl or 0, lvl)
 
-        alert = self.macro_timer.check(
-            clock,
-            position=self.position,
-            team_name=team_name,
-            enemy_mid_level=enemy_mid_lvl,
-        )
-        if alert:
-            return alert
+        if not self.delegate_macro_timers:
+            alert = self.macro_timer.check(
+                clock,
+                position=self.position,
+                team_name=team_name,
+                enemy_mid_level=enemy_mid_lvl,
+            )
+            if alert:
+                return alert
         return self.cooldown_tracker.check(clock)
 
     # ------------------------------------------------------------------ #
@@ -888,7 +1171,7 @@ class Coach:
 
     def _ollama_models(self) -> list[str]:
         url = f"{self.llm.base_url.rstrip('/')}/api/tags"
-        response = self._session.get(url, timeout=4)
+        response = self._http_session().get(url, timeout=4)
         if getattr(response, "status_code", 0) != 200:
             raise OllamaError(f"HTTP {getattr(response, 'status_code', '?')}")
         data = response.json()
@@ -897,7 +1180,7 @@ class Coach:
     def _openai_models(self) -> list[str]:
         url = f"{self.llm.base_url.rstrip('/')}/models"
         headers = {"Authorization": f"Bearer {self.llm.api_key}"} if self.llm.api_key else {}
-        response = self._session.get(url, timeout=4, headers=headers)
+        response = self._http_session().get(url, timeout=4, headers=headers)
         if getattr(response, "status_code", 0) != 200:
             raise OllamaError(f"HTTP {getattr(response, 'status_code', '?')}")
         data = response.json()
@@ -913,33 +1196,21 @@ class Coach:
             is_keyless = "pollinations" in base_url_lower
             api_key = (self.llm.api_key or "").strip()
 
-            # Умное автоопределение провайдера по формату ключа
+            # Автоопределение провайдера по формату ключа (AIzaSy, gsk_, sk-or-, sk-)
             if api_key and is_keyless:
-                if api_key.startswith("AIzaSy"):
-                    base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+                detected = detect_provider_by_key(api_key)
+                if detected is not None:
+                    _, det_url, det_model = detected
+                    base_url = det_url
                     self.llm.base_url = base_url
                     base_url_lower = base_url.lower()
                     is_keyless = False
                     if not self.llm.model or self.llm.model in ("openai", "gemini"):
-                        self.llm.model = "gemini-2.5-flash"
-                elif api_key.startswith("gsk_"):
-                    base_url = "https://api.groq.com/openai/v1"
-                    self.llm.base_url = base_url
-                    base_url_lower = base_url.lower()
-                    is_keyless = False
-                    if not self.llm.model or self.llm.model in ("openai", "gemini"):
-                        self.llm.model = "llama-3.3-70b-versatile"
-                elif api_key.startswith("sk-or-"):
-                    base_url = "https://openrouter.ai/api/v1"
-                    self.llm.base_url = base_url
-                    base_url_lower = base_url.lower()
-                    is_keyless = False
-                    if not self.llm.model or self.llm.model in ("openai", "gemini"):
-                        self.llm.model = "deepseek/deepseek-chat"
+                        self.llm.model = det_model
 
             if not is_keyless and not api_key:
                 self.last_error = (
-                    "API-ключ не указан. Откройте Настройки (кнопка ⚙ вверху окна) и введите API-ключ или переключитесь на Бесплатный ИИ."
+                    "API-ключ не указан. Откройте вкладку «Настройки» в окне AIDOTA и введите API-ключ (DeepSeek и др.)."
                 )
                 return None
             model = (self.llm.model or "").strip()
@@ -1004,16 +1275,8 @@ class Coach:
         if snapshot.get("available"):
             parts.append(f"ТЕКУЩАЯ СИТУАЦИЯ В МАТЧЕ (GSI Live):\n{format_gsi_summary(snapshot)}")
         try:
-            brief = build_brief(
-                payload,
-                self.catalog,
-                self.api.items(),
-                position=self.position,
-                profile=self.profile,
-                hero=self.current_hero() if snapshot.get("available") else None,
-                item_costs=item_costs or None,
-            )
-            brief_text = render_brief(brief)
+            hero = self.current_hero() if snapshot.get("available") else None
+            _, brief_text = self._cached_brief(payload, hero)
             if brief_text:
                 parts.append(f"ТАКТИЧЕСКИЙ БРИФ:\n{brief_text}")
         except Exception as exc:  # noqa: BLE001 — бриф не должен ронять промпт
@@ -1021,31 +1284,40 @@ class Coach:
         try:
             parts.append(f"ПРОФИЛЬ ИГРОКА:\n{self._profile_summary()}")
         except Exception:  # noqa: BLE001
-            summary = get_player_profile_summary()
+            summary = get_player_profile_summary(self._state_dir)
             if summary:
                 parts.append(f"ПРОФИЛЬ ИГРОКА:\n{summary}")
         return "\n\n".join(parts)
 
     def _build_messages(
-        self, user_prompt: str, system: str, *, include_dynamic: bool = True
+        self,
+        user_prompt: str,
+        system: str,
+        *,
+        include_dynamic: bool = True,
+        dynamic_suffix: str = "",
     ) -> list[dict[str, Any]]:
-        dyn = self.get_dynamic_context() if include_dynamic else ""
-        if dyn and dyn not in system:
-            full_system = f"{system}\n\n{dyn}"
-        else:
-            full_system = system
+        """Собирает сообщения для LLM строго с префиксом в system и телеметрией в хвосте."""
+        dyn = dynamic_suffix.strip() if dynamic_suffix and dynamic_suffix.strip() else ""
+        if not dyn and include_dynamic:
+            dyn = self.get_dynamic_context()
+        if dyn and dyn in system:
+            dyn = ""
 
-        messages: list[dict[str, Any]] = [{"role": "system", "content": full_system}]
         with self._lock:
-            history = list(self._memory)
-        for entry in history:
-            q = entry.get("q", "").strip()
-            a = entry.get("a", "").strip()
-            if q and a:
-                messages.append({"role": "user", "content": q})
-                messages.append({"role": "assistant", "content": a})
-        messages.append({"role": "user", "content": user_prompt})
-        return messages
+            history = [(entry.get("q", ""), entry.get("a", "")) for entry in self._memory]
+
+        assembly = PromptAssembly(
+            static_prefix=system,
+            match_prefix="",
+            dynamic_suffix=dyn,
+        )
+        return assembly.build_messages(
+            history,
+            user_prompt,
+            char_budget=6000,
+            epoch_size=4,
+        )
 
     def _legacy_counter_hint(self, hero_name: str) -> str | None:
         """Старая ручная подсказка по контр-предметам (для героев с особыми фишками)."""
@@ -1212,7 +1484,42 @@ class Coach:
                 f"Совет: {str(build.get('lane_tips') or '').rstrip('.')}"
             )
 
+        if name == "compare_hero_matchup":
+            from .meta_db import compare_hero_matchup
+            hero_a = str(args.get("hero_a", "")).strip()
+            hero_b = str(args.get("hero_b", "")).strip()
+            role_a = int(args.get("role_a", self.position or 1))
+            if not hero_a and self.current_hero():
+                hero_a = str(self.current_hero().get("localized_name") or "")
+            cmp_data = compare_hero_matchup(hero_a, hero_b, role_a=role_a)
+            if not cmp_data or not cmp_data.get("summary"):
+                return f"Нет точных данных по матчапу {hero_a} vs {hero_b}."
+            return str(cmp_data["summary"])
+
+        if name == "remember_player_preference":
+            fact_key = str(args.get("fact_key", "")).strip()
+            fact_value = str(args.get("fact_value", "")).strip()
+            if not fact_key or not fact_value:
+                return "Не указаны ключ или значение предпочтения."
+            self.long_memory.remember_fact(fact_key, fact_value)
+            return f"Запомнил предпочтение игрока: {fact_key} — {fact_value}."
+
         return f"Неизвестный инструмент: {name}"
+
+    def _gsi_route_state(self) -> tuple[str, bool | None, int]:
+        """Возвращает (game_state, hero_alive, respawn_seconds) из текущего GSI."""
+        payload = self.gsi_payload()
+        if not isinstance(payload, dict):
+            return "", None, 0
+        game_state = str(_g(payload, "map", "game_state") or "")
+        alive_raw = _g(payload, "hero", "alive")
+        hero_alive = alive_raw if isinstance(alive_raw, bool) else None
+        respawn_raw = _g(payload, "hero", "respawn_seconds") or 0
+        try:
+            respawn = int(respawn_raw)
+        except (TypeError, ValueError):
+            respawn = 0
+        return game_state, hero_alive, respawn
 
     def chat(
         self,
@@ -1222,56 +1529,155 @@ class Coach:
         temperature: float | None = None,
         max_tokens: int | None = None,
         include_dynamic: bool = True,
+        kind: str = "chat",
+        voice: bool = False,
+        detail_mode: str | None = None,
+        dynamic_suffix: str = "",
+        generation_id: int | None = None,
     ) -> str:
-        """Запрос к LLM с возможностью тонкой настройки и аварийным failover.
-
-        ``include_dynamic=False`` используется, когда Coach уже вложил
-        тактический бриф в системный промпт и дублировать GSI-снимок не нужно.
-        """
+        """Запрос к LLM через маршрутизатор тиров, breaker, дедлайны и телеметрию."""
         system = system or make_system_prompt(self.coach_name, skill_level=self.skill_level)
+        if generation_id is not None and not self.preemption.is_current(generation_id):
+            raise OllamaError("Запрос отменён новым событием")
+
+        eff_detail = detail_mode if detail_mode is not None else self.detail_mode
+        game_state, hero_alive, respawn = self._gsi_route_state()
+        turn_id = new_turn_id()
+
         try:
-            model = self.resolve_model()
-            if model is None:
+            base_model = self.resolve_model()
+            if base_model is None:
                 raise OllamaError(self.last_error or "LLM недоступна")
-            if self.provider == "openai_compatible":
-                return self._openai_chat(
-                    model,
+
+            route = self.router.plan_route(
+                self.llm,
+                kind=kind,
+                voice=voice,
+                detail_mode=eff_detail,
+                game_state=game_state,
+                hero_alive=hero_alive,
+                respawn_seconds=respawn,
+                requested_max_tokens=max_tokens,
+            )
+
+            # Если маршрутизатор не менял модель на deepseek-chat/reasoner, оставляем base_model.
+            chosen_model = route.model or base_model
+            if self.provider == "ollama":
+                chosen_model = base_model
+
+            def _invoke(target_model: str, deadline_sec: float, *, tier_label: str) -> str:
+                if not self.router.breaker.allow_request(self.provider, self.llm.base_url, target_model):
+                    self.telemetry.record_event(
+                        "circuit_open",
+                        turn_id=turn_id,
+                        tier=tier_label,
+                        provider=self.provider,
+                        model=target_model,
+                    )
+                    raise OllamaError(f"Модель {target_model} временно отключена по таймеру отказов")
+                if self.provider == "openai_compatible":
+                    tools_arg = None if route.allow_tools else []
+                    return self._openai_chat(
+                        target_model,
+                        user_prompt,
+                        system,
+                        temperature=temperature,
+                        max_tokens=route.api_max_tokens if target_model == route.model else max_tokens,
+                        include_dynamic=include_dynamic,
+                        tools=tools_arg,
+                        dynamic_suffix=dynamic_suffix,
+                        deadline_seconds=deadline_sec,
+                        send_temperature=(not is_reasoning_model(target_model)) and route.send_temperature,
+                        generation_id=generation_id,
+                        tier=tier_label,
+                        kind=kind,
+                        turn_id=turn_id,
+                    )
+                return self._ollama_chat(
+                    target_model,
                     user_prompt,
                     system,
                     temperature=temperature,
                     max_tokens=max_tokens,
                     include_dynamic=include_dynamic,
+                    dynamic_suffix=dynamic_suffix,
+                    deadline_seconds=deadline_sec,
+                    generation_id=generation_id,
+                    tier=tier_label,
+                    kind=kind,
+                    turn_id=turn_id,
                 )
-            return self._ollama_chat(
-                model,
-                user_prompt,
-                system,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                include_dynamic=include_dynamic,
-            )
+
+            return _invoke(chosen_model, route.deadline_seconds, tier_label=route.tier)
         except OllamaError as exc:
             if not self._should_failover(exc):
                 raise
+            # Tier 2 -> Tier 1 (deepseek-chat) до обращения к внешним бесплатным резервам.
+            fallback_route = self.router.plan_route(
+                self.llm,
+                kind=kind,
+                voice=voice,
+                detail_mode=eff_detail,
+                game_state=game_state,
+                hero_alive=hero_alive,
+                respawn_seconds=respawn,
+                requested_max_tokens=max_tokens,
+            )
+            if fallback_route.tier == "tier2" and fallback_route.fallback_model:
+                log.warning(
+                    "Tier 2 (%s) недоступен (%s), переключаюсь на %s",
+                    fallback_route.model,
+                    exc,
+                    fallback_route.fallback_model,
+                )
+                try:
+                    return self._openai_chat(
+                        fallback_route.fallback_model,
+                        user_prompt,
+                        system,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        include_dynamic=include_dynamic,
+                        tools=None if fallback_route.allow_tools else [],
+                        dynamic_suffix=dynamic_suffix,
+                        deadline_seconds=fallback_route.fallback_deadline_seconds or 6.0,
+                        send_temperature=True,
+                        generation_id=generation_id,
+                        tier="tier1",
+                        kind=kind,
+                        turn_id=turn_id,
+                    )
+                except OllamaError as inner_exc:
+                    exc = inner_exc
+                    if not self._should_failover(exc):
+                        raise
+
+            if not fallback_route.allow_pollinations_failover:
+                raise exc from None
             try:
                 log.warning("Основная LLM недоступна (%s), пробую бесплатный резерв", exc)
                 return self._free_pollinations_chat(
-                    user_prompt, system, include_dynamic=include_dynamic
+                    user_prompt,
+                    system,
+                    include_dynamic=include_dynamic,
+                    dynamic_suffix=dynamic_suffix,
+                    turn_id=turn_id,
                 )
             except OllamaError:
                 raise exc from None
 
     @staticmethod
     def _should_failover(exc: Exception) -> bool:
-        """Failover только для сетевых/временных сбоев, не для проблем с ключом."""
+        """Failover только для временных сетевых сбоев; 401/402/403 и отмена не переключаются."""
         text = str(exc).lower()
         if not text:
             return False
         if any(
             marker in text
             for marker in (
-                "401", "403", "api-ключ", "api ключ", "api key", "apikey",
-                "ключ не", "ключ истёк", "expired", "недействителен",
+                "401", "402", "403", "api-ключ", "api ключ", "api key", "apikey",
+                "ключ не", "ключ истёк", "expired", "недействителен", "отменён",
+                "недостаточно средств", "insufficient",
             )
         ):
             return False
@@ -1288,83 +1694,156 @@ class Coach:
         temperature: float | None = None,
         max_tokens: int | None = None,
         include_dynamic: bool = True,
+        dynamic_suffix: str = "",
+        deadline_seconds: float | None = None,
+        generation_id: int | None = None,
+        tier: str = "tier1",
+        kind: str = "chat",
+        turn_id: str | None = None,
     ) -> str:
+        t_start = time.monotonic()
+        eff_turn = turn_id or new_turn_id()
+        deadline = (t_start + float(deadline_seconds)) if deadline_seconds else None
         temp = float(temperature) if temperature is not None else float(getattr(self.llm, "temperature", 0.4) or 0.4)
         temp = max(0.05, min(0.95, temp))
         options: dict[str, Any] = {"temperature": temp}
         if max_tokens:
             options["num_predict"] = int(max_tokens)
-        messages = self._build_messages(user_prompt, system, include_dynamic=include_dynamic)
+        messages = self._build_messages(
+            user_prompt,
+            system,
+            include_dynamic=include_dynamic,
+            dynamic_suffix=dynamic_suffix,
+        )
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
             "stream": False,
+            "keep_alive": "10m",
             "options": options,
             "tools": COACH_TOOLS,
         }
         url = f"{self.llm.base_url.rstrip('/')}/api/chat"
 
         def post() -> Any:
+            if generation_id is not None and not self.preemption.is_current(generation_id):
+                raise OllamaError("Запрос отменён новым событием")
+            req_timeout = float(self.llm.timeout)
+            if deadline is not None:
+                rem = deadline - time.monotonic()
+                if rem <= 0.0:
+                    raise OllamaError("Истёк тайм-аут запроса Ollama")
+                req_timeout = max(0.2, min(req_timeout, rem))
             try:
-                return self._session.post(url, json=payload, timeout=self.llm.timeout)
+                return self._http_session().post(url, json=payload, timeout=req_timeout)
             except Exception as exc:  # noqa: BLE001
                 raise OllamaError(f"Не удалось обратиться к Ollama: {exc}") from exc
 
         tool_rounds_left = 2
         executed: set[str] = set()
-        while True:
-            response = post()
-            # Старые сборки Ollama/модели могут не знать про tools — повтор без них.
-            if getattr(response, "status_code", 0) != 200 and "tools" in payload:
-                payload.pop("tools", None)
+        try:
+            while True:
                 response = post()
-            if getattr(response, "status_code", 0) != 200:
-                raise OllamaError(f"Ollama вернула HTTP {getattr(response, 'status_code', '?')}")
-            try:
-                data = response.json()
-                message = data.get("message") or {}
-            except Exception as exc:  # noqa: BLE001
-                raise OllamaError(f"Некорректный ответ Ollama: {exc}") from exc
-            text = (message.get("content") or "").strip()
-            tool_calls = message.get("tool_calls") or []
-            if text:
-                return text
-            if not tool_calls:
-                raise OllamaError("Ollama вернула пустой ответ")
-            if tool_rounds_left <= 0:
-                raise OllamaError("Ollama вернула пустой ответ")
-            messages.append(message)
-            for tool_call in tool_calls:
-                fn = (tool_call or {}).get("function") or {}
-                fn_name = str(fn.get("name") or "")
-                raw_args = fn.get("arguments")
-                if isinstance(raw_args, str):
-                    try:
-                        parsed_args = json.loads(raw_args)
-                    except Exception:  # noqa: BLE001
+                # Старые сборки Ollama/модели могут не знать про tools — повтор без них.
+                if getattr(response, "status_code", 0) != 200 and "tools" in payload:
+                    payload.pop("tools", None)
+                    response = post()
+                if getattr(response, "status_code", 0) != 200:
+                    raise OllamaError(f"Ollama вернула HTTP {getattr(response, 'status_code', '?')}")
+                try:
+                    data = response.json()
+                    message = data.get("message") or {}
+                except Exception as exc:  # noqa: BLE001
+                    raise OllamaError(f"Некорректный ответ Ollama: {exc}") from exc
+                text = (message.get("content") or "").strip()
+                tool_calls = message.get("tool_calls") or []
+                if text:
+                    self.router.breaker.record_success("ollama", self.llm.base_url, model)
+                    elapsed_ms = int((time.monotonic() - t_start) * 1000)
+                    self.telemetry.record_turn(
+                        TurnMetric(
+                            ts=time.time(),
+                            turn_id=eff_turn,
+                            tier=tier,
+                            route=kind,
+                            provider="ollama",
+                            model=model,
+                            kind=kind,
+                            ttft_ms=elapsed_ms,
+                            total_ms=elapsed_ms,
+                            outcome="ok",
+                            generation_id=generation_id or 0,
+                        )
+                    )
+                    return text
+                if not tool_calls or tool_rounds_left <= 0:
+                    raise OllamaError("Ollama вернула пустой ответ")
+                messages.append(message)
+                for tool_call in tool_calls:
+                    fn = (tool_call or {}).get("function") or {}
+                    fn_name = str(fn.get("name") or "")
+                    raw_args = fn.get("arguments")
+                    if isinstance(raw_args, str):
+                        try:
+                            parsed_args = json.loads(raw_args)
+                        except Exception:  # noqa: BLE001
+                            parsed_args = {}
+                    elif isinstance(raw_args, dict):
+                        parsed_args = raw_args
+                    else:
                         parsed_args = {}
-                elif isinstance(raw_args, dict):
-                    parsed_args = raw_args
-                else:
-                    parsed_args = {}
-                call_key = fn_name + ":" + json.dumps(parsed_args, ensure_ascii=False, sort_keys=True)
-                if call_key in executed:
-                    tool_result = "Этот инструмент уже вызывался — используй данные выше."
-                else:
-                    executed.add(call_key)
-                    try:
-                        tool_result = self.execute_tool(fn_name, parsed_args)
-                    except Exception as exc:  # noqa: BLE001
-                        tool_result = f"Ошибка инструмента {fn_name}: {exc}"
-                messages.append({"role": "tool", "content": str(tool_result)[:1800]})
-            payload["messages"] = messages
-            tool_rounds_left -= 1
+                    call_key = fn_name + ":" + json.dumps(parsed_args, ensure_ascii=False, sort_keys=True)
+                    if call_key in executed:
+                        tool_result = "Этот инструмент уже вызывался — используй данные выше."
+                    else:
+                        executed.add(call_key)
+                        try:
+                            tool_result = self.execute_tool(fn_name, parsed_args)
+                        except Exception as exc:  # noqa: BLE001
+                            tool_result = f"Ошибка инструмента {fn_name}: {exc}"
+                    messages.append({"role": "tool", "content": str(tool_result)[:1800]})
+                payload["messages"] = messages
+                tool_rounds_left -= 1
+        except OllamaError as exc:
+            if "отменён" not in str(exc).lower():
+                self.router.breaker.record_failure("ollama", self.llm.base_url, model)
+            elapsed_ms = int((time.monotonic() - t_start) * 1000)
+            self.telemetry.record_turn(
+                TurnMetric(
+                    ts=time.time(),
+                    turn_id=eff_turn,
+                    tier=tier,
+                    route=kind,
+                    provider="ollama",
+                    model=model,
+                    kind=kind,
+                    ttft_ms=0,
+                    total_ms=elapsed_ms,
+                    outcome="preempted" if "отменён" in str(exc).lower() else "error",
+                    generation_id=generation_id or 0,
+                    error=str(exc),
+                )
+            )
+            raise
 
     def _free_pollinations_chat(
-        self, user_prompt: str, system: str, *, include_dynamic: bool = True
+        self,
+        user_prompt: str,
+        system: str,
+        *,
+        include_dynamic: bool = True,
+        dynamic_suffix: str = "",
+        turn_id: str | None = None,
     ) -> str:
         """Бесплатный резервный ИИ без необходимости вводить API-ключ."""
-        messages = self._build_messages(user_prompt, system, include_dynamic=include_dynamic)
+        t_start = time.monotonic()
+        eff_turn = turn_id or new_turn_id()
+        messages = self._build_messages(
+            user_prompt,
+            system,
+            include_dynamic=include_dynamic,
+            dynamic_suffix=dynamic_suffix,
+        )
         for model in ("openai", "gemini"):
             payload = {
                 "model": model,
@@ -1373,18 +1852,33 @@ class Coach:
                 "max_tokens": 300,
             }
             try:
-                resp = self._session.post(
+                resp = self._http_session().post(
                     "https://text.pollinations.ai/openai/chat/completions",
                     json=payload,
-                    timeout=25.0,
+                    timeout=15.0,
                 )
                 if getattr(resp, "status_code", 0) == 200:
                     data = resp.json()
-                    choices = data.get("choices") or []
-                    if choices:
-                        text = (choices[0].get("message", {}).get("content") or "").strip()
-                        if text:
-                            return text
+                    text, _, _, usage = extract_openai_message(data)
+                    if text:
+                        elapsed_ms = int((time.monotonic() - t_start) * 1000)
+                        self.telemetry.record_turn(
+                            TurnMetric(
+                                ts=time.time(),
+                                turn_id=eff_turn,
+                                tier="fallback",
+                                route="pollinations",
+                                provider="pollinations",
+                                model=model,
+                                kind="chat",
+                                ttft_ms=elapsed_ms,
+                                total_ms=elapsed_ms,
+                                prompt_tokens=usage.get("prompt_tokens", 0),
+                                completion_tokens=usage.get("completion_tokens", 0),
+                                outcome="fallback",
+                            )
+                        )
+                        return text
             except Exception as exc:  # noqa: BLE001
                 log.warning("Pollinations failover exception (%s): %s", model, exc)
         raise OllamaError("Бесплатный ИИ временно недоступен")
@@ -1413,33 +1907,56 @@ class Coach:
         max_tokens: int | None = None,
         include_dynamic: bool = True,
         tools: list[dict[str, Any]] | None = None,
+        dynamic_suffix: str = "",
+        deadline_seconds: float | None = None,
+        send_temperature: bool = True,
+        generation_id: int | None = None,
+        tier: str = "tier1",
+        kind: str = "chat",
+        turn_id: str | None = None,
     ) -> str:
+        t_start = time.monotonic()
+        eff_turn = turn_id or new_turn_id()
+        deadline = (t_start + float(deadline_seconds)) if deadline_seconds else None
+
         base_url = (self.llm.base_url or "").rstrip("/")
         if not base_url:
             base_url = "https://text.pollinations.ai/openai"
         if "openrouter.ai" in base_url.lower():
             if not model or model.strip().lower() in ("openai", "default", "gpt", "") or "/" not in model:
                 model = "deepseek/deepseek-chat"
+        reasoner_mode = is_reasoning_model(model)
         temp = float(temperature) if temperature is not None else float(getattr(self.llm, "temperature", 0.4) or 0.4)
         temp = max(0.05, min(0.95, temp))
         configured_tokens = int(getattr(self.llm, "max_tokens", 350) or 350)
         tokens = int(max_tokens) if max_tokens is not None else configured_tokens
-        tokens = max(60, min(tokens, 900))
-        messages = self._build_messages(user_prompt, system, include_dynamic=include_dynamic)
+        if reasoner_mode:
+            tokens = max(REASONER_MIN_API_MAX_TOKENS, tokens)
+        else:
+            tokens = max(60, min(tokens, 900))
+
+        messages = self._build_messages(
+            user_prompt,
+            system,
+            include_dynamic=include_dynamic,
+            dynamic_suffix=dynamic_suffix,
+        )
         headers = {"Authorization": f"Bearer {self.llm.api_key}"} if self.llm.api_key else {}
         url = f"{base_url}/chat/completions"
 
         tool_defs = COACH_TOOLS if tools is None else tools
-        if "pollinations" in base_url.lower():
+        if "pollinations" in base_url.lower() or reasoner_mode:
             tool_defs = []
+        if "pollinations" in base_url.lower():
             headers.clear()
 
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
-            "temperature": temp,
             "max_tokens": tokens,
         }
+        if send_temperature and not reasoner_mode:
+            payload["temperature"] = temp
         if tool_defs:
             payload["tools"] = tool_defs
             payload["tool_choice"] = "auto"
@@ -1450,86 +1967,146 @@ class Coach:
         forced_final = False
 
         def post(payload_data: dict[str, Any]) -> Any:
+            if generation_id is not None and not self.preemption.is_current(generation_id):
+                raise OllamaError("Запрос отменён новым событием")
+            req_timeout = float(self.llm.timeout)
+            if deadline is not None:
+                rem = deadline - time.monotonic()
+                if rem <= 0.0:
+                    raise OllamaError("Превышен дедлайн ожидания ответа ИИ")
+                req_timeout = max(0.2, min(req_timeout, rem))
             try:
-                return self._session.post(url, json=payload_data, headers=headers, timeout=self.llm.timeout)
+                return self._http_session().post(url, json=payload_data, headers=headers, timeout=req_timeout)
             except Exception as exc:  # noqa: BLE001
                 raise OllamaError(f"Не удалось обратиться к {self.llm.base_url}: {exc}") from exc
 
-        while True:
-            response = post(payload)
-            # Некоторые модели не поддерживают tools (HTTP 400) — повторяем без них.
-            if getattr(response, "status_code", 0) == 400 and "tools" in payload:
-                payload.pop("tools", None)
-                payload.pop("tool_choice", None)
-                tool_defs = []
+        try:
+            while True:
                 response = post(payload)
-            if getattr(response, "status_code", 0) != 200:
-                status_code = getattr(response, "status_code", 0)
-                err_detail = self._api_error_text(response)
-                if status_code in (401, 403) or "expired" in err_detail.lower():
-                    raise OllamaError("API-ключ недействителен или истёк (HTTP 401)")
-                raise OllamaError(f"API вернул HTTP {status_code}{err_detail}")
-            try:
-                data = response.json()
-                choices = data.get("choices") or []
-                if not choices:
-                    raise OllamaError("API вернул ответ без choices")
-                msg = choices[0].get("message") or {}
-            except Exception as exc:  # noqa: BLE001
-                raise OllamaError(f"Некорректный ответ API: {exc}") from exc
-
-            tool_calls = msg.get("tool_calls") or []
-            text = (msg.get("content") or "").strip()
-            if text:
-                return text
-            if not tool_calls:
-                raise OllamaError("API вернул пустой ответ")
-
-            if tool_rounds_left <= 0 and not forced_final:
-                # Принудительно просим финальный ответ без инструментов.
-                payload.pop("tools", None)
-                payload.pop("tool_choice", None)
-                messages.append(msg)
-                messages.append({
-                    "role": "user",
-                    "content": "Ответь на вопрос игрока финальным ответом без вызова инструментов.",
-                })
-                payload["messages"] = messages
-                forced_final = True
-                continue
-            if forced_final:
-                raise OllamaError("API вернул пустой ответ")
-
-            messages.append(msg)
-            for tool_call in tool_calls:
-                fn = tool_call.get("function", {}) or {}
-                fn_name = str(fn.get("name", ""))
-                raw_args = fn.get("arguments", "{}")
+                # Некоторые модели не поддерживают tools (HTTP 400) — повторяем без них.
+                if getattr(response, "status_code", 0) == 400 and "tools" in payload:
+                    payload.pop("tools", None)
+                    payload.pop("tool_choice", None)
+                    tool_defs = []
+                    response = post(payload)
+                if getattr(response, "status_code", 0) != 200:
+                    status_code = getattr(response, "status_code", 0)
+                    err_detail = self._api_error_text(response)
+                    failure = classify_http_failure(status_code, err_detail)
+                    if failure == "auth":
+                        raise OllamaError("API-ключ недействителен или истёк (HTTP 401)")
+                    if failure == "billing":
+                        raise OllamaError(f"Недостаточно средств / квота API (HTTP {status_code}){err_detail}")
+                    raise OllamaError(f"API вернул HTTP {status_code}{err_detail}")
                 try:
-                    parsed_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
-                except Exception:  # noqa: BLE001
-                    parsed_args = {}
-                if not isinstance(parsed_args, dict):
-                    parsed_args = {}
-                call_key = fn_name + ":" + json.dumps(parsed_args, ensure_ascii=False, sort_keys=True)
-                if call_key in executed:
-                    tool_result = "Этот инструмент уже вызывался — используй данные выше."
-                else:
-                    executed.add(call_key)
+                    data = response.json()
+                    text, tool_calls, reasoning_content, usage = extract_openai_message(data)
+                    if not (data.get("choices") or []):
+                        raise OllamaError("API вернул ответ без choices")
+                    msg = (data.get("choices") or [{}])[0].get("message") or {}
+                except OllamaError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    raise OllamaError(f"Некорректный ответ API: {exc}") from exc
+
+                if reasoning_content:
+                    log.debug("DeepSeek reasoning_content (%s chars): %s", len(reasoning_content), reasoning_content[:300])
+
+                if text:
+                    self.router.breaker.record_success("openai_compatible", base_url, model)
+                    elapsed_ms = int((time.monotonic() - t_start) * 1000)
+                    self.telemetry.record_turn(
+                        TurnMetric(
+                            ts=time.time(),
+                            turn_id=eff_turn,
+                            tier=tier,
+                            route=kind,
+                            provider="openai_compatible",
+                            model=model,
+                            kind=kind,
+                            ttft_ms=elapsed_ms,
+                            total_ms=elapsed_ms,
+                            prompt_tokens=usage.get("prompt_tokens", 0),
+                            completion_tokens=usage.get("completion_tokens", 0),
+                            cache_hit_tokens=usage.get("cache_hit_tokens", 0),
+                            cache_miss_tokens=usage.get("cache_miss_tokens", 0),
+                            reasoning_tokens=usage.get("reasoning_tokens", 0),
+                            outcome="ok",
+                            generation_id=generation_id or 0,
+                        )
+                    )
+                    return text
+                if not tool_calls:
+                    raise OllamaError("API вернул пустой ответ")
+
+                if tool_rounds_left <= 0 and not forced_final:
+                    payload.pop("tools", None)
+                    payload.pop("tool_choice", None)
+                    messages.append(msg)
+                    messages.append({
+                        "role": "user",
+                        "content": "Ответь на вопрос игрока финальным ответом без вызова инструментов.",
+                    })
+                    payload["messages"] = messages
+                    forced_final = True
+                    continue
+                if forced_final:
+                    raise OllamaError("API вернул пустой ответ")
+
+                messages.append(msg)
+                for tool_call in tool_calls:
+                    fn = tool_call.get("function", {}) or {}
+                    fn_name = str(fn.get("name", ""))
+                    raw_args = fn.get("arguments", "{}")
                     try:
-                        tool_result = self.execute_tool(fn_name, parsed_args)
-                    except Exception as exc:  # noqa: BLE001 — ошибка инструмента не валит диалог
-                        tool_result = f"Ошибка инструмента {fn_name}: {exc}"
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.get("id", "call_1"),
-                    "name": fn_name,
-                    "content": str(tool_result)[:1800],
-                })
-            tool_rounds_left -= 1
-            payload["messages"] = messages
-            if not tool_defs:
-                payload.pop("tools", None)
+                        parsed_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                    except Exception:  # noqa: BLE001
+                        parsed_args = {}
+                    if not isinstance(parsed_args, dict):
+                        parsed_args = {}
+                    call_key = fn_name + ":" + json.dumps(parsed_args, ensure_ascii=False, sort_keys=True)
+                    if call_key in executed:
+                        tool_result = "Этот инструмент уже вызывался — используй данные выше."
+                    else:
+                        executed.add(call_key)
+                        try:
+                            tool_result = self.execute_tool(fn_name, parsed_args)
+                        except Exception as exc:  # noqa: BLE001
+                            tool_result = f"Ошибка инструмента {fn_name}: {exc}"
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.get("id", "call_1"),
+                        "name": fn_name,
+                        "content": str(tool_result)[:1800],
+                    })
+                tool_rounds_left -= 1
+                payload["messages"] = messages
+                if not tool_defs:
+                    payload.pop("tools", None)
+        except OllamaError as exc:
+            err_low = str(exc).lower()
+            is_preempted = "отменён" in err_low
+            is_auth_or_billing = any(k in err_low for k in ("401", "402", "403", "api-ключ", "средств"))
+            if not is_preempted and not is_auth_or_billing:
+                self.router.breaker.record_failure("openai_compatible", base_url, model)
+            elapsed_ms = int((time.monotonic() - t_start) * 1000)
+            self.telemetry.record_turn(
+                TurnMetric(
+                    ts=time.time(),
+                    turn_id=eff_turn,
+                    tier=tier,
+                    route=kind,
+                    provider="openai_compatible",
+                    model=model,
+                    kind=kind,
+                    ttft_ms=0,
+                    total_ms=elapsed_ms,
+                    outcome="preempted" if is_preempted else ("auth_error" if is_auth_or_billing else "error"),
+                    generation_id=generation_id or 0,
+                    error=str(exc),
+                )
+            )
+            raise
 
     # Обратная совместимость со старым именем метода.
     def llm(self, user_prompt: str) -> str:
@@ -1541,20 +2118,36 @@ class Coach:
     # ------------------------------------------------------------------ #
     # Смена модели / пресета
     # ------------------------------------------------------------------ #
+    def set_llm_config(self, llm_cfg: LlmConfig) -> None:
+        """Синхронизирует все параметры LlmConfig и сбрасывает кэши/брейкеры."""
+        with self._lock:
+            for attr in (
+                "provider", "base_url", "api_key", "model", "temperature", "timeout",
+                "max_tokens", "routing_mode", "tier1_model", "tier2_model",
+                "tier1_timeout", "tier2_timeout", "tier2_max_tokens",
+                "allow_pollinations_fallback",
+            ):
+                if hasattr(llm_cfg, attr):
+                    setattr(self.llm, attr, getattr(llm_cfg, attr))
+            self._models_cache = (0.0, [], None)
+            self.router.breaker.reset_all()
+
     def switch_model(self, target: str | None) -> tuple[bool, str]:
         """Переключает модель или пресет. Возвращает (изменено, сообщение)."""
         target = (target or "").strip()
         presets = self.llm.presets or {}
         if target and target in presets:
             preset = presets[target]
-            for key in ("provider", "base_url", "api_key", "model", "temperature", "timeout"):
+            for key in ("provider", "base_url", "api_key", "model", "temperature", "timeout", "max_tokens"):
                 if key in preset and preset[key] is not None:
                     setattr(self.llm, key, preset[key])
             self._models_cache = (0.0, [], None)
+            self.router.breaker.reset_all()
             return True, f"Пресет «{target}» активен: {self.llm.provider} / {self.llm.model}."
         if target:
             self.llm.model = target
             self._models_cache = (0.0, [], None)
+            self.router.breaker.reset_all()
             return True, f"Модель переключена на «{target}» (провайдер {self.llm.provider})."
         available = self.llm_models()
         return False, self.model_status() + (f" Доступны: {', '.join(available[:6])}." if available else "")
@@ -1638,39 +2231,73 @@ class Coach:
     # Ответы
     # ------------------------------------------------------------------ #
     def _chat_limits(self, kind: str, *, voice: bool = False) -> tuple[int, int]:
-        """Лимиты ответа для диалога: (max_sentences, max_chars) под уровень игрока.
-
-        Новичок получает короткие ответы (до 3 предложений / 320 символов).
-        Опытный игрок в чат-режиме — до 5 предложений / 500 символов с
-        конкретикой, но голосовые ответы остаются короткими.
-        """
+        """Лимиты ответа для диалога: (max_sentences, max_chars) под уровень и детализацию."""
         level = self.skill_level
+        detail = self.detail_mode
+        if voice:
+            return (3, 300) if level == "beginner" and kind in ("explain", "chat") else (2, 240)
+        if detail == "concise":
+            return 2, 200
+        if detail == "detailed":
+            return 6, 650
         if level == "beginner" and kind in ("explain", "chat"):
             return 3, 320
-        if level in ("advanced", "expert") and kind in ("explain", "chat") and not voice:
+        if level in ("advanced", "expert") and kind in ("explain", "chat", "matchup"):
             return 5, 500
-        if kind in ("why", "analysis"):
-            return 3, 300
+        if kind in ("why", "analysis", "matchup"):
+            return 4, 380
         return 2, 240
 
-    def coach_chat(self, user_query: str, *, voice: bool = False) -> str:
-        """Интерактивный диалог с тренером (Астра / Джарвис) по любому вопросу.
+    def _maybe_save_preference(self, clean_query: str) -> str | None:
+        """Распознаёт и сохраняет явные установки игрока («запомни...», «моя цель...»)."""
+        low = clean_query.lower().strip()
+        if not low or "?" in low:
+            return None
 
-        Под капотом: определение типа вопроса → тактический бриф по GSI →
-        подбор релевантных знаний из meta_db → «холодная» генерация →
-        чистка ответа для озвучки → запись в долговременную память.
+        focus_prefixes = (
+            "моя цель на матч:", "моя цель на матч —", "моя цель на матч -",
+            "моя цель:", "моя цель —", "мой фокус:", "мой фокус —",
+            "фокус на матч:", "фокус на матч —",
+        )
+        for pref in focus_prefixes:
+            if low.startswith(pref):
+                val = clean_query[len(pref):].strip(" .,:;—-")
+                if val:
+                    saved = self.set_custom_focus(val)
+                    self.long_memory.remember_fact("цель_матча", saved)
+                    return f"Принял, фокус на матч обновлён: {saved}."
 
-        Для новичка объяснение термина («что такое бкб») отдаётся из глоссария
-        без обращения к LLM — быстрый и гарантированно простой ответ.
-        ``voice=True`` (ответ уйдёт в озвучку) держит ответ коротким даже у
-        опытных игроков.
-        """
+        mem_prefixes = (
+            "запомни, что ", "запомни что ", "запомни:", "запомни —", "запомни ",
+            "учти, что ", "учти что ", "учти:",
+        )
+        for pref in mem_prefixes:
+            if low.startswith(pref):
+                val = clean_query[len(pref):].strip(" .,:;—-")
+                if len(val) >= 4 and len(val) <= 180:
+                    self.long_memory.remember_fact("предпочтение", val)
+                    return f"Принял, запомнил: {val}."
+        return None
+
+    def coach_chat(
+        self,
+        user_query: str,
+        *,
+        voice: bool = False,
+        generation_id: int | None = None,
+    ) -> str:
+        """Интерактивный диалог с тренером (Астра / Джарвис) по любому вопросу."""
         clean_query = " ".join((user_query or "").split())
         level = self.skill_level
         if not clean_query:
             if level == "beginner":
                 return beginner.freshman_greeting(self.coach_name)
             return "Да, я на связи. Что подсказать по игре?"
+
+        pref_reply = self._maybe_save_preference(clean_query)
+        if pref_reply:
+            self.remember(clean_query, pref_reply)
+            return pref_reply
 
         kind_hint = detect_query_kind(clean_query)
         if level == "beginner" and kind_hint == "explain":
@@ -1679,19 +2306,32 @@ class Coach:
                 self.remember(clean_query, explanation)
                 return explanation
 
+        payload = self.gsi_payload()
+        draft = collect_draft(payload, self.catalog)
         hero = self.current_hero()
         brief_text, knowledge, kind = self._tactical_context(clean_query, hero=hero)
         try:
             profile_text = self._profile_summary()
         except Exception:  # noqa: BLE001
             profile_text = ""
-        system = render_system_prompt(
+        eff_detail = "concise" if voice else self.detail_mode
+
+        assembly = render_prompt_assembly(
             self.coach_name,
             brief_text,
             knowledge,
             kind=kind,
             profile_text=profile_text,
             skill_level=level,
+            coach_tone=self.coach_tone,
+            detail_mode=eff_detail,
+            custom_focus=self.custom_focus,
+            position=self.position,
+            mmr_bracket=str(self.profile.mmr_bracket or ""),
+            hero_pool=self.profile.hero_pool,
+            signature_heroes=self.profile.signature_heroes or (),
+            my_picks=draft.my_picks,
+            enemy_picks=draft.enemy_picks,
         )
         prompt = "\n".join(
             [
@@ -1704,10 +2344,14 @@ class Coach:
         try:
             answer = self._ask_llm(
                 prompt,
-                system=system,
+                system=assembly.system_prefix,
                 kind=kind,
                 max_sentences=max_sentences,
                 max_chars=max_chars,
+                detail_mode=eff_detail,
+                voice=voice,
+                dynamic_suffix=assembly.dynamic_suffix,
+                generation_id=generation_id,
             )
             if not answer:
                 answer = self._knowledge_fallback(clean_query, hero, kind, knowledge)
@@ -1717,16 +2361,31 @@ class Coach:
             self.last_error = str(exc)
             log.warning("Ошибка LLM при ответе тренера: %s", exc)
             error_text = str(exc).lower()
-            if "401" in error_text or "истёк" in error_text:
-                return "⚠️ Ваш API-ключ недействителен или истёк (HTTP 401). Обновите ключ в Настройках (кнопка ⚙ вверху) или напишите: «апи ключ <ваш_новый_ключ>»."
-            if "402" in error_text or "429" in error_text or "rate limit" in error_text:
-                return "Бесплатный ИИ сейчас перегружен (лимит запросов). Подожди полминуты и спроси ещё раз."
+            if "отменён" in error_text:
+                return ""
+            if "401" in error_text or "403" in error_text or "истёк" in error_text:
+                return "⚠️ Ваш API-ключ недействителен или истёк (HTTP 401). Обновите ключ в Настройках или напишите: «апи ключ <ваш_новый_ключ>»."
+            if "402" in error_text or "недостаточно средств" in error_text:
+                return "⚠️ На балансе API недостаточно средств (HTTP 402). Пополните баланс или переключите провайдера в Настройках."
+            if "429" in error_text or "rate limit" in error_text:
+                return "ИИ сейчас перегружен (лимит запросов). Подожди немного и спроси ещё раз."
             if kind == "explain" and level == "beginner":
                 return (
                     "Пока не знаю такого термина — спроси иначе или назови другой термин из Dota 2, "
                     "и я объясню простыми словами."
                 )
-            return f"Не удалось связаться с ИИ ({exc}). Проверьте API-ключ в настройках."
+            base_err = f"Не удалось связаться с ИИ ({exc}). Проверьте API-ключ в настройках."
+            if kind in ("counter", "build", "skill", "pick", "matchup") and knowledge:
+                offline = sanitize_answer(
+                    knowledge[0],
+                    max_chars=220,
+                    max_sentences=2,
+                    skill_level=level,
+                    kind=kind,
+                )
+                if offline:
+                    return f"{base_err} Офлайн-подсказка: {offline}"
+            return base_err
 
     def _knowledge_fallback(
         self, query: str, hero: dict | None, kind: str, knowledge: list[str]
@@ -2665,6 +3324,8 @@ class Coach:
                 temperature=0.3,
                 max_tokens=max(int(getattr(self.llm, "max_tokens", 350) or 350), 550),
                 include_dynamic=False,
+                kind="match",
+                voice=False,
             )
             cleaned = sanitize_answer(answer, max_chars=1600, max_sentences=12, kind="match")
             if cleaned and cleaned != answer:
@@ -2693,7 +3354,7 @@ class Coach:
         if int(bm.get("tower_damage_pct") or 0) < 35:
             mistakes.append("Мало урона по строениям: конвертировать драки в объективы")
         try:
-            data_dir = getattr(self.api, "data_dir", None)
+            data_dir = self._state_dir if self._state_dir is not None else getattr(self.api, "data_dir", None)
             if data_dir is not None and mistakes:
                 update_player_profile_mistakes(
                     data_dir,
@@ -2817,9 +3478,29 @@ class Coach:
         return "\n".join(lines)
 
     def close(self) -> None:
-        """Освобождает ресурсы, включая HTTP-сессию."""
-        if hasattr(self, "_session") and self._session is not None:
+        """Освобождает ресурсы, включая все потоковые HTTP-сессии."""
+        if getattr(self.api, "sync_service", None) is not None:
             try:
-                self._session.close()
+                from .meta_db import _LIVE_META_LOCK, _LIVE_META_PROVIDER, set_live_meta_provider
+
+                with _LIVE_META_LOCK:
+                    is_current = _LIVE_META_PROVIDER is self.api
+                if is_current:
+                    set_live_meta_provider(None)
+            except Exception:  # noqa: BLE001
+                pass
+        sessions: list[Any] = []
+        with self._lock:
+            sessions.extend(getattr(self, "_owned_sessions", []))
+            self._owned_sessions.clear()
+        if hasattr(self, "_session") and self._session is not None:
+            sessions.append(self._session)
+        seen: set[int] = set()
+        for sess in sessions:
+            if sess is None or id(sess) in seen:
+                continue
+            seen.add(id(sess))
+            try:
+                sess.close()
             except Exception:
                 pass

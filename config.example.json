@@ -1,4 +1,5 @@
 {
+  "schema_version": 2,
   "gsi": {
     "enabled": true,
     "host": "127.0.0.1",
@@ -50,12 +51,19 @@
   },
   "llm": {
     "provider": "openai_compatible",
-    "base_url": "https://openrouter.ai/api/v1",
+    "base_url": "https://api.deepseek.com/v1",
     "api_key": "",
-    "model": "openai/gpt-4o-mini",
+    "model": "deepseek-chat",
     "temperature": 0.4,
     "timeout": 60.0,
     "max_tokens": 350,
+    "routing_mode": "auto",
+    "tier1_model": "",
+    "tier2_model": "",
+    "tier1_timeout": 3.0,
+    "tier2_timeout": 20.0,
+    "tier2_max_tokens": 4096,
+    "allow_pollinations_fallback": true,
     "presets": {
       "pollinations": {
         "provider": "openai_compatible",
@@ -117,7 +125,17 @@
         "api_key": "",
         "model": "deepseek-chat",
         "temperature": 0.4,
-        "timeout": 60.0
+        "timeout": 60.0,
+        "max_tokens": 350
+      },
+      "deepseek_r1": {
+        "provider": "openai_compatible",
+        "base_url": "https://api.deepseek.com/v1",
+        "api_key": "",
+        "model": "deepseek-reasoner",
+        "temperature": 0.4,
+        "timeout": 60.0,
+        "max_tokens": 4096
       },
       "openrouter": {
         "provider": "openai_compatible",
@@ -134,7 +152,8 @@
         "api_key": "",
         "model": "llama-3.3-70b-versatile",
         "temperature": 0.4,
-        "timeout": 60.0
+        "timeout": 60.0,
+        "max_tokens": 350
       },
       "openai": {
         "provider": "openai_compatible",
@@ -142,7 +161,8 @@
         "api_key": "",
         "model": "gpt-4o-mini",
         "temperature": 0.4,
-        "timeout": 60.0
+        "timeout": 60.0,
+        "max_tokens": 350
       },
       "ollama": {
         "provider": "ollama",
@@ -150,7 +170,8 @@
         "api_key": "",
         "model": "gemma3",
         "temperature": 0.4,
-        "timeout": 120.0
+        "timeout": 120.0,
+        "max_tokens": 350
       }
     }
   },
@@ -185,7 +206,11 @@
     "account_id": null,
     "coach_name": "Астра",
     "autonomy_level": "medium",
-    "skill_level": "beginner"
+    "skill_level": "beginner",
+    "coach_tone": "balanced",
+    "detail_mode": "auto",
+    "custom_focus": "",
+    "speak_chat": true
   },
   "dota": {
     "cfg_dir": null,

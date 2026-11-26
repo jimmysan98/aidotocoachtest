@@ -10,13 +10,16 @@ from pathlib import Path
 from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
 
 datas = [
-    ("data", "data"),
     ("hero_icons", "hero_icons"),
     ("assets", "assets"),
     ("default_preset.json", "."),
     ("config.example.json", "."),
     ("aidota/web", "aidota/web"),
 ]
+# Явный allowlist файлов data/ (никакой упаковки личной памяти и профиля).
+for _data_name in ("heroes.json", "items.json"):
+    if Path("data", _data_name).is_file():
+        datas.append((f"data/{_data_name}", "data"))
 binaries = []
 hiddenimports = []
 

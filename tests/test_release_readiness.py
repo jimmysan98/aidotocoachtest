@@ -11,8 +11,7 @@ import re
 import unittest
 from pathlib import Path
 
-from aidota import __version__
-from aidota import beginner, meta_db
+from aidota import __version__, beginner, meta_db
 
 ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist" / "AIDOTA"

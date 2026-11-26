@@ -341,6 +341,106 @@ ENEMY_ITEM_NOTES: dict[str, dict[str, Any]] = {
             },
         ],
     },
+    "slark": {
+        "name": "Slark",
+        "threat": "Shadow Dance, Essence Shift и Pounce",
+        "items": [
+            {
+                "item": "Force Staff",
+                "why": "выталкивает тебя или союзника из привязки Pounce",
+                "priority": "HIGH",
+            },
+            {
+                "item": "Ghost Scepter",
+                "why": "Сларк не настакает Essence Shift ударами с руки в эфире",
+                "priority": "MEDIUM",
+            },
+            {
+                "item": "Hurricane Pike",
+                "why": "разрывает дистанцию и ломает привязку Pounce",
+                "priority": "MEDIUM",
+            },
+        ],
+    },
+    "necrolyte": {
+        "name": "Necrophos",
+        "threat": "Reaper's Scythe, Ghost Shroud и мощный хил",
+        "items": [
+            {
+                "item": "Spirit Vessel",
+                "why": "срезает огромный отхил Некрофоса в драке",
+                "priority": "HIGH",
+            },
+            {
+                "item": "Nullifier",
+                "why": "снимает Ghost Shroud и не даёт Некру уйти в астрал",
+                "priority": "HIGH",
+            },
+            {
+                "item": "Glimmer Cape",
+                "why": "спасает союзника от магического урона Reaper's Scythe",
+                "priority": "MEDIUM",
+            },
+        ],
+    },
+    "bristleback": {
+        "name": "Bristleback",
+        "threat": "снижение урона со спины и стаки Quill Spray",
+        "items": [
+            {
+                "item": "Silver Edge",
+                "why": "Break отключает пассивку со спины и резко ускоряет убийство",
+                "priority": "HIGH",
+            },
+            {
+                "item": "Magic Wand",
+                "why": "бесплатно заряжается до 20 стаков от каждого спама колючек на линии",
+                "priority": "MEDIUM",
+            },
+            {
+                "item": "Spirit Vessel",
+                "why": "срезает вампиризм Бриста от Bloodstone и заклинаний",
+                "priority": "MEDIUM",
+            },
+        ],
+    },
+    "faceless_void": {
+        "name": "Faceless Void",
+        "threat": "Chronosphere (пробивает BKB)",
+        "items": [
+            {
+                "item": "Aeon Disk",
+                "why": "не даёт умереть за время Chronosphere",
+                "priority": "HIGH",
+            },
+            {
+                "item": "Eul's Scepter of Divinity",
+                "why": "помогает поднять Войда в ветра снаружи купола",
+                "priority": "MEDIUM",
+            },
+            {
+                "item": "Heaven's Halberd",
+                "why": "дизармит Войда или снимает урон до купола",
+                "priority": "LOW",
+            },
+        ],
+        "warning": "BKB от Chronosphere не спасает — старайся стоять рассредоточенно.",
+    },
+}
+
+# Эквиваленты апгрейдов: если куплен старший слот, базовый больше не советуем.
+_UPGRADE_EQUIVALENTS: dict[str, tuple[str, ...]] = {
+    "hurricane pike": ("force staff", "dragon lance"),
+    "silver edge": ("shadow blade",),
+    "guardian greaves": ("mekansm", "arcane boots"),
+    "bloodthorn": ("orchid malevolence",),
+    "wind waker": ("euls scepter of divinity", "eul s scepter of divinity"),
+    "boots of bearing": ("tranquil boots", "drum of endurance"),
+    "crimson guard": ("vanguard",),
+    "pipe of insight": ("hood of defiance",),
+    "disperser": ("diffusal blade",),
+    "parasma": ("witch blade",),
+    "khanda": ("phylactery",),
 }
 
 # Керри-лут, который бессмысленно советовать саппортам.
@@ -424,6 +524,15 @@ def _norm_hero(value: Any) -> str:
         "цм": "crystal_maiden",
         "сф": "nevermore",
         "ам": "antimage",
+        "бб": "bristleback",
+        "брист": "bristleback",
+        "бристлбек": "bristleback",
+        "некр": "necrolyte",
+        "necrophos": "necrolyte",
+        "некрофос": "necrolyte",
+        "сларк": "slark",
+        "войд": "faceless_void",
+        "void": "faceless_void",
     }
     return aliases.get(text, text)
 
@@ -462,7 +571,27 @@ def _snapshot_owned(snapshot: Mapping[str, Any]) -> set[str]:
     neutral = snapshot.get("neutral_item")
     if neutral:
         owned.add(_base_item(neutral))
+    # Учитываем апгрейды: если куплен старший слот, его компоненты уже не советуем.
+    for upgrade_name, bases in _UPGRADE_EQUIVALENTS.items():
+        if upgrade_name in owned:
+            owned.update(bases)
     return owned
+
+
+def _build_cost_index(item_costs: Mapping[str, int] | None) -> dict[str, int]:
+    """Индексирует цены предметов по нормализованному имени за O(K) один раз на вызов."""
+    index: dict[str, int] = {}
+    if not item_costs:
+        return index
+    for name, cost in item_costs.items():
+        key = _base_item(name)
+        if not key or key in index:
+            continue
+        try:
+            index[key] = int(cost)
+        except (TypeError, ValueError):
+            continue
+    return index
 
 
 def _item_cost(item: str, item_costs: Mapping[str, int] | None) -> int | None:
@@ -471,6 +600,11 @@ def _item_cost(item: str, item_costs: Mapping[str, int] | None) -> int | None:
     target = _base_item(item)
     if not target:
         return None
+    if target in item_costs:
+        try:
+            return int(item_costs[target])
+        except (TypeError, ValueError):
+            pass
     for name, cost in item_costs.items():
         try:
             value = int(cost)
@@ -527,10 +661,14 @@ def _make_advice(
     enemies: Iterable[str] = (),
     warning: str | None = None,
     item_costs: Mapping[str, int] | None = None,
+    cost_index: Mapping[str, int] | None = None,
     gold: int = 0,
 ) -> dict[str, Any]:
     primary = _adapt_composite(item)
-    cost = _item_cost(primary, item_costs)
+    base = _base_item(primary)
+    cost = cost_index.get(base) if cost_index else None
+    if cost is None and item_costs:
+        cost = _item_cost(primary, item_costs)
     gold_needed = max(0, int(cost) - int(gold)) if cost else None
     return {
         "item": primary,
@@ -610,6 +748,7 @@ def build_item_advice(
         gold = max(0, int(snapshot.get("gold") or 0))
     except (TypeError, ValueError):
         gold = 0
+    cost_index = _build_cost_index(item_costs)
 
     enemies = [
         str(enemy).strip()
@@ -638,7 +777,7 @@ def build_item_advice(
                 source,
                 enemies=enemies_hit,
                 warning=warning,
-                item_costs=item_costs,
+                cost_index=cost_index,
                 gold=gold,
             )
         )

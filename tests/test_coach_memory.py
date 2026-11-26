@@ -12,7 +12,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock
 
-from aidota.coach import Coach, make_system_prompt, COACH_TOOLS
+from aidota.coach import COACH_TOOLS, Coach, make_system_prompt
 from aidota.config import LlmConfig, PlayerProfile
 from aidota.dota_api import DotaApi
 from aidota.heroes import HeroCatalog
@@ -105,24 +105,31 @@ class TestCoachMemoryAndContext(unittest.TestCase):
 
         # 1 системное + 15 пар (user + assistant = 30) + 1 финальный user = 32 сообщения
         self.assertEqual(len(messages), 1 + 15 * 2 + 1)
+        self.assertEqual(messages[0]["content"], "Тестовый системный промпт")
         self.assertEqual(messages[1]["content"], "Вопрос 0")
         self.assertEqual(messages[2]["content"], "Ответ 0")
         self.assertEqual(messages[-2]["content"], "Ответ 14")
-        self.assertEqual(messages[-1]["content"], "Текущий вопрос")
+        self.assertIn("Текущий вопрос", messages[-1]["content"])
 
-    def test_dynamic_gsi_snapshot_injected_into_system_prompt(self) -> None:
-        """В каждый системный запрос динамически инжектируется снимок GSI и профиль игрока."""
+    def test_dynamic_gsi_snapshot_injected_into_dynamic_suffix(self) -> None:
+        """В KV-префиксе (system) нет тикающего GSI; динамический снимок и профиль идут в суффикс user-turn."""
         messages = self.coach._build_messages("Что мне собрать?", system="Ты тренер Астра.")
         system_content = messages[0]["content"]
+        final_user_content = messages[-1]["content"]
 
-        # Проверяем наличие ключевых полей GSI в системном сообщении
-        self.assertIn("GSI Live", system_content)
-        self.assertIn("Oracle", system_content)
-        self.assertIn("11:00", system_content)
-        self.assertIn("12:9", system_content)
-        self.assertIn("KDA 3/1/5", system_content)
-        self.assertIn("ПРОФИЛЬ ИГРОКА", system_content)
-        self.assertIn("Pos 5", system_content)
+        # Системное сообщение остаётся стабильным без тикающих полей GSI.
+        self.assertEqual(system_content, "Ты тренер Астра.")
+        self.assertNotIn("GSI Live", system_content)
+
+        # Проверяем наличие ключевых полей GSI и профиля в динамическом суффиксе финального запроса.
+        self.assertIn("GSI Live", final_user_content)
+        self.assertIn("Oracle", final_user_content)
+        self.assertIn("11:00", final_user_content)
+        self.assertIn("12:9", final_user_content)
+        self.assertIn("KDA 3/1/5", final_user_content)
+        self.assertIn("ПРОФИЛЬ ИГРОКА", final_user_content)
+        self.assertIn("Pos 5", final_user_content)
+        self.assertTrue(final_user_content.endswith("Что мне собрать?"))
 
     def test_personas_differentiation(self) -> None:
         """Раздельные системные промпты для Астры (аналитик 7000+ MMR) и Джарвиса (тактический ассистент)."""

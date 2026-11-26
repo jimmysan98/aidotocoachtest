@@ -86,7 +86,8 @@ class TestConfigPreset(unittest.TestCase):
         # Проверяем, что файл на диске также перезаписан
         disk_cfg = load_config(self.config_path)
         self.assertEqual(disk_cfg.gsi.port, 3000)
-        self.assertEqual(disk_cfg.llm.model, "openai/gpt-4o-mini")
+        self.assertEqual(disk_cfg.llm.model, "deepseek-chat")
+        self.assertEqual(disk_cfg.llm.base_url, "https://api.deepseek.com/v1")
 
     def test_audio_device_fallback(self) -> None:
         """Несуществующее аудиоустройство автоматически сбрасывается на None (системное по умолчанию)."""

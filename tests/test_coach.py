@@ -343,12 +343,14 @@ class CoachTests(unittest.TestCase):
         coach.remember("какой скилл качать?", "Качай первую способность.")
         msgs = coach._build_messages("а против кого играть?", "system prompt")
         self.assertEqual(msgs[0]["role"], "system")
+        self.assertEqual(msgs[0]["content"], "system prompt")
         self.assertEqual(msgs[1]["role"], "user")
         self.assertEqual(msgs[1]["content"], "что купить на старте?")
         self.assertEqual(msgs[2]["role"], "assistant")
         self.assertEqual(msgs[2]["content"], "Купи танго и цирклет.")
         self.assertEqual(msgs[-1]["role"], "user")
-        self.assertEqual(msgs[-1]["content"], "а против кого играть?")
+        self.assertIn("GSI Live", msgs[-1]["content"])
+        self.assertTrue(msgs[-1]["content"].endswith("а против кого играть?"))
 
     def test_counter_faceless_void_no_bkb(self):
         self.session.routes["/api/tags"] = RuntimeError("LLM offline")

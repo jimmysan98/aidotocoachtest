@@ -19,7 +19,6 @@ import asyncio
 import hashlib
 import io
 import logging
-import os
 import queue
 import random
 import re
@@ -28,10 +27,11 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import IntEnum
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .config import TtsConfig
 
@@ -46,6 +46,7 @@ class _QueueItem:
     ttl: float = field(compare=False)
     text: str = field(compare=False)
     done_event: threading.Event = field(compare=False)
+    generation_id: int = field(default=0, compare=False)
     is_filler: bool = field(default=False, compare=False)
     is_stop: bool = field(default=False, compare=False)
     success: bool = field(default=False, compare=False)
@@ -294,7 +295,11 @@ class HumanTTSManager:
         self._cache = SmartAudioCache(self.cache_dir)
         self._queue: queue.PriorityQueue = queue.PriorityQueue()
         self._seq = 0
+        self._generation_id = 0
         self._queue_lock = threading.Lock()
+        self.on_event: Callable[[str, dict[str, Any]], None] | None = None
+        self.on_speaking_changed: Callable[[bool], None] | None = None
+        self._active_deadline: float | None = None
 
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -349,11 +354,68 @@ class HumanTTSManager:
             log.debug("pygame.mixer недоступен (%s), используется sounddevice", exc)
 
     # ------------------------------------------------------------------ #
+    def current_generation(self) -> int:
+        with self._queue_lock:
+            return self._generation_id
+
+    def bump_generation(self) -> int:
+        """Увеличивает поколение речи и очищает устаревшую очередь."""
+        with self._queue_lock:
+            self._generation_id += 1
+            gen = self._generation_id
+            dropped = self._drain_stale_locked(min_generation=gen)
+        if dropped:
+            self._emit_event("purged_stale", generation_id=gen, count=dropped)
+        return gen
+
+    def _emit_event(self, kind: str, **payload: Any) -> None:
+        cb = self.on_event
+        if callable(cb):
+            try:
+                cb(kind, payload)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _notify_speaking(self, speaking: bool) -> None:
+        cb = self.on_speaking_changed
+        if callable(cb):
+            try:
+                cb(bool(speaking))
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _drain_stale_locked(self, *, min_generation: int) -> int:
+        """Очищает из очереди элементы ниже ``min_generation`` (под ``_queue_lock``)."""
+        kept: list[_QueueItem] = []
+        dropped = 0
+        while True:
+            try:
+                item = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            if not isinstance(item, _QueueItem) or item.is_stop:
+                kept.append(item)
+                continue
+            if item.generation_id < min_generation or item.priority > SpeechPriority.CRITICAL:
+                item.success = False
+                item.done_event.set()
+                dropped += 1
+            else:
+                kept.append(item)
+        for item in kept:
+            self._queue.put(item)
+        return dropped
+
     def barge_in(self) -> None:
-        """Мгновенно прерывает текущее воспроизведение (Level 1 CRITICAL)."""
+        """Мгновенно прерывает текущее воспроизведение и очищает устаревшие фразы (Level 1 CRITICAL)."""
         log.info("Barge-In: прерывание текущего аудиопотока")
+        with self._queue_lock:
+            self._generation_id += 1
+            gen = self._generation_id
+            dropped = self._drain_stale_locked(min_generation=gen)
         self._interrupt_event.set()
         self._stop_current_playback()
+        self._emit_event("barge_in", generation_id=gen, purged=dropped)
 
     def _stop_current_playback(self) -> None:
         """Останавливает звук на текущем бэкенде."""
@@ -385,8 +447,9 @@ class HumanTTSManager:
         timeout: float = 180.0,
         priority: int = SpeechPriority.NORMAL,
         ttl: float = 0.0,
+        generation_id: int | None = None,
     ) -> bool:
-        """Озвучивает текст с учётом приоритетов и нормализации.
+        """Озвучивает текст с учётом приоритетов, generation_id и нормализации.
 
         - priority=SpeechPriority.CRITICAL: немедленно прерывает текущую речь (Barge-In).
         - priority=SpeechPriority.TIMERS: TTL по умолчанию 5.0 секунд (устаревшие фразы отбрасываются).
@@ -399,9 +462,14 @@ class HumanTTSManager:
         if not norm:
             return False
 
-        # CRITICAL: немедленно глушим текущий звук
+        # CRITICAL: немедленно глушим текущий звук и очищаем старую очередь
         if priority == SpeechPriority.CRITICAL:
             self.barge_in()
+
+        eff_gen = self.current_generation() if generation_id is None else int(generation_id)
+        if eff_gen < self.current_generation():
+            self._emit_event("dropped_preempted", text=norm, generation_id=eff_gen)
+            return False
 
         # TIMERS: по умолчанию TTL = 5.0 секунд
         if priority == SpeechPriority.TIMERS and ttl <= 0.0:
@@ -421,12 +489,20 @@ class HumanTTSManager:
                         ttl=ttl,
                         wait=(wait if is_last else False),
                         timeout=timeout,
+                        generation_id=eff_gen,
                     )
                     if not ok:
                         last_ok = False
                 return last_ok
 
-        return self._enqueue_speech(norm, priority=priority, ttl=ttl, wait=wait, timeout=timeout)
+        return self._enqueue_speech(
+            norm,
+            priority=priority,
+            ttl=ttl,
+            wait=wait,
+            timeout=timeout,
+            generation_id=eff_gen,
+        )
 
     def _enqueue_speech(
         self,
@@ -436,10 +512,14 @@ class HumanTTSManager:
         wait: bool,
         timeout: float,
         is_filler: bool = False,
+        generation_id: int | None = None,
     ) -> bool:
         self._ensure_thread()
         done = threading.Event()
         with self._queue_lock:
+            eff_gen = self._generation_id if generation_id is None else int(generation_id)
+            if eff_gen < self._generation_id:
+                return False
             self._seq += 1
             item = _QueueItem(
                 priority=int(priority),
@@ -448,6 +528,7 @@ class HumanTTSManager:
                 ttl=float(ttl),
                 text=norm_text,
                 done_event=done,
+                generation_id=eff_gen,
                 is_filler=is_filler,
             )
             self._queue.put(item)
@@ -459,7 +540,12 @@ class HumanTTSManager:
             return getattr(item, "success", False)
         return not self._speak_failed and self._error is None
 
-    def play_filler(self, filler: str | None = None) -> bool:
+    def play_filler(
+        self,
+        filler: str | None = None,
+        *,
+        generation_id: int | None = None,
+    ) -> bool:
         """Проигрывает короткую фразу задумчивости (аудио-филлер) из кэша."""
         phrase = filler or random.choice(FILLERS)
         norm = normalize_for_speech(phrase)
@@ -471,19 +557,28 @@ class HumanTTSManager:
             wait=False,
             timeout=5.0,
             is_filler=True,
+            generation_id=generation_id,
         )
 
-    def start_filler_timer(self, delay: float = 0.8) -> Callable[[], None]:
+    def start_filler_timer(
+        self,
+        delay: float = 0.8,
+        *,
+        generation_id: int | None = None,
+    ) -> Callable[[], None]:
         """Запускает таймер аудио-филлера, если генерация LLM длится дольше delay секунд.
 
         Возвращает функцию отмены таймера.
         """
         cancelled = threading.Event()
+        start_gen = self.current_generation() if generation_id is None else int(generation_id)
 
         def _worker():
             if cancelled.wait(delay):
                 return
             if not self.enabled:
+                return
+            if self.current_generation() != start_gen:
                 return
             if not self.is_speaking():
                 self.play_filler()
@@ -537,6 +632,13 @@ class HumanTTSManager:
                 if not isinstance(item, _QueueItem):
                     continue
 
+                # Проверка актуальности поколения (Fork B / Preemption)
+                if item.generation_id < self.current_generation():
+                    self._emit_event("skipped_preempted", text=item.text, generation_id=item.generation_id)
+                    item.success = False
+                    item.done_event.set()
+                    continue
+
                 # Проверка TTL: если фраза устарела — отбрасываем
                 if item.ttl > 0.0:
                     age = time.time() - item.enqueued_at
@@ -547,20 +649,26 @@ class HumanTTSManager:
                             item.ttl,
                             item.text,
                         )
+                        self._emit_event("dropped_ttl_expired", text=item.text, age=age, ttl=item.ttl)
                         item.success = False
                         item.done_event.set()
                         continue
 
                 # Сбрасываем флаг прерывания перед началом озвучивания
                 self._interrupt_event.clear()
+                self._active_deadline = (item.enqueued_at + item.ttl) if item.ttl > 0.0 else None
+                self._active_generation = item.generation_id
                 self._is_speaking_event.set()
+                self._notify_speaking(True)
                 try:
                     self._say(item.text)
                     item.success = not self._speak_failed
                 except Exception:
                     item.success = False
                 finally:
+                    self._active_deadline = None
                     self._is_speaking_event.clear()
+                    self._notify_speaking(False)
                     item.done_event.set()
         finally:
             if pythoncom is not None:
@@ -885,6 +993,7 @@ class HumanTTSManager:
 
         # 2. Воспроизведение через sounddevice
         import sounddevice as sd
+
         from .audio import resolve_device
 
         dev_id, _ = resolve_device(self.config.output_device, kind="output")
@@ -919,6 +1028,20 @@ class HumanTTSManager:
         if self._interrupt_event.is_set() or self._stop.is_set():
             sd.stop()
 
+    def _play_if_timely(self, data: Any, samplerate: int) -> bool:
+        """Проверяет поколение и TTL после сетевого синтеза перед воспроизведением."""
+        if self._interrupt_event.is_set():
+            return False
+        active_gen = getattr(self, "_active_generation", None)
+        if active_gen is not None and int(active_gen) < self.current_generation():
+            return False
+        deadline = getattr(self, "_active_deadline", None)
+        if deadline is not None and time.time() > float(deadline):
+            self._emit_event("dropped_ttl_expired_after_synth", deadline=deadline)
+            return False
+        self._play_audio(data, samplerate)
+        return not self._interrupt_event.is_set()
+
     # ------------------------------------------------------------------ #
     def _say(self, text: str) -> None:
         """Синтезирует и озвучивает фразу с каскадным откатом и кэшированием."""
@@ -933,10 +1056,10 @@ class HumanTTSManager:
             cached = self._cache.get(text, voice, rate, pitch, provider=current_provider)
             if cached is not None:
                 data, sr = cached
-                self._play_audio(data, sr)
-                self._backend = "Smart Cache"
-                self._speak_failed = False
-                self._error = None
+                if self._play_if_timely(data, sr):
+                    self._backend = "Smart Cache"
+                    self._speak_failed = False
+                    self._error = None
                 return
 
         # 1. Основной режим: Edge-TTS (In-Memory Streaming)
@@ -946,10 +1069,10 @@ class HumanTTSManager:
                 data, samplerate = self.apply_rvc_if_enabled(data, samplerate)
                 if cache_enabled:
                     self._cache.put(text, voice, rate, pitch, data, samplerate, provider="edge")
-                self._play_audio(data, samplerate)
-                self._backend = f"Edge ({voice})"
-                self._speak_failed = False
-                self._error = None
+                if self._play_if_timely(data, samplerate):
+                    self._backend = f"Edge ({voice})"
+                    self._speak_failed = False
+                    self._error = None
                 return
             except Exception as exc:  # noqa: BLE001
                 log.warning("Синтез через edge-tts не удался (%s), переключаюсь на резервный Piper TTS…", exc)
@@ -962,10 +1085,10 @@ class HumanTTSManager:
                 data, samplerate = self.apply_rvc_if_enabled(data, samplerate)
                 if cache_enabled:
                     self._cache.put(text, voice, rate, pitch, data, samplerate, provider="piper")
-                self._play_audio(data, samplerate)
-                self._backend = "Piper (офлайн-нейросеть)"
-                self._speak_failed = False
-                self._error = None
+                if self._play_if_timely(data, samplerate):
+                    self._backend = "Piper (офлайн-нейросеть)"
+                    self._speak_failed = False
+                    self._error = None
                 return
             except Exception as exc:  # noqa: BLE001
                 log.warning("Синтез через Piper TTS не удался (%s), переключаюсь на системный SAPI…", exc)

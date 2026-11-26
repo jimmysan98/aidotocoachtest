@@ -19,9 +19,69 @@ from __future__ import annotations
 import functools
 import logging
 import re
-from typing import Any, Iterable
+import threading
+from collections.abc import Iterable
+from typing import Any
 
 log = logging.getLogger("aidota.meta_db")
+
+# Поля вечных механик героев (не зависят от баланса патча).
+ETERNAL_MECHANICS_FIELDS: tuple[str, ...] = (
+    "name",
+    "ru_name",
+    "attr",
+    "roles",
+    "tags",
+    "counters",
+    "countered_by",
+    "synergies",
+)
+
+_LIVE_META_LOCK = threading.RLock()
+_LIVE_META_PROVIDER: Any | None = None
+_LIVE_META_VERSION: int = 0
+
+
+def set_live_meta_provider(provider: Any | None) -> int:
+    """Подключает живой источник SWR-кэша меты (DotaApi) с приоритетом поверх статики."""
+    global _LIVE_META_PROVIDER, _LIVE_META_VERSION
+    with _LIVE_META_LOCK:
+        _LIVE_META_PROVIDER = provider
+        _LIVE_META_VERSION += 1
+        _clear_meta_caches_locked()
+        return _LIVE_META_VERSION
+
+
+def notify_live_meta_updated(version: int | None = None) -> int:
+    """Инвалидирует @lru_cache мета-базы после фонового обновления SWR-кэша."""
+    global _LIVE_META_VERSION
+    with _LIVE_META_LOCK:
+        if version is not None and int(version) > _LIVE_META_VERSION:
+            _LIVE_META_VERSION = int(version)
+        else:
+            _LIVE_META_VERSION += 1
+        _clear_meta_caches_locked()
+        return _LIVE_META_VERSION
+
+
+def live_cache_version() -> int:
+    """Текущая версия живого кэша (автоматически сбрасывает lru_cache при сдвиге)."""
+    global _LIVE_META_VERSION
+    with _LIVE_META_LOCK:
+        provider = _LIVE_META_PROVIDER
+        if provider is not None:
+            pver = getattr(provider, "cache_version", None)
+            if isinstance(pver, int) and pver > _LIVE_META_VERSION:
+                _LIVE_META_VERSION = pver
+                _clear_meta_caches_locked()
+        return _LIVE_META_VERSION
+
+
+def _clear_meta_caches_locked() -> None:
+    for fn_name in ("_recommend_picks_cached", "compare_hero_matchup"):
+        fn = globals().get(fn_name)
+        if fn is not None and hasattr(fn, "cache_clear"):
+            fn.cache_clear()
 
 # Маппинг позиций
 ROLE_NAMES: dict[int, str] = {
@@ -2714,8 +2774,106 @@ def _enemy_meta_list(enemy_heroes: Any) -> list[dict[str, Any]]:
     return result
 
 
-def get_hero_build(hero_name: str, role: int = 1, enemy_heroes: list[str] | None = None) -> dict[str, Any]:
-    """Возвращает детальный билд на героя с учетом позиции и вражеских угроз."""
+def _live_build_overlay(
+    hero_name: str,
+    live_popularity: dict[str, dict[str, int]] | None = None,
+    patch: str | None = None,
+) -> tuple[dict[str, list[str]], str]:
+    """Читает популярные предметы из живого SWR-кэша (без сетевых запросов)."""
+    with _LIVE_META_LOCK:
+        provider = _LIVE_META_PROVIDER
+
+    eff_patch = str(patch or "").strip()
+    if not eff_patch and provider is not None:
+        eff_patch = str(getattr(provider, "current_patch", "") or "").strip()
+
+    pop = live_popularity
+    if pop is None and provider is not None:
+        hero_id = _live_hero_numeric_id(provider, hero_name)
+        if hero_id is not None:
+            sync = getattr(provider, "sync_service", None)
+            if sync is not None and hasattr(sync, "get_popularity"):
+                pop_data, _ = sync.get_popularity(hero_id)
+                pop = pop_data
+            elif callable(getattr(provider, "item_popularity", None)):
+                try:
+                    pop = provider.item_popularity(hero_id)
+                except Exception:  # noqa: BLE001
+                    pop = None
+    if not isinstance(pop, dict) or not pop:
+        return {}, eff_patch
+
+    top_fn = getattr(provider, "top_items", None) if provider is not None else None
+    out: dict[str, list[str]] = {}
+    for phase in ("start_game_items", "early_game_items", "mid_game_items", "late_game_items"):
+        if callable(top_fn):
+            names = [str(x).strip() for x in (top_fn(pop, phase, 4) or []) if str(x).strip()]
+        else:
+            raw_phase = pop.get(phase) or {}
+            ordered = sorted(raw_phase.items(), key=lambda kv: kv[1], reverse=True)[:4]
+            names = [str(k).replace("_", " ").strip().title() for k, _ in ordered if k]
+        if names:
+            out[phase] = names
+    return out, eff_patch
+
+
+def _live_hero_numeric_id(provider: Any, hero_name: str) -> int | None:
+    norm_target = _norm_hero_key(hero_name)
+    if not norm_target:
+        return None
+    heroes = getattr(provider, "heroes", None) or []
+    for h in heroes:
+        if not isinstance(h, dict):
+            continue
+        hid = h.get("id")
+        if not isinstance(hid, int):
+            continue
+        npc = _norm_hero_key(str(h.get("name") or "").replace("npc_dota_hero_", ""))
+        loc = _norm_hero_key(str(h.get("localized_name") or ""))
+        if norm_target in (npc, loc):
+            return hid
+    return None
+
+
+def _live_hero_winrates() -> tuple[dict[str, tuple[float, int]], str]:
+    """Извлекает (winrate_pct, games) только если прогрет живой SWR-кэш OpenDota."""
+    with _LIVE_META_LOCK:
+        provider = _LIVE_META_PROVIDER
+    if provider is None:
+        return {}, ""
+    sync = getattr(provider, "sync_service", None)
+    # Статичный bundled data/heroes.json не считается живым патч-кэшем.
+    if sync is not None and getattr(sync, "bulk_fetched_at", None) is None:
+        return {}, ""
+    patch_str = str(getattr(provider, "current_patch", "") or "").strip()
+    heroes = getattr(provider, "heroes", None) or []
+    result: dict[str, tuple[float, int]] = {}
+    for h in heroes:
+        if not isinstance(h, dict):
+            continue
+        short = str(h.get("name") or "").replace("npc_dota_hero_", "").lower()
+        if not short:
+            continue
+        pro_p = int(h.get("pro_pick") or 0)
+        pro_w = int(h.get("pro_win") or 0)
+        pub_p = int(h.get("pub_pick") or 0)
+        pub_w = int(h.get("pub_win") or 0)
+        if pro_p >= 15:
+            result[short] = (pro_w / pro_p * 100.0, pro_p)
+        elif pub_p >= 100:
+            result[short] = (pub_w / pub_p * 100.0, pub_p)
+    return result, patch_str
+
+
+def get_hero_build(
+    hero_name: str,
+    role: int = 1,
+    enemy_heroes: list[str] | None = None,
+    *,
+    live_popularity: dict[str, dict[str, int]] | None = None,
+    patch: str | None = None,
+) -> dict[str, Any]:
+    """Возвращает билд: вечные механики героя + приоритетный оверлей живого патч-кэша."""
     role_norm = max(1, min(5, int(role or 1)))
     meta = get_hero_meta_entry(hero_name)
 
@@ -2741,6 +2899,52 @@ def get_hero_build(hero_name: str, role: int = 1, enemy_heroes: list[str] | None
         result["hero_ru_name"] = clean_name
         result["role"] = role_norm
         result["role_name"] = ROLE_NAMES.get(role_norm, f"Позиция {role_norm}")
+
+    # Приоритетный живой оверлей сборки (патч-зависимая мета OpenDota SWR).
+    live_items, eff_patch = _live_build_overlay(
+        str(result.get("hero_name") or hero_name),
+        live_popularity=live_popularity,
+        patch=patch,
+    )
+    if live_items:
+        result["build_source"] = "live_swr"
+        result["patch"] = eff_patch
+        live_start = live_items.get("start_game_items") or []
+        if live_start:
+            seen_s = {s.lower() for s in live_start}
+            merged_s = list(live_start) + [s for s in result["starting"] if str(s).lower() not in seen_s]
+            result["starting"] = merged_s[:5]
+        live_early = live_items.get("early_game_items") or []
+        if live_early:
+            seen_e = {s.lower() for s in live_early}
+            merged_e = list(live_early) + [s for s in result["early_game"] if str(s).lower() not in seen_e]
+            result["early_game"] = merged_e[:5]
+        live_mid = (live_items.get("mid_game_items") or [])[:2] + (live_items.get("late_game_items") or [])[:1]
+        if live_mid:
+            patch_label = f"патч {eff_patch}" if eff_patch else "актуальная мета"
+            existing_core = {str(c.get("item", "")).lower(): c for c in result["core"] if isinstance(c, dict)}
+            new_core: list[dict[str, Any]] = []
+            added_names: set[str] = set()
+            for name in live_mid:
+                low = name.lower()
+                if low in added_names:
+                    continue
+                added_names.add(low)
+                if low in existing_core:
+                    new_core.append(dict(existing_core[low]))
+                else:
+                    new_core.append(
+                        {"item": name, "timing": patch_label, "tip": f"Популярный выбор ({patch_label})."}
+                    )
+            for c in result["core"]:
+                low = str(c.get("item", "")).lower()
+                if low not in added_names:
+                    new_core.append(dict(c))
+                    added_names.add(low)
+            result["core"] = new_core[:5]
+    else:
+        result["build_source"] = "static"
+        result["patch"] = eff_patch
 
     # Динамическая адаптация ситуативных предметов под вражеских героев.
     if enemy_heroes:
@@ -2855,7 +3059,14 @@ def recommend_picks(
     enemy_ids = tuple(_resolve_hero_ids(enemy_heroes))
     ally_ids = tuple(_resolve_hero_ids(ally_heroes))
     banned_ids = tuple(_resolve_hero_ids(banned_heroes))
-    return _recommend_picks_cached(enemy_ids, ally_ids, role_norm, count, banned_ids)
+    return _recommend_picks_cached(
+        enemy_ids,
+        ally_ids,
+        role_norm,
+        count,
+        banned_ids,
+        live_cache_version(),
+    )
 
 
 @functools.lru_cache(maxsize=128)
@@ -2865,9 +3076,11 @@ def _recommend_picks_cached(
     role_norm: int,
     count: int,
     banned_ids: tuple[str, ...],
+    live_version: int = 0,
 ) -> list[dict[str, Any]]:
     excluded = set(enemy_ids) | set(ally_ids) | set(banned_ids)
     needs = _draft_needs(list(ally_ids))
+    live_wr, live_patch = _live_hero_winrates()
 
     candidates: list[tuple[float, dict[str, Any]]] = []
 
@@ -2929,6 +3142,11 @@ def _recommend_picks_cached(
             META_HEROES_DB[cid]["name"] for cid in danger_ids[:3] if cid in META_HEROES_DB
         ]
 
+        wr_entry = live_wr.get(hero_id)
+        if wr_entry is not None:
+            wr_pct, _games = wr_entry
+            score += max(-5.0, min(5.0, (wr_pct - 50.0) * 0.5))
+
         matchup_pct = int(max(1, min(99, round(score))))
         build_info = (meta.get("builds") or {}).get(role_norm, {})
         core_preview = [str(item.get("item", "")) for item in (build_info.get("core") or [])[:3]]
@@ -2948,8 +3166,72 @@ def _recommend_picks_cached(
             "advice": build_info.get("lane_tips", "Играйте по таймингам ключевых артефактов."),
             "tags": sorted(candidate_tags),
             "countered_by_preview": countered_by_preview,
+            "meta_source": "live_swr" if wr_entry is not None else "static",
+            "patch": live_patch,
+            "patch_winrate": round(wr_entry[0], 1) if wr_entry is not None else None,
         }))
 
     # Сортировка по «сырому» скору (до округления), иначе топ упирается в 99%.
     candidates.sort(key=lambda pair: (-pair[0], pair[1]["name"]))
     return [payload for _, payload in candidates[:count]]
+
+
+@functools.lru_cache(maxsize=256)
+def compare_hero_matchup(hero_a: str, hero_b: str, role_a: int = 1) -> dict[str, Any] | None:
+    """Сравнивает двух героев в матчапе: преимущество, контр-предметы, угрозы и план на линию."""
+    meta_a = get_hero_meta_entry(hero_a)
+    meta_b = get_hero_meta_entry(hero_b)
+    if not meta_a or not meta_b:
+        return None
+    try:
+        role_norm = max(1, min(5, int(role_a or 1)))
+    except (TypeError, ValueError):
+        role_norm = 1
+
+    id_a, id_b = meta_a["id"], meta_b["id"]
+    a_counters = meta_a.get("_counters_set") or set(meta_a.get("counters") or [])
+    b_counters = meta_b.get("_counters_set") or set(meta_b.get("counters") or [])
+    a_countered = meta_a.get("_countered_by_set") or set(meta_a.get("countered_by") or [])
+    synergies = meta_a.get("_synergies_set") or set(meta_a.get("synergies") or [])
+
+    a_favored = id_b in a_counters
+    b_favored = id_a in b_counters or id_b in a_countered
+    has_synergy = id_b in synergies
+
+    tags_b = [tag for tag in (meta_b.get("tags") or []) if tag in TAG_COUNTER_ITEMS]
+    counter_items = _counter_items_for_tags(tags_b, limit=4)
+    threat_bits = [TAG_THREAT_PHRASES[t] for t in tags_b[:2] if t in TAG_THREAT_PHRASES]
+    b_threat_text = ", ".join(threat_bits) or "сильные базовые статы"
+
+    tags_a = [tag for tag in (meta_a.get("tags") or []) if tag in TAG_COUNTER_ITEMS]
+    a_strength = ", ".join(TAG_THREAT_PHRASES[t] for t in tags_a[:2] if t in TAG_THREAT_PHRASES) or "темп и урон"
+
+    if a_favored and not b_favored:
+        verdict = f"{meta_a['ru_name']} имеет явное преимущество против {meta_b['ru_name']}"
+    elif b_favored and not a_favored:
+        verdict = f"{meta_b['ru_name']} неудобен для {meta_a['ru_name']} — играй аккуратнее"
+    elif has_synergy:
+        verdict = f"{meta_a['ru_name']} и {meta_b['ru_name']} отлично синергируют в одной команде"
+    else:
+        verdict = f"Ровный матчап {meta_a['ru_name']} против {meta_b['ru_name']} — всё решают слоты и позиционка"
+
+    lane_tip = get_lane_tips(meta_a["name"], role=role_norm, enemy_heroes=[meta_b["name"]])
+    summary = (
+        f"{verdict}. У {meta_b['ru_name']} опасно: {b_threat_text}; "
+        + (f"рекомендуемые контр-слоты: {', '.join(counter_items[:3])}. " if counter_items else "")
+        + f"На линии: {lane_tip}"
+    )
+
+    return {
+        "hero_a": meta_a["ru_name"],
+        "hero_b": meta_b["ru_name"],
+        "a_favored": a_favored,
+        "b_favored": b_favored,
+        "synergy": has_synergy,
+        "counter_items": counter_items,
+        "b_threats": b_threat_text,
+        "a_strengths": a_strength,
+        "verdict": verdict,
+        "lane_tip": lane_tip,
+        "summary": summary.strip(),
+    }

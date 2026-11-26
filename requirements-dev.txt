@@ -5,3 +5,7 @@
 
 pyinstaller>=6.0.0
 pyinstaller-hooks-contrib>=2024.0
+ruff>=0.15.0
+mypy>=1.15.0
+pytest>=8.0.0
+pytest-timeout>=2.3.0

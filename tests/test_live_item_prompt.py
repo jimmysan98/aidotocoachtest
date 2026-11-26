@@ -17,7 +17,7 @@ import copy
 import json
 import unittest
 
-from aidota.coach import Coach, _ENEMY_ITEM_HINTS
+from aidota.coach import _ENEMY_ITEM_HINTS, Coach
 from aidota.coach_brain import build_brief, render_brief
 from aidota.config import LlmConfig, PlayerProfile
 from aidota.dota_api import DotaApi
@@ -411,6 +411,7 @@ class CoachDynamicContextTests(unittest.TestCase):
 
             def fake_chat(prompt, system=None, **kwargs):
                 captured["system"] = system
+                captured["dynamic_suffix"] = kwargs.get("dynamic_suffix", "")
                 return "Бери Ghost Scepter или Eul, а не один BKB."
 
             coach.chat = fake_chat  # type: ignore[method-assign]
@@ -418,11 +419,13 @@ class CoachDynamicContextTests(unittest.TestCase):
         finally:
             remove_temp_dir(tmp)
         system = captured.get("system") or ""
-        self.assertIn("ЗНАНИЯ ПО ВОПРОСУ", system)
-        self.assertIn("Juggernaut", system)
-        self.assertIn("BKB не спасает", system)
-        self.assertIn("Omnislash", system)
-        self.assertIn("НЕ блокирует", system)
+        dynamic_suffix = captured.get("dynamic_suffix") or ""
+        self.assertNotIn("ЗНАНИЯ ПО ВОПРОСУ", system)
+        self.assertIn("ЗНАНИЯ ПО ВОПРОСУ", dynamic_suffix)
+        self.assertIn("Juggernaut", dynamic_suffix)
+        self.assertIn("BKB не спасает", dynamic_suffix)
+        self.assertIn("Omnislash", dynamic_suffix)
+        self.assertIn("НЕ блокирует", dynamic_suffix)
 
 
 if __name__ == "__main__":

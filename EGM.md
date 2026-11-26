@@ -1,0 +1,29 @@
+# AIDOTA Blueprint
+
+## System Overview
+AIDOTA is a hybrid Python + Rust real-time Dota 2 coaching and HUD companion designed to run locally on Windows. The Python runtime (`./aidota/`) orchestrates CLI/GUI launchers, Game State Integration (GSI) ingestion, OpenDota snapshots and match history, speech input (Vosk / Groq Whisper), global hotkeys, OpenCV cursor recognition, deterministic coaching logic/meta lookups, multi-provider LLM tool-calling with persistent memory, and prioritized TTS playback. A companion Rust crate (`./aidota-core/`) provides both an optional C-ABI native library (`aidota_rust.dll`, loaded defensively via `aidota/rust_bridge.py`) and an experimental dual-port Axum HTTP/WebSocket server (`aidota-core`), while `./tools/` houses standalone brand-asset, microphone-diagnostic, and CI test-runner utilities.
+
+## Local Interface & Invariants
+- `[main.py:build_parser]`, `[main.py:main]` — Root CLI entrypoint routing `--doctor`, `--online`, `--fetch-icons`, `--update-data`, `--install-gsi`, `--add-to-steam`, `--cli`, `--text`, `--ptt`/`--no-ptt`, `--ptt-key`, `--no-tts`, `--no-overlay`, and `--no-gsi`. Always reconfigures `stdout`/`stderr` to UTF-8, changes working directory to `PROJECT_ROOT`, enforces a Win32 single-instance mutex (`Global\AIDOTA_SingleInstance_Mutex`) unless `--cli`/`--text`, and launches either `aidota.gui_app.run_gui_app` or console `aidota.app.Assistant`.
+- `[build_exe.py:app_version]`, `[build_exe.py:find_iscc]`, `[build_exe.py:copy_dist_extras]`, `[build_exe.py:build_installer]`, `[build_exe.py:main]` — PyInstaller (`AIDOTA.spec`) + Inno Setup 6 (`installer.iss`) packager. Bundles `EXTRA_DIRS` (`data`, `hero_icons`, `assets`), `EXTRA_FILES` (`default_preset.json`, `config.example.json`, `LICENSE`, `CHANGELOG.md`, `README.md`, `installer_notes.txt`, `THIRD_PARTY_NOTICES.md`), and optional `vosk-model-small-ru-0.22/` into `dist/AIDOTA`, while explicitly deleting `FORBIDDEN_IN_DIST` (`config.json`, `installer.iss`, `AIDOTA.spec`, `build_exe.py`) and leftover cache/log files.
+- `[clean_project.py:clean_caches]`, `[clean_project.py:clean_build_artifacts]`, `[clean_project.py:optimize_hero_icons]`, `[clean_project.py:main]` — Workspace cleaner and asset optimizer removing `__pycache__`, `.pytest_cache`, `.cache`, `build`, `*.pyc`/`*.pyo`, and `logs/*.log` (while skipping `.venv/`, `.git/`, and `dist/` by default), and quantizing `hero_icons/*.png` to 256-color palette PNGs via Pillow.
+
+## Subdirectories & System Boundaries
+- `aidota`: [./aidota/EGM.md](./aidota/EGM.md) - Core Python coaching runtime, GSI receiver (`gsi.py`), OpenDota API client (`dota_api.py`), meta database (`meta_db.py`), item advice (`live_advice.py`), LLM prompt/sanitization (`coach_brain.py`), coach orchestration (`coach.py`), long-term memory (`coach_memory.py`), Rust FFI bridge (`rust_bridge.py`), WebView bridge (`web_app.py`), modular skills ([./aidota/skills/EGM.md](./aidota/skills/EGM.md)), and SPA UI ([./aidota/web/EGM.md](./aidota/web/EGM.md)).
+- `aidota-core`: [./aidota-core/EGM.md](./aidota-core/EGM.md) - Rust `v1.3.0` engine crate (`aidota_rust` cdylib/rlib + `aidota-core` binary) spanning [./aidota-core/src/EGM.md](./aidota-core/src/EGM.md) (`state.rs`, `lib.rs`, `main.rs`) and domain submodules `advice`, `gsi`, `timers`, and `web`.
+- `tools`: [./tools/EGM.md](./tools/EGM.md) - Standalone developer/CI scripts (`generate_logo.py`, `mic_test.py`, `run_tests.py`).
+
+## Global Invariants
+- **Python vs. Rust Dual-Implementation Drift Boundary**: Macro timers and counter-item recommendations exist independently in both Python (`aidota/skills/macro_timer.py`, `aidota/skills/cooldown_tracker.py`, `aidota/context.py:MidTimersTracker`, `aidota/live_advice.py`) and Rust (`aidota-core/src/timers/macro_timer.rs`, `aidota-core/src/advice/counter_items.rs`). Neither side currently enforces shared schema/constants, and `aidota-core/src/state.rs:AppState::update_gsi` passes an empty enemy list (`&[]`) to `AdviceEngine::build_advice`.
+- **Fail-Safe Native FFI Loading**: `aidota/rust_bridge.py` suppresses Windows Smart App Control / Bad Image modal dialogs via `SetErrorMode`/`SetThreadErrorMode` around `ctypes.CDLL`, caches a single load attempt per process, and falls back to pure Python when `aidota_rust.dll` is absent, blocked, or disabled via `AIDOTA_DISABLE_RUST`.
+- **Default Configuration Parity**: `default_preset.json` and `config.example.json` remain synchronized schema baselines; `config.json` contains user-local state and must never be shipped in `dist/` or committed.
+- **No Unmocked Network in Tests**: Python unit tests mock HTTP/LLM/audio I/O offline; running Python GSI and Web servers binds loopback `127.0.0.1` (`:3000` GSI, `:8080` Rust web UI).
+
+## Global Side Effects
+- Mutates local workspace files during runtime (`config.json`, `data/heroes.json`, `data/items.json`, `data/player_profile.json`, `coach_memory.json`, `hero_icons/`, `.cache/`, `logs/`), packaging (`dist/`, `AIDOTA_Setup.exe`), and Steam integration (`gamestate_integration_aidota.cfg`, `localconfig.vdf`, `shortcuts.vdf`, Windows `HKCU\...\Run` registry).
+- Opens local loopback HTTP/WebSocket ports (`127.0.0.1:3000`, `127.0.0.1:8080`), desktop GUI loops (`pywebview` / CustomTkinter / Tkinter overlay / Win32 tray), Win32 low-level keyboard/mouse hooks, audio capture/playback streams, and outbound HTTPS connections to OpenDota, Steam CDN, Edge-TTS, Groq, Vosk mirrors, and configured LLM providers.
+
+## System Verification
+- Python suite (CI runner): `.venv\Scripts\python.exe tools/run_tests.py`
+- Python suite (direct unittest): `.venv\Scripts\python.exe -m unittest discover -s tests`
+- Rust crate tests (from `aidota-core/`): `cargo test` *(note: currently blocked on hosts with Windows Application Control Policy `os error 4551` when executing Cargo build scripts)*

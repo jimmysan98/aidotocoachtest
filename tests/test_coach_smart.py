@@ -416,6 +416,7 @@ class CoachIntegrationTests(unittest.TestCase):
         def fake_chat(prompt, system=None, **kwargs):
             captured["prompt"] = prompt
             captured["system"] = system
+            captured["dynamic_suffix"] = kwargs.get("dynamic_suffix", "")
             captured["kwargs"] = kwargs
             return "Купи Linken's Sphere против Пуджа."
 
@@ -423,8 +424,10 @@ class CoachIntegrationTests(unittest.TestCase):
         answer = coach.coach_chat("что купить против пуджа")
         self.assertIn("Linken", answer)
         self.assertLessEqual(float(captured["kwargs"]["temperature"]), 0.35)
-        self.assertIn("ТАКТИЧЕСКИЙ БРИФ", captured["system"])
-        self.assertIn("ЗНАНИЯ ПО ВОПРОСУ", captured["system"])
+        self.assertNotIn("ТАКТИЧЕСКИЙ БРИФ", captured["system"])
+        self.assertNotIn("GSI Live", captured["system"])
+        self.assertIn("ТАКТИЧЕСКИЙ БРИФ", captured["dynamic_suffix"])
+        self.assertIn("ЗНАНИЯ ПО ВОПРОСУ", captured["dynamic_suffix"])
         self.assertIn("пуджа", captured["prompt"].lower())
 
     def test_mentioned_enemy_hero_routes_counter_knowledge(self):
@@ -433,12 +436,13 @@ class CoachIntegrationTests(unittest.TestCase):
 
         def fake_chat(prompt, system=None, **kwargs):
             captured["system"] = system
+            captured["dynamic_suffix"] = kwargs.get("dynamic_suffix", "")
             return "Бери Linken's Sphere и Lotus Orb против Пуджа."
 
         coach.chat = fake_chat  # type: ignore[method-assign]
         coach.coach_chat("что собрать против пуджа")
-        self.assertIn("Пудж", captured["system"])
-        self.assertIn("Linken", captured["system"])
+        self.assertIn("Пудж", captured["dynamic_suffix"])
+        self.assertIn("Linken", captured["dynamic_suffix"])
 
     def test_mentioned_hero_routes_skill_knowledge(self):
         coach = self.make_coach()
@@ -446,11 +450,12 @@ class CoachIntegrationTests(unittest.TestCase):
 
         def fake_chat(prompt, system=None, **kwargs):
             captured["system"] = system
+            captured["dynamic_suffix"] = kwargs.get("dynamic_suffix", "")
             return "Максим Meat Hook."
 
         coach.chat = fake_chat  # type: ignore[method-assign]
         coach.coach_chat("что качать на пудже")
-        self.assertIn("Прокачка", captured["system"])
+        self.assertIn("Прокачка", captured["dynamic_suffix"])
 
     def test_coach_chat_sanitizes_answer(self):
         coach = self.make_coach()

@@ -254,9 +254,13 @@ class CoachCase(unittest.TestCase):
         captured: dict = {"calls": []}
 
         def fake_chat(prompt, system=None, **kwargs):
-            captured["calls"].append({"prompt": prompt, "system": system, "kwargs": kwargs})
+            dyn = kwargs.get("dynamic_suffix", "")
+            captured["calls"].append(
+                {"prompt": prompt, "system": system, "dynamic_suffix": dyn, "kwargs": kwargs}
+            )
             captured["prompt"] = prompt
             captured["system"] = system
+            captured["dynamic_suffix"] = dyn
             captured["kwargs"] = kwargs
             return answer
 
@@ -407,17 +411,20 @@ class TestCoachChatIntelligence(CoachCase):
         answer = coach.coach_chat("что купить на старте")
 
         system = captured["system"]
-        self.assertIn("ТАКТИЧЕСКИЙ БРИФ", system)
-        self.assertIn("ЗНАНИЯ ПО ВОПРОСУ:", system)
-        self.assertIn("ПРОФИЛЬ ИГРОКА", system)
+        dynamic_suffix = captured["dynamic_suffix"]
+        self.assertNotIn("ТАКТИЧЕСКИЙ БРИФ", system)
+        self.assertNotIn("GSI Live", system)
+        self.assertIn("ТАКТИЧЕСКИЙ БРИФ", dynamic_suffix)
+        self.assertIn("ЗНАНИЯ ПО ВОПРОСУ:", dynamic_suffix)
+        self.assertIn("ПРОФИЛЬ ИГРОКА", dynamic_suffix)
         # Знания под текущего героя (Anti-Mage из GSI) — не пустая заготовка.
-        self.assertIn("Эталонный билд", system)
-        self.assertIn("старт", system)
+        self.assertIn("Эталонный билд", dynamic_suffix)
+        self.assertIn("старт", dynamic_suffix)
         self.assertIn("что купить на старте", captured["prompt"].lower())
         self.assertEqual(answer, "Купи Battle Fury и держи темп фарма.")
 
     def test_system_prompt_contains_grounded_item_advice(self):
-        """Живой совет по закупке с причиной и врагом попадает в системный промпт."""
+        """Живой совет по закупке с причиной и врагом попадает в динамический суффикс."""
         payload = gsi_payload()
         payload["items"] = payload["hero"].pop("items")  # top-level, как в реальном GSI
         payload["draft"]["team3"]["pick_ids"] = [44]  # Phantom Assassin — враг
@@ -431,10 +438,10 @@ class TestCoachChatIntelligence(CoachCase):
         captured = self.install_chat(coach, "Бери Monkey King Bar против Фантомки.")
         coach.coach_chat("что купить против фантомки")
 
-        system = captured["system"]
-        self.assertIn("Закупка", system, "в промпте должен быть живой совет по закупке")
-        self.assertIn("Phantom Assassin", system, "причина совета привязана к врагу")
-        self.assertIn("4050", system, "цена предмета из api.item_costs()")
+        dynamic_suffix = captured["dynamic_suffix"]
+        self.assertIn("Закупка", dynamic_suffix, "в суффиксе должен быть живой совет по закупке")
+        self.assertIn("Phantom Assassin", dynamic_suffix, "причина совета привязана к врагу")
+        self.assertIn("4050", dynamic_suffix, "цена предмета из api.item_costs()")
 
     def test_voice_answer_is_sanitized(self):
         coach = self.make_coach()
@@ -459,18 +466,18 @@ class TestCoachChatIntelligence(CoachCase):
         captured = self.install_chat(coach, "Бери Monkey King Bar и Silver Edge против Фантомки.")
         coach.coach_chat("что собрать против фантомки")
 
-        system = captured["system"]
-        self.assertIn("Фантомка", system, "знания должны идти по упомянутой Фантомке")
-        self.assertIn("Monkey King Bar", system)
+        dynamic_suffix = captured["dynamic_suffix"]
+        self.assertIn("Фантомка", dynamic_suffix, "знания должны идти по упомянутой Фантомке")
+        self.assertIn("Monkey King Bar", dynamic_suffix)
         # Врагов из текущего драфта тоже держим в контексте.
-        self.assertIn("Угрозы", system)
+        self.assertIn("Угрозы", dynamic_suffix)
 
     def test_mentioned_hero_routes_skill_knowledge(self):
         coach = self.make_coach()
         captured = self.install_chat(coach, "Макси Meat Hook и качай Rot вторым.")
         coach.coach_chat("что качать на пудже")
-        self.assertIn("Прокачка", captured["system"])
-        self.assertIn("Meat Hook", captured["system"])
+        self.assertIn("Прокачка", captured["dynamic_suffix"])
+        self.assertIn("Meat Hook", captured["dynamic_suffix"])
 
     def test_llm_refusal_falls_back_to_knowledge_base(self):
         coach = self.make_coach()
@@ -492,17 +499,17 @@ class TestCoachChatIntelligence(CoachCase):
         self.assertNotIn("Monkey King Bar", answer)
         self.assertNotIn("Spirit Vessel", answer)
         self.assertEqual(len(captured["calls"]), 2)
-        # Даже без GSI бриф и профиль остаются в промпте.
-        self.assertIn("ТАКТИЧЕСКИЙ БРИФ", captured["system"])
-        self.assertIn("Матч не запущен", captured["system"])
+        # Даже без GSI бриф и профиль остаются в динамическом суффиксе.
+        self.assertIn("ТАКТИЧЕСКИЙ БРИФ", captured["dynamic_suffix"])
+        self.assertIn("Матч не запущен", captured["dynamic_suffix"])
 
     def test_works_without_gsi(self):
         coach = self.make_coach(payload=None)
         captured = self.install_chat(coach, "Купи BKB и держи линию.")
         answer = coach.coach_chat("что купить")
         self.assertEqual(answer, "Купи BKB и держи линию.")
-        self.assertIn("ТАКТИЧЕСКИЙ БРИФ", captured["system"])
-        self.assertIn("ПРОФИЛЬ ИГРОКА", captured["system"])
+        self.assertIn("ТАКТИЧЕСКИЙ БРИФ", captured["dynamic_suffix"])
+        self.assertIn("ПРОФИЛЬ ИГРОКА", captured["dynamic_suffix"])
 
 
 # --------------------------------------------------------------------------- #
@@ -611,7 +618,7 @@ class TestCoachMemoryPersistence(CoachCase):
 
         captured = self.install_chat(restored, "Держи линию и фарми.")
         restored.coach_chat("что дальше")
-        self.assertIn("Купи Tango и ветки", captured["system"], "память должна попасть в промпт")
+        self.assertIn("Купи Tango и ветки", captured["dynamic_suffix"], "память должна попасть в промпт")
 
     def test_match_lesson_and_profile_survive_restart(self):
         raw_match = {

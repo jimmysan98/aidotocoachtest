@@ -18,6 +18,7 @@ vosk-model-ru-0.22 (~2.5 ГБ) НЕ копируется — её можно с�
 
 from __future__ import annotations
 
+import argparse
 import shutil
 import subprocess
 import sys
@@ -26,8 +27,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 DIST = ROOT / "dist" / "AIDOTA"
 
-# Что нужно положить рядом с exe (всё, кроме модели Vosk).
-EXTRA_DIRS = ("data", "hero_icons", "assets")
+# Что нужно положить рядом с exe (всё, кроме data/ и модели Vosk).
+EXTRA_DIRS = ("hero_icons", "assets")
+# Явный allowlist read-only файлов для dist/AIDOTA/data/:
+# личные coach_memory.json и player_profile.json сюда никогда не попадают.
+ALLOWED_DATA_FILES: tuple[str, ...] = ("heroes.json", "items.json")
 EXTRA_FILES = (
     "default_preset.json",
     "config.example.json",
@@ -40,6 +44,7 @@ EXTRA_FILES = (
 
 # Файлы, которые ни при каких условиях не должны попасть в дистрибутив.
 FORBIDDEN_IN_DIST = ("config.json", "installer.iss", "AIDOTA.spec", "build_exe.py")
+FORBIDDEN_IN_DIST_DATA = ("coach_memory.json", "player_profile.json")
 
 ISCC_CANDIDATES = (
     Path.home() / "AppData" / "Local" / "Programs" / "Inno Setup 6" / "ISCC.exe",
@@ -84,6 +89,22 @@ def copy_dist_extras(version: str) -> bool:
         if src.is_dir():
             print(f"  + {name}/")
             shutil.copytree(src, DIST / name, dirs_exist_ok=True)
+    # Копируем data/ строго по allowlist (никаких coach_memory.json / player_profile.json).
+    dist_data = DIST / "data"
+    dist_data.mkdir(parents=True, exist_ok=True)
+    allowed_set = set(ALLOWED_DATA_FILES)
+    for existing in list(dist_data.glob("*")):
+        if existing.name not in allowed_set:
+            if existing.is_file():
+                existing.unlink()
+            elif existing.is_dir():
+                shutil.rmtree(existing, ignore_errors=True)
+    src_data = ROOT / "data"
+    for fname in ALLOWED_DATA_FILES:
+        src_file = src_data / fname
+        if src_file.is_file():
+            print(f"  + data/{fname}")
+            shutil.copy2(src_file, dist_data / fname)
     for name in EXTRA_FILES:
         src = ROOT / name
         if src.is_file():
@@ -92,22 +113,28 @@ def copy_dist_extras(version: str) -> bool:
     (DIST / ".cache").mkdir(parents=True, exist_ok=True)
     (DIST / "logs").mkdir(parents=True, exist_ok=True)
 
-    # Защита от случайной упаковки пользовательского конфига и dev-мусора.
+    # Защита от случайной упаковки пользовательского конфига, памяти и dev-мусора.
     for name in FORBIDDEN_IN_DIST:
         stale = DIST / name
         if stale.is_file():
             stale.unlink()
+    for name in FORBIDDEN_IN_DIST_DATA:
+        stale_data = DIST / "data" / name
+        if stale_data.is_file():
+            stale_data.unlink()
     for stale_dir in (DIST / "logs", DIST / ".cache"):
         if stale_dir.is_dir():
             for leftover in stale_dir.glob("*"):
                 if leftover.is_file():
                     leftover.unlink()
+                elif leftover.is_dir():
+                    shutil.rmtree(leftover, ignore_errors=True)
 
     model_ok = True
     vosk_small_src = ROOT / "vosk-model-small-ru-0.22"
     vosk_small_dst = DIST / "vosk-model-small-ru-0.22"
     if vosk_small_src.is_dir():
-        print(f"  + vosk-model-small-ru-0.22/ (компактная модель)")
+        print("  + vosk-model-small-ru-0.22/ (компактная модель)")
         shutil.copytree(vosk_small_src, vosk_small_dst, dirs_exist_ok=True)
     else:
         model_ok = False
@@ -147,7 +174,15 @@ def build_installer(version: str) -> bool:
     return True
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Сборка AIDOTA через PyInstaller и Inno Setup.")
+    parser.add_argument(
+        "--pyinstaller-only",
+        action="store_true",
+        help="Собрать только dist/AIDOTA/AIDOTA.exe без запуска Inno Setup (для CI).",
+    )
+    args = parser.parse_args(argv)
+
     version = app_version()
     print(f"Собираю AIDOTA {version} через PyInstaller…")
     run([sys.executable, "-m", "PyInstaller", "--clean", "--noconfirm", "AIDOTA.spec"])
@@ -156,9 +191,13 @@ def main() -> int:
     model_ok = copy_dist_extras(version)
     (DIST / "version.txt").write_text(f"{version}\n", encoding="utf-8")
 
-    ok = build_installer(version)
     dist_exe = DIST / "AIDOTA.exe"
     print(f"Приложение: {dist_exe} ({dist_exe.stat().st_size / (1024 * 1024):.1f} МБ)" if dist_exe.is_file() else "[!] exe не найден")
+
+    if args.pyinstaller_only:
+        return 0 if dist_exe.is_file() else 1
+
+    ok = build_installer(version)
     if not model_ok:
         print("[!] Соберите/скачайте vosk-model-small-ru-0.22 и пересоберите установщик.")
     return 0 if ok else 1

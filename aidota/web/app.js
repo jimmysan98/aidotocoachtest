@@ -143,6 +143,10 @@ const elements = {
   cfgAutonomyLevel: document.getElementById("cfg-autonomy-level"),
   cfgSkillLevel: document.getElementById("cfg-skill-level"),
   cfgSkillHint: document.getElementById("cfg-skill-hint"),
+  cfgCoachTone: document.getElementById("cfg-coach-tone"),
+  cfgDetailMode: document.getElementById("cfg-detail-mode"),
+  cfgCustomFocus: document.getElementById("cfg-custom-focus"),
+  cfgSpeakChat: document.getElementById("cfg-speak-chat"),
   btnSaveSettings: document.getElementById("btn-save-settings"),
   saveSettingsIndicator: document.getElementById("save-settings-indicator"),
   btnRerunDoctor: document.getElementById("btn-rerun-doctor"),
@@ -154,51 +158,97 @@ const elements = {
 };
 
 // ---------------------------------------------------------------------------
-// Audio Wave Visualizer (HTML5 Canvas)
+// Audio Wave Visualizer (Apple Intelligence Harmonic Canvas)
 // ---------------------------------------------------------------------------
 let wavePhase = 0;
 function initWaveVisualizer() {
   const canvas = elements.audioWaveCanvas;
   if (!canvas) return;
   const ctx = canvas.getContext("2d");
+  const reducedMotionQuery =
+    typeof window.matchMedia === "function"
+      ? window.matchMedia("(prefers-reduced-motion: reduce)")
+      : null;
 
-  function draw() {
-    requestAnimationFrame(draw);
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  function renderFrame() {
+    const w = canvas.width;
+    const h = canvas.height;
+    const mid = h / 2;
+    ctx.clearRect(0, 0, w, h);
 
     const isAstra = state.coach === "Астра";
-    const primaryColor = isAstra ? "rgba(168, 85, 247, " : "rgba(245, 158, 11, ";
-    const activeColor = state.isSpeaking ? "rgba(16, 185, 129, " : primaryColor;
+    const reduced = Boolean(reducedMotionQuery && reducedMotionQuery.matches);
+    const amp = reduced
+      ? state.isSpeaking || state.isListening
+        ? 9
+        : 3
+      : state.isSpeaking
+        ? 21
+        : state.isListening
+          ? 15
+          : 5.5;
 
-    wavePhase += state.isSpeaking ? 0.08 : state.isListening ? 0.05 : 0.02;
-
-    const amplitude = state.isSpeaking ? 22 : state.isListening ? 16 : 6;
-    const centerY = canvas.height / 2;
-
-    // Background Wave 1
+    // Subtle Apple Pro baseline hairline
     ctx.beginPath();
-    ctx.strokeStyle = activeColor + "0.3)";
-    ctx.lineWidth = 2;
-    for (let x = 0; x < canvas.width; x += 4) {
-      const y = centerY + Math.sin(x * 0.03 + wavePhase) * amplitude;
-      if (x === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.08)";
+    ctx.lineWidth = 1;
+    ctx.moveTo(0, mid);
+    ctx.lineTo(w, mid);
     ctx.stroke();
 
-    // Foreground Glowing Wave 2
-    ctx.beginPath();
-    ctx.strokeStyle = activeColor + "0.85)";
-    ctx.lineWidth = 3;
-    ctx.shadowBlur = 10;
-    ctx.shadowColor = activeColor + "0.6)";
-    for (let x = 0; x < canvas.width; x += 4) {
-      const y = centerY + Math.cos(x * 0.04 - wavePhase) * (amplitude * 0.8);
-      if (x === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
+    const grad = ctx.createLinearGradient(0, 0, w, 0);
+    if (state.isSpeaking) {
+      grad.addColorStop(0, "rgba(48, 209, 88, 0.15)");
+      grad.addColorStop(0.35, "rgba(100, 210, 255, 0.92)");
+      grad.addColorStop(0.68, "rgba(48, 209, 88, 0.95)");
+      grad.addColorStop(1, "rgba(10, 132, 255, 0.15)");
+    } else if (isAstra) {
+      grad.addColorStop(0, "rgba(191, 90, 242, 0.12)");
+      grad.addColorStop(0.32, "rgba(191, 90, 242, 0.85)");
+      grad.addColorStop(0.65, "rgba(10, 132, 255, 0.92)");
+      grad.addColorStop(1, "rgba(100, 210, 255, 0.14)");
+    } else {
+      grad.addColorStop(0, "rgba(255, 159, 10, 0.12)");
+      grad.addColorStop(0.4, "rgba(255, 159, 10, 0.9)");
+      grad.addColorStop(0.75, "rgba(255, 214, 10, 0.85)");
+      grad.addColorStop(1, "rgba(255, 159, 10, 0.12)");
     }
-    ctx.stroke();
-    ctx.shadowBlur = 0;
+
+    const ribbons = [
+      { freq: 0.022, speed: 1.0, weight: 0.55, line: 1.5, alpha: 0.35 },
+      { freq: 0.031, speed: -1.35, weight: 0.82, line: 2.0, alpha: 0.65 },
+      { freq: 0.017, speed: 0.72, weight: 1.0, line: 2.6, alpha: 0.95 },
+    ];
+
+    ctx.save();
+    for (const r of ribbons) {
+      ctx.beginPath();
+      ctx.globalAlpha = r.alpha;
+      ctx.strokeStyle = grad;
+      ctx.lineWidth = r.line;
+      for (let x = 0; x <= w; x += 3) {
+        const edgeFade = Math.sin((x / w) * Math.PI);
+        const y =
+          mid +
+          Math.sin(x * r.freq + wavePhase * r.speed) *
+            Math.cos(x * 0.008 - wavePhase * 0.45) *
+            (amp * r.weight * edgeFade);
+        if (x === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function draw() {
+    if (!reducedMotionQuery || !reducedMotionQuery.matches) {
+      wavePhase += state.isSpeaking ? 0.095 : state.isListening ? 0.058 : 0.022;
+      renderFrame();
+      requestAnimationFrame(draw);
+    } else {
+      renderFrame();
+    }
   }
   draw();
 }
@@ -649,6 +699,32 @@ function renderItemAdvice(gsi) {
   updateItemAdviceLive(advice);
 }
 
+function switchToTab(target) {
+  if (!target) return;
+  state.activeTab = target;
+
+  elements.navTabs.forEach((t) => {
+    const isMatch = t.getAttribute("data-tab") === target;
+    t.classList.toggle("active", isMatch);
+    t.setAttribute("aria-selected", isMatch ? "true" : "false");
+  });
+  elements.tabPanes.forEach((p) => {
+    p.classList.toggle("active", p.id === `tab-${target}`);
+  });
+
+  if (target === "doctor") {
+    refreshDoctorChecks();
+  }
+  if (target === "settings" && !state.settingsLoaded) {
+    callApi("get_settings").then((s) => {
+      if (s) {
+        applySettingsToUi(s);
+        state.settingsLoaded = true;
+      }
+    });
+  }
+}
+
 function askCoachAboutItem(itemName) {
   const item = String(itemName || "").trim();
   if (!item) return;
@@ -663,29 +739,7 @@ function askCoachAboutItem(itemName) {
 // ---------------------------------------------------------------------------
 elements.navTabs.forEach((tab) => {
   tab.addEventListener("click", () => {
-    const target = tab.getAttribute("data-tab");
-    state.activeTab = target;
-
-    elements.navTabs.forEach((t) => t.classList.remove("active"));
-    elements.tabPanes.forEach((p) => p.classList.remove("active"));
-
-    tab.classList.add("active");
-    const pane = document.getElementById(`tab-${target}`);
-    if (pane) pane.classList.add("active");
-
-    if (target === "doctor") {
-      refreshDoctorChecks();
-    }
-    if (target === "settings") {
-      if (!state.settingsLoaded) {
-        callApi("get_settings").then((s) => {
-          if (s) {
-            applySettingsToUi(s);
-            state.settingsLoaded = true;
-          }
-        });
-      }
-    }
+    switchToTab(tab.getAttribute("data-tab"));
   });
 });
 
@@ -697,8 +751,11 @@ elements.coachBtns.forEach((btn) => {
     const coachName = btn.getAttribute("data-coach");
     state.coach = coachName;
 
-    elements.coachBtns.forEach((b) => b.classList.remove("active"));
-    btn.classList.add("active");
+    elements.coachBtns.forEach((b) => {
+      const isActive = b === btn;
+      b.classList.toggle("active", isActive);
+      b.setAttribute("aria-checked", isActive ? "true" : "false");
+    });
 
     const visualizerStatus = document.getElementById("visualizer-status");
     if (visualizerStatus) {
@@ -728,8 +785,11 @@ elements.roleBtns.forEach((btn) => {
     const pos = parseInt(btn.getAttribute("data-pos"), 10);
     state.position = pos;
 
-    elements.roleBtns.forEach((b) => b.classList.remove("active"));
-    btn.classList.add("active");
+    elements.roleBtns.forEach((b) => {
+      const isActive = b === btn;
+      b.classList.toggle("active", isActive);
+      b.setAttribute("aria-checked", isActive ? "true" : "false");
+    });
 
     updateHeroPositionBadge(pos);
 
@@ -864,7 +924,6 @@ async function handleUserMessage(text) {
     });
   }
 
-  state.isSpeaking = true;
   let reply = "";
   try {
     reply = await callApi("send_chat", text);
@@ -872,7 +931,6 @@ async function handleUserMessage(text) {
     console.error("send_chat error:", err);
     reply = "Ошибка при запросе к модели ИИ.";
   } finally {
-    state.isSpeaking = false;
     if (elements.chatTextInput) {
       elements.chatTextInput.disabled = false;
       elements.chatTextInput.focus();
@@ -905,7 +963,9 @@ function appendChatMessage(role, author, text) {
 
   const isUser = role === "user";
   const avatarClass = isUser ? "user-avatar" : state.coach === "Джарвис" ? "jarvis-avatar" : "astra-avatar";
-  const avatarLetter = isUser ? "Я" : "✦";
+  const avatarHtml = isUser
+    ? "Я"
+    : '<svg class="ui-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.8L20 10.5l-6.1 1.7L12 18l-1.9-5.8L4 10.5l6.1-1.7L12 3z"/></svg>';
 
   const timeStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
@@ -914,7 +974,7 @@ function appendChatMessage(role, author, text) {
   msgDiv.id = msgId;
 
   msgDiv.innerHTML = `
-    <div class="msg-avatar ${avatarClass}">${avatarLetter}</div>
+    <div class="msg-avatar ${avatarClass}">${avatarHtml}</div>
     <div class="msg-bubble">
       <div class="msg-header">
         <span class="msg-author">${author}</span>
@@ -951,6 +1011,31 @@ window.copyMessage = function(text) {
   alert("Текст скопирован в буфер обмена!");
 };
 
+// Делегирование кнопок приветственного сообщения и кнопки микрофона в чате
+if (elements.chatMessagesContainer) {
+  elements.chatMessagesContainer.addEventListener("click", (e) => {
+    const btnSpeak = e.target.closest(".btn-speak-msg");
+    if (btnSpeak && !btnSpeak.getAttribute("onclick")) {
+      const msgText = btnSpeak.closest(".msg-bubble")?.querySelector(".msg-text")?.textContent?.trim();
+      if (msgText) window.speakMessage(msgText);
+      return;
+    }
+    const btnCopy = e.target.closest(".btn-copy-msg");
+    if (btnCopy && !btnCopy.getAttribute("onclick")) {
+      const msgText = btnCopy.closest(".msg-bubble")?.querySelector(".msg-text")?.textContent?.trim();
+      if (msgText) window.copyMessage(msgText);
+    }
+  });
+}
+
+const btnMicInput = document.getElementById("btn-mic-input");
+if (btnMicInput) {
+  btnMicInput.addEventListener("click", async () => {
+    const active = await callApi("toggle_mic");
+    showToast(active ? "Микрофон переключён" : "Запустите ассистента для голосового ввода (или используйте чат)", "info");
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Advice Feed
 // ---------------------------------------------------------------------------
@@ -962,7 +1047,7 @@ function addFeedItem(title, body) {
   const item = document.createElement("div");
   item.className = "feed-item";
   item.innerHTML = `
-    <div class="feed-icon">✦</div>
+    <div class="feed-icon"><svg class="ui-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.8L20 10.5l-6.1 1.7L12 18l-1.9-5.8L4 10.5l6.1-1.7L12 3z"/></svg></div>
     <div class="feed-content">
       <div class="feed-title">${escapeHtml(title)}</div>
       <div class="feed-body">${escapeHtml(body)}</div>
@@ -1076,13 +1161,21 @@ function applySettingsToUi(settings) {
   if (!settings || typeof settings !== "object") return;
 
   if (elements.cfgBaseUrl && (settings.llm_base_url || !elements.cfgBaseUrl.value)) {
-    elements.cfgBaseUrl.value = settings.llm_base_url || "https://text.pollinations.ai/openai";
+    elements.cfgBaseUrl.value = settings.llm_base_url || "https://api.deepseek.com/v1";
   }
   if (elements.cfgModel && (settings.llm_model || !elements.cfgModel.value)) {
-    elements.cfgModel.value = settings.llm_model || "gemini";
+    elements.cfgModel.value = settings.llm_model || "deepseek-chat";
   }
-  if (elements.cfgApiKey && settings.llm_api_key !== undefined) {
-    elements.cfgApiKey.value = settings.llm_api_key || "";
+  if (elements.cfgApiKey) {
+    if (settings.llm_api_key) {
+      elements.cfgApiKey.value = settings.llm_api_key;
+    } else if (settings.llm_api_key_set) {
+      elements.cfgApiKey.value = "";
+      elements.cfgApiKey.placeholder = `Ключ сохранён (${settings.llm_api_key_masked || "***"}). Введите новый для замены`;
+    } else {
+      elements.cfgApiKey.value = "";
+      elements.cfgApiKey.placeholder = "Введите API-ключ DeepSeek (sk-...) или оставьте пустым";
+    }
   }
   if (elements.cfgTtsProvider && settings.tts_provider) {
     elements.cfgTtsProvider.value = settings.tts_provider;
@@ -1103,6 +1196,18 @@ function applySettingsToUi(settings) {
     if (typeof updateSkillLevelHint === "function") {
       updateSkillLevelHint(settings.skill_level);
     }
+  }
+  if (elements.cfgCoachTone && settings.coach_tone) {
+    elements.cfgCoachTone.value = settings.coach_tone;
+  }
+  if (elements.cfgDetailMode && settings.detail_mode) {
+    elements.cfgDetailMode.value = settings.detail_mode;
+  }
+  if (elements.cfgCustomFocus && settings.custom_focus !== undefined) {
+    elements.cfgCustomFocus.value = settings.custom_focus || "";
+  }
+  if (elements.cfgSpeakChat && settings.speak_chat !== undefined) {
+    elements.cfgSpeakChat.checked = Boolean(settings.speak_chat);
   }
   if (elements.cfgInputDevice && settings.input_device) {
     elements.cfgInputDevice.value = settings.input_device;
@@ -1174,11 +1279,11 @@ if (elements.cfgApiKey) {
         showToast("Обнаружен ключ OpenRouter — выбран DeepSeek-V3!", "info");
       }
     } else if (key.startsWith("sk-") && !key.startsWith("sk-or-")) {
-      if (elements.cfgBaseUrl.value.includes("pollinations") || !elements.cfgBaseUrl.value) {
+      if (!elements.cfgBaseUrl.value || !elements.cfgBaseUrl.value.includes("api.deepseek.com")) {
         elements.cfgBaseUrl.value = "https://api.deepseek.com/v1";
         elements.cfgModel.value = "deepseek-chat";
         highlightMatchingPreset(elements.cfgBaseUrl.value, elements.cfgModel.value);
-        showToast("Обнаружен API-ключ — выбран DeepSeek-V3!", "info");
+        showToast("Обнаружен API-ключ DeepSeek — выбран DeepSeek-V3!", "info");
       }
     }
   });
@@ -1213,8 +1318,12 @@ elements.btnTestLlm.addEventListener("click", async () => {
   elements.testLlmResult.textContent = "Проверяю связь с моделью...";
   elements.testLlmResult.style.color = "var(--color-cyan)";
 
+  const baseUrlVal = (elements.cfgBaseUrl.value || "").trim();
   const payload = {
-    base_url: (elements.cfgBaseUrl.value || "").trim(),
+    provider: (baseUrlVal.includes("11434") || baseUrlVal.toLowerCase().includes("ollama"))
+      ? "ollama"
+      : "openai_compatible",
+    base_url: baseUrlVal,
     model: (elements.cfgModel.value || "").trim(),
     api_key: (elements.cfgApiKey.value || "").trim(),
   };
@@ -1267,9 +1376,15 @@ elements.btnSaveSettings.addEventListener("click", async () => {
   elements.btnSaveSettings.disabled = true;
   elements.btnSaveSettings.innerHTML = `<span><svg class="ui-icon ui-spin inline-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a10 10 0 0 1 10 10"/></svg> Сохраняю...</span>`;
 
+  const baseUrlTrim = (elements.cfgBaseUrl.value || "").trim();
+  const inferredProvider =
+    (baseUrlTrim.includes("11434") || baseUrlTrim.toLowerCase().includes("ollama"))
+      ? "ollama"
+      : "openai_compatible";
   const payload = {
-    llm_base_url: (elements.cfgBaseUrl.value || "").trim() || "https://text.pollinations.ai/openai",
-    llm_model: (elements.cfgModel.value || "").trim() || "gemini",
+    llm_provider: inferredProvider,
+    llm_base_url: baseUrlTrim || (inferredProvider === "ollama" ? "http://127.0.0.1:11434" : "https://api.deepseek.com/v1"),
+    llm_model: (elements.cfgModel.value || "").trim() || (inferredProvider === "ollama" ? "gemma3" : "deepseek-chat"),
     llm_api_key: (elements.cfgApiKey.value || "").trim(),
     tts_provider: elements.cfgTtsProvider ? elements.cfgTtsProvider.value : "piper",
     edge_voice: elements.cfgEdgeVoice ? elements.cfgEdgeVoice.value : "ru-RU-SvetlanaNeural",
@@ -1278,6 +1393,10 @@ elements.btnSaveSettings.addEventListener("click", async () => {
     ptt_key: (elements.cfgPttKey?.value || "v").trim(),
     autonomy_level: elements.cfgAutonomyLevel?.value || "medium",
     ...(elements.cfgSkillLevel ? { skill_level: elements.cfgSkillLevel.value } : {}),
+    ...(elements.cfgCoachTone ? { coach_tone: elements.cfgCoachTone.value } : {}),
+    ...(elements.cfgDetailMode ? { detail_mode: elements.cfgDetailMode.value } : {}),
+    ...(elements.cfgCustomFocus ? { custom_focus: elements.cfgCustomFocus.value.trim() } : {}),
+    ...(elements.cfgSpeakChat ? { speak_chat: Boolean(elements.cfgSpeakChat.checked) } : {}),
   };
 
   const res = await callApi("save_settings", payload);
@@ -1310,14 +1429,22 @@ async function refreshDoctorChecks() {
 
   container.innerHTML = "";
   checks.forEach((c) => {
-    const isOk = c.status === "OK";
+    const status = String(c.status || "WARN").toUpperCase();
+    const isOk = status === "OK";
+    const isFail = status === "FAIL";
+    const itemCls = isOk ? "ok-item" : (isFail ? "fail-item" : "warn-item");
+    const badgeCls = isOk ? "ok-badge" : (isFail ? "fail-badge" : "warn-badge");
+    const hintHtml = (!isOk && c.hint)
+      ? `<span class="check-hint" style="display:block;font-size:12px;opacity:0.85;margin-top:3px;">${escapeHtml(c.hint)}</span>`
+      : "";
     const div = document.createElement("div");
-    div.className = `check-item ${isOk ? "ok-item" : "warn-item"}`;
+    div.className = `check-item ${itemCls}`;
     div.innerHTML = `
-      <span class="check-badge ${isOk ? "ok-badge" : "warn-badge"}">${c.status}</span>
+      <span class="check-badge ${badgeCls}">${escapeHtml(status)}</span>
       <div class="check-info">
         <span class="check-name">${escapeHtml(c.name)}</span>
         <span class="check-desc">${escapeHtml(c.details || "")}</span>
+        ${hintHtml}
       </div>
     `;
     container.appendChild(div);
@@ -1351,7 +1478,9 @@ async function syncStateLoop() {
     if (data.coach && data.coach !== state.coach) {
       state.coach = data.coach;
       elements.coachBtns.forEach((b) => {
-        b.classList.toggle("active", b.getAttribute("data-coach") === state.coach);
+        const isActive = b.getAttribute("data-coach") === state.coach;
+        b.classList.toggle("active", isActive);
+        b.setAttribute("aria-checked", isActive ? "true" : "false");
       });
     }
 
@@ -1359,7 +1488,9 @@ async function syncStateLoop() {
     if (serverPosition && serverPosition !== state.position) {
       state.position = serverPosition;
       elements.roleBtns.forEach((b) => {
-        b.classList.toggle("active", parseInt(b.getAttribute("data-pos"), 10) === state.position);
+        const isActive = parseInt(b.getAttribute("data-pos"), 10) === state.position;
+        b.classList.toggle("active", isActive);
+        b.setAttribute("aria-checked", isActive ? "true" : "false");
       });
     }
     // Бейдж в карточке героя всегда соответствует сохранённой позиции из get_state.
@@ -1534,10 +1665,19 @@ function escapeJsString(str) {
 // ---------------------------------------------------------------------------
 document.querySelectorAll(".model-chip").forEach((chip) => {
   chip.addEventListener("click", () => {
-    const model = chip.getAttribute("data-model");
+    const model = chip.getAttribute("data-model") || "";
     if (elements.cfgModel) elements.cfgModel.value = model;
-    if (model.startsWith("gemini") && !elements.cfgBaseUrl.value.includes("generativelanguage") && !elements.cfgBaseUrl.value.includes("pollinations")) {
+    if (model.startsWith("deepseek-") && elements.cfgBaseUrl) {
+      elements.cfgBaseUrl.value = "https://api.deepseek.com/v1";
+    } else if (model.startsWith("gemini-") && elements.cfgBaseUrl && !elements.cfgBaseUrl.value.includes("generativelanguage")) {
       elements.cfgBaseUrl.value = "https://generativelanguage.googleapis.com/v1beta/openai";
+    } else if (model.startsWith("llama-") && elements.cfgBaseUrl && !elements.cfgBaseUrl.value.includes("groq.com")) {
+      elements.cfgBaseUrl.value = "https://api.groq.com/openai/v1";
+    } else if (["gemini", "deepseek", "openai"].includes(model) && elements.cfgBaseUrl) {
+      elements.cfgBaseUrl.value = "https://text.pollinations.ai/openai";
+    }
+    if (elements.cfgBaseUrl) {
+      highlightMatchingPreset(elements.cfgBaseUrl.value, model);
     }
   });
 });
@@ -1737,7 +1877,7 @@ async function triggerDraftCalculation() {
       <div class="hero-advice-snippet">${escapeHtml(pick.advice)}</div>
 
       <div class="card-footer-actions">
-        <button type="button" class="btn btn-secondary btn-sm" onclick="speakPhrase('На ${escapeJsString(pick.ru_name)}: ${escapeJsString(pick.advice)}')">
+        <button type="button" class="btn btn-secondary btn-sm" onclick="speakMessage('На ${escapeJsString(pick.ru_name)}: ${escapeJsString(pick.advice)}')">
           <svg class="ui-icon inline-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
           <span>Озвучить</span>
         </button>

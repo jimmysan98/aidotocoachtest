@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 from aidota import __version__
-from aidota.config import Config, PROJECT_ROOT, load_config, save_config
+from aidota.config import PROJECT_ROOT, Config, load_config
 from aidota.logging_setup import get_logger, setup_logging
 
 BANNER = r"""
@@ -178,29 +178,43 @@ def _fetch_icons(config: Config) -> int:
     from aidota.dota_api import DotaApi
     from aidota.icons import fetch_hero_icons
 
-    api = DotaApi(config.data_path)
-    api.load_snapshots()
-    if not api.heroes:
-        print("Скачиваю данные героев с OpenDota…")
-        if not api.refresh_snapshots():
-            print("Не удалось получить список героев: проверьте интернет.")
-            return 1
-    icons_dir = config.path(config.vision.icons_dir)
-    downloaded, total = fetch_hero_icons(api, icons_dir, progress=print)
-    print(f"Готово: скачано {downloaded} из {total} файлов в {icons_dir}")
-    return 0
+    api = DotaApi(config.bundled_data_path, cache_dir=config.meta_cache_path, auto_swr=False)
+    try:
+        api.load_snapshots()
+        if not api.heroes:
+            print("Скачиваю данные героев с OpenDota…")
+            if not api.refresh_snapshots():
+                print("Не удалось получить список героев: проверьте интернет.")
+                return 1
+        icons_dir = config.path(config.vision.icons_dir)
+        try:
+            icons_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            icons_dir = config.cache_path / "hero_icons"
+        downloaded, total = fetch_hero_icons(api, icons_dir, progress=print)
+        print(f"Готово: скачано {downloaded} из {total} файлов в {icons_dir}")
+        return 0
+    finally:
+        api.close()
 
 
 def _update_data(config: Config) -> int:
     from aidota.dota_api import DotaApi
 
-    api = DotaApi(config.data_path)
-    print("Скачиваю свежие данные с OpenDota…")
-    if not api.refresh_snapshots():
-        print(f"Не удалось обновить данные: {api.last_error}")
-        return 1
-    print(f"Готово: {len(api.heroes)} героев, {len(api.items())} предметов.")
-    return 0
+    api = DotaApi(config.bundled_data_path, cache_dir=config.meta_cache_path, auto_swr=False)
+    print("Скачиваю свежие данные с OpenDota в пользовательский кэш…")
+    try:
+        if not api.refresh_snapshots():
+            print(f"Не удалось обновить данные: {api.last_error}")
+            return 1
+        print(
+            f"Готово: {len(api.heroes)} героев, {len(api.items())} предметов"
+            + (f" (патч {api.current_patch})" if api.current_patch else "")
+            + "."
+        )
+        return 0
+    finally:
+        api.close()
 
 
 def _install_gsi(config: Config) -> int:

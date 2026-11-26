@@ -7,26 +7,26 @@
 
 from __future__ import annotations
 
-import json
 import logging
-import os
-import tempfile
 import threading
 import time
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
+
+from .meta_sync import POPULARITY_KEYS, MetaSyncService
+from .paths import (
+    atomic_write_json,
+    bundled_data_dir,
+    is_frozen,
+    meta_cache_dir,
+    read_json_safe,
+)
 
 log = logging.getLogger("aidota.dota_api")
 
 OPENDOTA = "https://api.opendota.com/api"
 USER_AGENT = "aidota/1.0 (Dota 2 voice assistant; local use)"
-
-POPULARITY_KEYS = (
-    "start_game_items",
-    "early_game_items",
-    "mid_game_items",
-    "late_game_items",
-)
 
 
 class DotaApiError(RuntimeError):
@@ -41,10 +41,14 @@ class DotaApi:
         timeout: float = 15.0,
         session: Any | None = None,
         popularity_ttl: float = 6 * 3600,
+        cache_dir: Path | None = None,
+        read_only_data: bool | None = None,
+        auto_swr: bool = False,
     ):
         self.data_dir = Path(data_dir)
         self.timeout = timeout
         self.popularity_ttl = popularity_ttl
+        self._auto_swr = bool(auto_swr)
         self._lock = threading.RLock()
 
         self._heroes: list[dict] | None = None
@@ -55,40 +59,146 @@ class DotaApi:
         self._popularity_error_at: dict[int, float] = {}
         self.last_error: str | None = None
         self.snapshot_time: float | None = None
+        self._version: int = 1
 
         if session is None:
             import requests  # локальный импорт: тесты могут не иметь requests
 
             session = requests.Session()
             session.headers["User-Agent"] = USER_AGENT
+            self._owns_session = True
+        else:
+            self._owns_session = False
         self._session = session
+
+        if read_only_data is not None:
+            self._read_only_data = bool(read_only_data)
+        else:
+            is_bundled = False
+            try:
+                is_bundled = self.data_dir.resolve() == bundled_data_dir().resolve()
+            except OSError:
+                is_bundled = False
+            self._read_only_data = bool(cache_dir is not None or is_frozen() or is_bundled)
+
+        self._cache_dir: Path | None = Path(cache_dir) if cache_dir is not None else None
+        self._sync: MetaSyncService | None = (
+            MetaSyncService(
+                self._cache_dir,
+                session=self._session,
+                timeout=self.timeout,
+                hero_ttl=max(float(popularity_ttl), 3600.0),
+                on_updated=self._on_sync_updated,
+            )
+            if self._cache_dir is not None
+            else None
+        )
+
+    def _on_sync_updated(self, _sync_ver: int) -> None:
+        if self._sync is None:
+            return
+        sync_heroes = self._sync.cached_heroes()
+        sync_items = self._sync.cached_items()
+        with self._lock:
+            if isinstance(sync_heroes, list) and sync_heroes:
+                self._heroes = sync_heroes
+            if isinstance(sync_items, dict) and sync_items:
+                self._items, self._item_ids = self._parse_items(sync_items)
+                self._item_costs = self._parse_item_costs(sync_items)
+            if self._sync.bulk_fetched_at is not None:
+                self.snapshot_time = self._sync.bulk_fetched_at
+            self.last_error = self._sync.last_error
+            self._version += 1
+        try:
+            from .meta_db import notify_live_meta_updated
+
+            notify_live_meta_updated(self.cache_version)
+        except Exception:  # noqa: BLE001
+            pass
+
+    @property
+    def cache_version(self) -> int:
+        """Единый счётчик версий живого/снапшотного кэша для сброса downstream-кэшей."""
+        with self._lock:
+            sync_ver = self._sync.cache_version if self._sync is not None else 0
+            return self._version + sync_ver
+
+    @property
+    def current_patch(self) -> str:
+        """Текущая версия патча Dota 2 из живого SWR-кэша (если известна)."""
+        if self._sync is not None:
+            return self._sync.current_patch
+        return ""
+
+    @property
+    def sync_service(self) -> MetaSyncService | None:
+        return self._sync
 
     # ------------------------------------------------------------------ #
     # Снапшоты
     # ------------------------------------------------------------------ #
     def load_snapshots(self) -> bool:
-        """Загружает data/heroes.json и data/items.json. Возвращает True при успехе."""
-        heroes = self._read_json(self.data_dir / "heroes.json")
-        items = self._read_json(self.data_dir / "items.json")
+        """Загружает read-only базу ``data/`` и накладывает поверх живой SWR-кэш."""
+        heroes = read_json_safe(self.data_dir / "heroes.json")
+        items = read_json_safe(self.data_dir / "items.json")
         ok = False
         with self._lock:
             if isinstance(heroes, list) and heroes:
                 self._heroes = heroes
                 ok = True
-                try:
-                    self.snapshot_time = (self.data_dir / "heroes.json").stat().st_mtime
-                except OSError:
-                    self.snapshot_time = None
+                if self._sync is None:
+                    try:
+                        self.snapshot_time = (self.data_dir / "heroes.json").stat().st_mtime
+                    except OSError:
+                        self.snapshot_time = None
             if isinstance(items, dict) and items:
                 self._items, self._item_ids = self._parse_items(items)
                 self._item_costs = self._parse_item_costs(items)
                 ok = True
+
+            if self._sync is not None:
+                self._sync.load_from_disk()
+                sync_heroes = self._sync.cached_heroes()
+                sync_items = self._sync.cached_items()
+                if isinstance(sync_heroes, list) and sync_heroes:
+                    self._heroes = sync_heroes
+                    ok = True
+                if isinstance(sync_items, dict) and sync_items:
+                    self._items, self._item_ids = self._parse_items(sync_items)
+                    self._item_costs = self._parse_item_costs(sync_items)
+                    ok = True
+                self.snapshot_time = self._sync.bulk_fetched_at
+            if ok:
+                self._version += 1
         if not ok:
             log.warning("Снапшоты data/heroes.json или data/items.json не найдены")
         return ok
 
     def refresh_snapshots(self) -> bool:
-        """Скачивает свежие данные OpenDota и сохраняет их в data/."""
+        """Скачивает свежие данные OpenDota: в SWR-кэш, не перезаписывая read-only data/."""
+        if self._sync is not None:
+            ok = self._sync.sync_bulk(force=True)
+            if not ok:
+                with self._lock:
+                    self.last_error = self._sync.last_error or self.last_error
+            return ok
+
+        if self._read_only_data:
+            fallback_cache = meta_cache_dir()
+            self._cache_dir = fallback_cache
+            self._sync = MetaSyncService(
+                fallback_cache,
+                session=self._session,
+                timeout=self.timeout,
+                hero_ttl=max(float(self.popularity_ttl), 3600.0),
+                on_updated=self._on_sync_updated,
+            )
+            ok = self._sync.sync_bulk(force=True)
+            if not ok:
+                with self._lock:
+                    self.last_error = self._sync.last_error or self.last_error
+            return ok
+
         try:
             heroes = self._get_json(f"{OPENDOTA}/heroStats")
             items_raw = self._get_json(f"{OPENDOTA}/constants/items")
@@ -109,14 +219,20 @@ class DotaApi:
             for key, value in items_raw.items()
             if isinstance(value, dict)
         }
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        self._write_json(self.data_dir / "heroes.json", heroes)
-        self._write_json(self.data_dir / "items.json", items)
+        try:
+            atomic_write_json(self.data_dir / "heroes.json", heroes, indent=1)
+            atomic_write_json(self.data_dir / "items.json", items, indent=1)
+        except OSError as exc:
+            # Даже если временный каталог стал read-only, переключаемся в AppData-кэш.
+            self.last_error = f"Не удалось записать в {self.data_dir}: {exc}"
+            log.warning(self.last_error)
+            return False
         with self._lock:
             self._heroes = heroes
             self._items, self._item_ids = self._parse_items(items)
             self._item_costs = self._parse_item_costs(items)
             self.snapshot_time = time.time()
+            self._version += 1
         log.info("Снапшоты обновлены: %d героев, %d предметов", len(heroes), len(items))
         return True
 
@@ -243,7 +359,8 @@ class DotaApi:
     def _ensure_item_costs(self) -> dict[str, int]:
         with self._lock:
             if self._items is None:
-                self.load_snapshots()
+                if not self.load_snapshots():
+                    self._items = {}
             return dict(self._item_costs)
 
     def item_slug(self, name: Any) -> str | None:
@@ -317,10 +434,59 @@ class DotaApi:
         ]
 
     # ------------------------------------------------------------------ #
-    # Популярные предметы
+    # Популярные предметы и матчапы (SWR-режим без блокировки горячего пути)
     # ------------------------------------------------------------------ #
+    def enqueue_match_heroes(self, hero_ids: Iterable[int]) -> int:
+        """Ставит в фоновый SWR-кэш до 10 героев активного матча."""
+        if self._sync is None:
+            return 0
+        return self._sync.enqueue_match_heroes(hero_ids)
+
+    def start_background_sync(self, *, hero_ids: Iterable[int] = (), sync_bulk_now: bool | None = None) -> bool:
+        """Запускает фоновую синхронизацию bulk и/или героев матча (0 блокировки)."""
+        if self._sync is None:
+            return False
+        return self._sync.start_background_sync(hero_ids=hero_ids, sync_bulk_now=sync_bulk_now)
+
+    def hero_matchups(self, hero_id: int) -> list[dict[str, Any]]:
+        """Матчапы героя из SWR-кэша (0 синхронных HTTP при ``auto_swr=True``)."""
+        if self._sync is not None:
+            rows, stale = self._sync.get_matchups(hero_id)
+            if self._auto_swr:
+                if not rows or stale:
+                    self._sync.enqueue_match_heroes([hero_id])
+                return rows
+            if rows and not stale:
+                return rows
+            self._sync.sync_match_hero(hero_id, force=False)
+            fresh_rows, _ = self._sync.get_matchups(hero_id)
+            return fresh_rows or rows
+        return []
+
     def item_popularity(self, hero_id: int) -> dict[str, dict[str, int]]:
-        """Словарь start_game_items / early_game_items / … (ключи OpenDota)."""
+        """Словарь start_game_items / early_game_items / … (SWR при подключённом ``cache_dir``)."""
+        if self._sync is not None:
+            cached_pop, stale = self._sync.get_popularity(hero_id)
+            if self._auto_swr:
+                if not cached_pop or stale:
+                    self._sync.enqueue_match_heroes([hero_id])
+                return cached_pop
+            if cached_pop and not stale:
+                return cached_pop
+            now = time.time()
+            with self._lock:
+                failed_at = self._popularity_error_at.get(hero_id)
+                if failed_at and now - failed_at < 60:
+                    return cached_pop
+            if self._sync.sync_match_hero(hero_id, force=False):
+                fresh_pop, _ = self._sync.get_popularity(hero_id)
+                return fresh_pop or cached_pop
+            with self._lock:
+                if self._sync.last_error:
+                    self.last_error = self._sync.last_error
+                    self._popularity_error_at[hero_id] = time.time()
+            return cached_pop
+
         now = time.time()
         with self._lock:
             cached = self._popularity.get(hero_id)
@@ -373,24 +539,11 @@ class DotaApi:
 
     @staticmethod
     def _read_json(path: Path) -> Any:
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return None
+        return read_json_safe(path)
 
     @staticmethod
     def _write_json(path: Path, data: Any) -> None:
-        fd, tmp_name = tempfile.mkstemp(prefix=path.name, suffix=".tmp", dir=path.parent)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                json.dump(data, fh, ensure_ascii=False, indent=1)
-            os.replace(tmp_name, path)
-        except BaseException:
-            try:
-                os.unlink(tmp_name)
-            except OSError:
-                pass
-            raise
+        atomic_write_json(path, data, indent=1)
 
     # ------------------------------------------------------------------ #
     # История и анализ сыгранных матчей
@@ -597,9 +750,11 @@ class DotaApi:
             return False
 
     def close(self) -> None:
-        """Освобождает ресурсы, включая HTTP-сессию."""
-        if hasattr(self, "_session") and self._session is not None:
+        """Останавливает фоновую синхронизацию и освобождает HTTP-сессию."""
+        if self._sync is not None:
+            self._sync.close()
+        if self._owns_session and hasattr(self, "_session") and self._session is not None:
             try:
                 self._session.close()
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass

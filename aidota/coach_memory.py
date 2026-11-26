@@ -11,14 +11,13 @@
 
 from __future__ import annotations
 
-import json
 import logging
-import os
-import tempfile
 import threading
 import time
 from pathlib import Path
 from typing import Any
+
+from .paths import atomic_write_json, read_json_safe
 
 log = logging.getLogger("aidota.coach_memory")
 
@@ -55,30 +54,25 @@ class CoachMemory:
             return
         with self._lock:
             self._loaded = True
-            try:
-                if not self.path.is_file():
-                    return
-                data = json.loads(self.path.read_text(encoding="utf-8"))
-                if not isinstance(data, dict):
-                    return
-                turns = data.get("turns")
-                if isinstance(turns, list):
-                    self._turns = [
-                        t for t in turns
-                        if isinstance(t, dict) and isinstance(t.get("q"), str) and isinstance(t.get("a"), str)
-                    ][-self.max_turns:]
-                lessons = data.get("lessons")
-                if isinstance(lessons, list):
-                    self._lessons = [str(x).strip() for x in lessons if str(x).strip()][-_MAX_LESSONS:]
-                facts = data.get("facts")
-                if isinstance(facts, dict):
-                    self._facts = {
-                        str(k): str(v) for k, v in facts.items()
-                        if k and v is not None and str(v).strip()
-                    }
-            except Exception as exc:  # noqa: BLE001 — память не должна ронять тренера
-                log.warning("Не удалось прочитать память тренера %s: %s", self.path, exc)
+            data = read_json_safe(self.path)
+            if not isinstance(data, dict):
                 self._turns, self._lessons, self._facts = [], [], {}
+                return
+            turns = data.get("turns")
+            if isinstance(turns, list):
+                self._turns = [
+                    t for t in turns
+                    if isinstance(t, dict) and isinstance(t.get("q"), str) and isinstance(t.get("a"), str)
+                ][-self.max_turns:]
+            lessons = data.get("lessons")
+            if isinstance(lessons, list):
+                self._lessons = [str(x).strip() for x in lessons if str(x).strip()][-_MAX_LESSONS:]
+            facts = data.get("facts")
+            if isinstance(facts, dict):
+                self._facts = {
+                    str(k): str(v) for k, v in facts.items()
+                    if k and v is not None and str(v).strip()
+                }
 
     def _save(self) -> None:
         if self.path is None:
@@ -92,23 +86,7 @@ class CoachMemory:
                 "facts": self._facts,
             }
             try:
-                self.path.parent.mkdir(parents=True, exist_ok=True)
-                fd, tmp_name = tempfile.mkstemp(
-                    prefix=".coach_memory_", suffix=".json", dir=str(self.path.parent)
-                )
-                try:
-                    with os.fdopen(fd, "w", encoding="utf-8") as tmp:
-                        json.dump(data, tmp, ensure_ascii=False, indent=1)
-                        tmp.write("\n")
-                        tmp.flush()
-                        os.fsync(tmp.fileno())
-                    os.replace(tmp_name, self.path)
-                except Exception:
-                    try:
-                        os.unlink(tmp_name)
-                    except OSError:
-                        pass
-                    raise
+                atomic_write_json(self.path, data, indent=1)
             except Exception as exc:  # noqa: BLE001
                 log.warning("Не удалось сохранить память тренера %s: %s", self.path, exc)
 

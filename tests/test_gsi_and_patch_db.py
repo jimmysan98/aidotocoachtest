@@ -96,12 +96,18 @@ class TestCurrentPatchDatabase(unittest.TestCase):
         with open(items_path, "r", encoding="utf-8") as f:
             items = json.load(f)
 
-        self.assertIn("khanda", items)
-        self.assertEqual(items["khanda"]["cost"], 5000)
-        self.assertIn("parasma", items)
-        self.assertEqual(items["parasma"]["cost"], 5575)
+        # Канонические ключи Valve/OpenDota в data/items.json:
+        # Khanda -> angels_demise, Parasma -> devastator.
+        self.assertIn("angels_demise", items)
+        self.assertEqual(items["angels_demise"]["dname"], "Khanda")
+        self.assertEqual(items["angels_demise"]["cost"], 5600)
+        self.assertIn("devastator", items)
+        self.assertEqual(items["devastator"]["dname"], "Parasma")
+        self.assertEqual(items["devastator"]["cost"], 5975)
         self.assertIn("harpoon", items)
+        self.assertEqual(items["harpoon"]["cost"], 4700)
         self.assertIn("disperser", items)
+        self.assertEqual(items["disperser"]["cost"], 6100)
 
     def test_meta_db_tag_counters_contain_modern_items(self):
         self.assertIn("Khanda", TAG_COUNTER_ITEMS["burst"])
@@ -256,14 +262,24 @@ class TestCurrentPatchContextAndTimers(unittest.TestCase):
         self.assertIn("нижнем логове", snapshot["roshan_pit"])
 
     def test_item_costs_cleaned_up(self):
-        """Проверка актуальных стоимостей предметов 7.36/7.37 в items.json."""
+        """Проверка актуальных стоимостей предметов в обновлённом снимке data/items.json."""
         items_path = Path(__file__).resolve().parent.parent / "data" / "items.json"
         with open(items_path, "r", encoding="utf-8") as f:
             items = json.load(f)
-        self.assertEqual(items["angels_demise"]["cost"], 5000)
-        self.assertEqual(items["devastator"]["cost"], 5575)
-        self.assertEqual(items["recipe_devastator"]["cost"], 0)
-        self.assertEqual(items["harpoon"]["cost"], 4800)
+        self.assertEqual(items["angels_demise"]["cost"], 5600)
+        self.assertEqual(
+            items["phylactery"]["cost"] + items["soul_booster"]["cost"],
+            items["angels_demise"]["cost"],
+        )
+        self.assertEqual(items["devastator"]["cost"], 5975)
+        self.assertEqual(items["recipe_devastator"]["cost"], 400)
+        self.assertEqual(
+            items["witch_blade"]["cost"]
+            + items["mystic_staff"]["cost"]
+            + items["recipe_devastator"]["cost"],
+            items["devastator"]["cost"],
+        )
+        self.assertEqual(items["harpoon"]["cost"], 4700)
 
     def test_macro_timer_neutrals_736_timings(self):
         """Проверка таймингов нейтральных предметов 7.36/7.37 (7, 15, 25, 35, 60 мин) и Турбо."""

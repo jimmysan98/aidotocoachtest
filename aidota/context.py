@@ -1250,21 +1250,29 @@ def now_iso() -> str:
 
 
 def get_player_profile_path(data_dir: Path | str | None = None) -> Path:
-    """Возвращает путь к data/player_profile.json."""
-    base = Path(data_dir) if data_dir else (Path(__file__).resolve().parent.parent / "data")
+    """Возвращает путь к записываемому ``player_profile.json``."""
+    from .paths import bundled_data_dir, uses_isolated_runtime_root, writable_data_dir
+
+    if not data_dir:
+        return writable_data_dir() / "player_profile.json"
+    base = Path(data_dir)
+    if uses_isolated_runtime_root():
+        try:
+            if base.resolve() == bundled_data_dir().resolve():
+                base = writable_data_dir()
+        except OSError:
+            pass
     return base / "player_profile.json"
 
 
 def load_player_profile(data_dir: Path | str | None = None) -> dict[str, Any]:
-    """Загружает профиль игрока из data/player_profile.json или создает начальный."""
+    """Загружает профиль игрока из player_profile.json или создает начальный."""
+    from .paths import read_json_safe
+
     path = get_player_profile_path(data_dir)
-    if path.is_file():
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                return data
-        except Exception as exc:  # noqa: BLE001
-            log.warning("Ошибка чтения player_profile.json: %s", exc)
+    data = read_json_safe(path)
+    if isinstance(data, dict):
+        return data
 
     return {
         "account_id": None,
@@ -1277,11 +1285,12 @@ def load_player_profile(data_dir: Path | str | None = None) -> dict[str, Any]:
 
 
 def save_player_profile(profile_data: dict[str, Any], data_dir: Path | str | None = None) -> Path:
-    """Сохраняет профиль игрока в data/player_profile.json."""
+    """Атомарно сохраняет профиль игрока в player_profile.json."""
+    from .paths import atomic_write_json
+
     path = get_player_profile_path(data_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
     profile_data["last_updated"] = now_iso()
-    path.write_text(json.dumps(profile_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    atomic_write_json(path, profile_data, indent=2)
     return path
 
 

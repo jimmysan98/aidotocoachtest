@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import queue
 import re
 import sys
@@ -16,15 +15,18 @@ from .audio import AudioError, VoiceInput
 from .coach import Coach
 from .commands import Intent
 from .config import DEFAULT_CONFIG_PATH, PROJECT_ROOT, Config, save_config, save_llm_only
-from .context import AutonomousCoachAgent, _dig, gsi_stale_hint
+from .context import AutonomousCoachAgent, _dig, collect_draft
 from .dota_api import DotaApi
 from .gsi import GsiError, GsiServer
 from .heroes import HeroCatalog, HeroMatch
 from .icons import count_icons, fetch_hero_icons
+from .llm_router import compute_operating_mode
 from .logging_setup import get_logger
+from .meta_db import set_live_meta_provider
 from .overlay import Overlay
 from .roles import position_label
-from .tts import HumanTTSManager, SpeechPriority, Tts
+from .telemetry import TelemetrySink
+from .tts import HumanTTSManager, SpeechPriority
 from .vision import HeroVision
 
 BANNER = """
@@ -36,7 +38,14 @@ BANNER = """
 
 
 class Assistant:
-    def __init__(self, config: Config, *, text_mode: bool = False, config_path=None):
+    def __init__(
+        self,
+        config: Config,
+        *,
+        text_mode: bool = False,
+        config_path=None,
+        disable_overlay: bool | None = None,
+    ):
         self.config = config
         self.config_path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
         self.log = get_logger("app")
@@ -51,9 +60,13 @@ class Assistant:
         self._last_answer = ""
         self._last_hero: dict | None = None
         self._use_voice = False
+        self._skills_error_count = 0
+        self._last_alert_text = ""
+        self._last_alert_at = 0.0
         # Колбэк «открыть настройки в главном окне» задаёт GUI-оболочка
         # (веб-дашборд или Tk-GUI). Отдельного окна настроек больше нет.
         self.on_open_settings: Any = None
+        use_overlay = bool(config.overlay.enabled) and not bool(disable_overlay)
         self._overlay: Overlay | None = (
             Overlay(
                 config.overlay,
@@ -68,18 +81,27 @@ class Assistant:
                 full_config=self.config,
                 on_open_settings=self._request_open_settings,
             )
-            if config.overlay.enabled
+            if use_overlay
             else None
         )
         self._tts = HumanTTSManager(config.tts, config.cache_path)
+        self._tts.on_speaking_changed = self._on_tts_speaking_changed
         self._voice = VoiceInput(config.audio, PROJECT_ROOT)
-        self._api = DotaApi(config.data_path)
+        self._api = DotaApi(
+            config.bundled_data_path,
+            cache_dir=config.meta_cache_path,
+            auto_swr=True,
+        )
+        set_live_meta_provider(self._api)
+        self._last_api_cache_version = int(getattr(self._api, "cache_version", 0) or 0)
+        self._last_enqueued_match_ids: tuple[int, ...] = ()
         self._catalog = HeroCatalog([])
         self._low_hp_alerted = False
         self._gsi: GsiServer | None = None
         if config.gsi.enabled:
             self._gsi = GsiServer(config.gsi.host, config.gsi.port, config.gsi.token)
         coach_name = "Джарвис" if "dmitry" in str(getattr(config.tts, "edge_voice", "")).lower() else "Астра"
+        self._telemetry = TelemetrySink(config.logs_path)
         self._coach = Coach(
             self._api,
             self._catalog,
@@ -88,6 +110,9 @@ class Assistant:
             config.player_profile,
             coach_name=coach_name,
             memory_size=config.memory_size,
+            memory_path=config.state_data_path / "coach_memory.json",
+            state_dir=config.state_data_path,
+            telemetry=self._telemetry,
         )
         self._coach.tts = self._tts
         autonomy = getattr(config.player_profile, "autonomy_level", "medium")
@@ -215,7 +240,7 @@ class Assistant:
         """Применяет уровень игрока к тренеру, автономному агенту и конфигу."""
         normalized = self._coach.set_skill_level(level)
         try:
-            setattr(self.config.player_profile, "skill_level", normalized)
+            self.config.player_profile.skill_level = normalized
         except Exception as exc:  # noqa: BLE001 — профиль не должен ронять настройку
             self.log.debug("Не удалось сохранить skill_level в конфиг: %s", exc)
         if hasattr(self, "_agent") and self._agent is not None:
@@ -296,6 +321,21 @@ class Assistant:
         if hasattr(self, "_coach") and self._coach is not None:
             if hasattr(self._coach, "close"):
                 self._coach.close()
+        if hasattr(self, "_api") and self._api is not None:
+            try:
+                from .meta_db import _LIVE_META_LOCK, _LIVE_META_PROVIDER
+
+                with _LIVE_META_LOCK:
+                    is_current = _LIVE_META_PROVIDER is self._api
+                if is_current:
+                    set_live_meta_provider(None)
+            except Exception:  # noqa: BLE001
+                pass
+            if hasattr(self._api, "close"):
+                try:
+                    self._api.close()
+                except Exception:  # noqa: BLE001
+                    pass
         self.log.info("AIDOTA остановлена")
 
 
@@ -320,36 +360,61 @@ class Assistant:
 
             def _skills_monitor() -> None:
                 while not self.stop_event.is_set():
+                    payload = None
                     try:
                         payload = self._coach.gsi_payload()
-                        if payload:
-                            # 1. Проверка критического уровня здоровья (< 25% HP) и опасности (Barge-In)
+                    except Exception as exc:  # noqa: BLE001
+                        self._skills_error_count += 1
+                        self.log.warning("Ошибка чтения GSI в мониторе: %s", exc)
+
+                    self._sync_catalog_and_match_swr(payload)
+
+                    if payload:
+                        try:
+                            # 1. Проверка критического уровня здоровья (< 25% HP) и Barge-In
                             hero_data = payload.get("hero") or {}
                             if isinstance(hero_data, dict) and hero_data.get("alive") is not False:
                                 hp_pct = hero_data.get("health_percent")
                                 if hp_pct is not None:
-                                    try:
-                                        hp_val = float(hp_pct)
-                                        if hp_val < 25.0 and not self._low_hp_alerted:
-                                            self._low_hp_alerted = True
-                                            self._say(
-                                                "Внимание, критически мало хэпэ! Отойди под вышку или жми стики!",
-                                                priority=SpeechPriority.CRITICAL,
-                                            )
-                                        elif hp_val >= 40.0:
-                                            self._low_hp_alerted = False
-                                    except (ValueError, TypeError):
-                                        pass
+                                    hp_val = float(hp_pct)
+                                    if hp_val < 25.0 and not self._low_hp_alerted:
+                                        self._low_hp_alerted = True
+                                        self._coach.preemption.cancel_current()
+                                        self._say(
+                                            "Внимание, критически мало хэпэ! Отойди под вышку или жми стики!",
+                                            priority=SpeechPriority.CRITICAL,
+                                        )
+                                    elif hp_val >= 40.0:
+                                        self._low_hp_alerted = False
+                        except (ValueError, TypeError):
+                            pass
+                        except Exception as exc:  # noqa: BLE001
+                            self._skills_error_count += 1
+                            self.log.warning("Ошибка проверки HP в мониторе: %s", exc)
 
+                    try:
                         alert = self._coach.check_skills_alerts()
                         if alert:
-                            self._say(alert, priority=SpeechPriority.TIMERS, ttl=5.0)
+                            now_m = time.monotonic()
+                            if alert != self._last_alert_text or (now_m - self._last_alert_at) > 20.0:
+                                self._last_alert_text = alert
+                                self._last_alert_at = now_m
+                                self._say(alert, priority=SpeechPriority.TIMERS, ttl=5.0)
+                    except Exception as exc:  # noqa: BLE001
+                        self._skills_error_count += 1
+                        self.log.warning("Ошибка check_skills_alerts: %s", exc)
 
-                        if payload and self._overlay is not None:
+                    if payload and self._overlay is not None:
+                        try:
                             hud_text = self._overlay_hud_text(payload)
                             if hud_text:
                                 self._overlay.update_hud(hud_text)
-                        if payload and hasattr(self, "_agent") and self._agent is not None:
+                        except Exception as exc:  # noqa: BLE001
+                            self._skills_error_count += 1
+                            self.log.warning("Ошибка обновления HUD оверлея: %s", exc)
+
+                    if payload and hasattr(self, "_agent") and self._agent is not None:
+                        try:
                             agent_advice = self._agent.process_tick(
                                 payload,
                                 catalog=self._catalog,
@@ -357,10 +422,16 @@ class Assistant:
                                 position=self._coach.position,
                             )
                             if agent_advice:
-                                self.log.info("Автономный совет тренера: %s", agent_advice)
-                                self._say(agent_advice, priority=SpeechPriority.LLM_COACH)
-                    except Exception as exc:  # noqa: BLE001
-                        self.log.debug("Ошибка в мониторе скиллов/автономного тренера: %s", exc)
+                                now_m = time.monotonic()
+                                if agent_advice != self._last_alert_text or (now_m - self._last_alert_at) > 20.0:
+                                    self._last_alert_text = agent_advice
+                                    self._last_alert_at = now_m
+                                    self.log.info("Автономный совет тренера: %s", agent_advice)
+                                    self._say(agent_advice, priority=SpeechPriority.LLM_COACH, ttl=8.0)
+                        except Exception as exc:  # noqa: BLE001
+                            self._skills_error_count += 1
+                            self.log.warning("Ошибка автономного агента в мониторе: %s", exc)
+
                     self.stop_event.wait(1.0)
 
             threading.Thread(target=_skills_monitor, name="aidota-skills", daemon=True).start()
@@ -698,12 +769,73 @@ class Assistant:
         except Exception as exc:  # noqa: BLE001
             return False, f"Ошибка анализа матча: {exc}"
 
+    def _extract_active_match_hero_ids(self, payload: dict | None) -> tuple[int, ...]:
+        """Собирает до 10 числовых hero_id текущего матча из GSI (без сетевых вызовов)."""
+        if not isinstance(payload, dict) or not payload:
+            return ()
+        draft = collect_draft(payload, self._catalog)
+        names: list[str] = []
+        for lst in (draft.my_picks, draft.enemy_picks):
+            for name in lst:
+                if name and name not in names:
+                    names.append(name)
+        ids: list[int] = []
+        for name in names:
+            match = self._catalog.find(name)
+            if match is not None and isinstance(match.hero.get("id"), int):
+                hid = int(match.hero["id"])
+                if hid > 0 and hid not in ids:
+                    ids.append(hid)
+            if len(ids) >= 10:
+                break
+        return tuple(ids)
+
+    def _sync_catalog_and_match_swr(self, payload: dict | None) -> None:
+        """Синхронизирует HeroCatalog при сдвиге cache_version и ставит 10 героев матча в SWR."""
+        try:
+            cur_ver = int(getattr(self._api, "cache_version", 0) or 0)
+            if cur_ver != self._last_api_cache_version:
+                self._last_api_cache_version = cur_ver
+                heroes = self._api.heroes
+                if heroes:
+                    self._catalog = HeroCatalog(heroes)
+                    self._coach.catalog = self._catalog
+                    self._vision.catalog = self._catalog
+                    self.log.info("Каталог героев обновлён из SWR-кэша (v%d)", cur_ver)
+        except Exception:  # noqa: BLE001
+            pass
+
+        if payload:
+            try:
+                match_ids = self._extract_active_match_hero_ids(payload)
+                if match_ids and match_ids != self._last_enqueued_match_ids:
+                    self._last_enqueued_match_ids = match_ids
+                    enqueue_fn = getattr(self._api, "enqueue_match_heroes", None)
+                    if callable(enqueue_fn):
+                        enqueue_fn(match_ids)
+            except Exception:  # noqa: BLE001
+                pass
+
     def _refresh_catalog_in_background(self) -> None:
+        payload = None
+        try:
+            payload = self._coach.gsi_payload()
+        except Exception:  # noqa: BLE001
+            payload = None
+        match_ids = self._extract_active_match_hero_ids(payload)
+        start_bg = getattr(self._api, "start_background_sync", None)
+        if callable(start_bg) and getattr(self._api, "sync_service", None) is not None:
+            # MetaSyncService сам проверяет bulk_fetched_at is None и соблюдает 24-72ч TTL + 429 backoff.
+            start_bg(hero_ids=match_ids)
+            return
+
         snapshot_at = self._api.snapshot_time
-        if snapshot_at is None or time.time() - snapshot_at < 7 * 24 * 3600:
+        if snapshot_at is not None and time.time() - snapshot_at < 24 * 3600:
             return
 
         def refresh() -> None:
+            if self.stop_event.is_set():
+                return
             if self._api.refresh_snapshots():
                 self._catalog = HeroCatalog(self._api.heroes)
                 self._coach.catalog = self._catalog
@@ -716,15 +848,17 @@ class Assistant:
         try:
             parts = [f"{self._coach.coach_name} на связи, тренер готов к игре."]
             parts.append(f"Позиция: {position_label(self._coach.position)}.")
-            if self.config.llm.provider == "openai_compatible" and not (self.config.llm.api_key or "").strip():
-                parts.append(
-                    "Внимание: API-ключ ИИ не указан. Нажмите кнопку ⚙ в окне AIDOTA, чтобы ввести ключ."
-                )
+            mode = compute_operating_mode(self.config.llm)
+            if mode == "deterministic":
                 if self._overlay is not None:
                     self._overlay.add_ai_message(
-                        "⚠️ Для получения советов через ИИ укажите API-ключ в Настройках (кнопка ⚙ в правом верхнем углу окна).\n"
-                        "Поддерживаются DeepSeek, OpenRouter, Groq, OpenAI и другие.",
-                        status="Требуется API-ключ",
+                        "⚠️ API-ключ ИИ не указан. Активен локальный детерминированный режим (таймеры и базовые советы). "
+                        "Для глубокого анализа введите ключ DeepSeek во вкладке «Настройки».",
+                        status="Детерминированный режим",
+                    )
+                else:
+                    parts.append(
+                        "Активен детерминированный режим без LLM-ключа; для глубоких советов укажите ключ DeepSeek во вкладке «Настройки»."
                     )
             if self._use_voice:
                 if self._voice.push_to_talk_enabled:
@@ -1113,15 +1247,21 @@ class Assistant:
         if kind == commands.CHAT:
             query = (intent.arg or intent.raw).strip()
             self._status(f"{self._coach.coach_name} думает…")
-            answer = self._coach.coach_chat(query, voice=self._use_voice)
-            self._answer(answer)
+            gen_id, _ = self._coach.preemption.start_turn()
+            self._tts.bump_generation()
+            answer = self._coach.coach_chat(query, voice=self._use_voice, generation_id=gen_id)
+            if answer:
+                self._answer(answer)
             return
 
         raw_text = (intent.raw or "").strip()
         if raw_text:
             self._status(f"{self._coach.coach_name} думает…")
-            answer = self._coach.coach_chat(raw_text, voice=self._use_voice)
-            self._answer(answer)
+            gen_id, _ = self._coach.preemption.start_turn()
+            self._tts.bump_generation()
+            answer = self._coach.coach_chat(raw_text, voice=self._use_voice, generation_id=gen_id)
+            if answer:
+                self._answer(answer)
             return
 
         self._say(
@@ -1206,6 +1346,20 @@ class Assistant:
         if self._overlay is not None:
             self._overlay.update_status(text)
 
+    def _on_tts_speaking_changed(self, is_speaking: bool) -> None:
+        """Синхронизирует открытый микрофон и статус с реальным состоянием очереди TTS."""
+        idle_status = (
+            f"Зажмите [{self._voice.ptt_key_label}]…"
+            if (self._use_voice and self._voice.push_to_talk_enabled)
+            else ("Слушаю…" if self._use_voice else "Текстовый режим")
+        )
+        if self._voice.ready and not self._voice.push_to_talk_enabled:
+            self._voice.set_muted(is_speaking)
+            if not is_speaking:
+                self._voice.discard_pending()
+        if self._overlay is not None:
+            self._overlay.update_status("Озвучиваю…" if is_speaking else idle_status)
+
     def _say(
         self,
         text: str,
@@ -1213,6 +1367,8 @@ class Assistant:
         speak: bool = True,
         priority: int = SpeechPriority.NORMAL,
         ttl: float = 0.0,
+        wait: bool = False,
+        generation_id: int | None = None,
     ) -> None:
         text = re.sub(r"\n{3,}", "\n\n", str(text or "")).strip()
         if not text:
@@ -1237,18 +1393,13 @@ class Assistant:
 
         if not (speak and self._tts_enabled):
             return
-        if self._voice.ready:
-            self._voice.set_muted(True)
-        if self._overlay is not None:
-            self._overlay.update_status("Озвучиваю…")
-        try:
-            ok = self._tts.speak(text, wait=True, priority=priority, ttl=ttl)
-        finally:
-            if self._voice.ready:
-                self._voice.set_muted(False)
-                self._voice.discard_pending()
-            if self._overlay is not None:
-                self._overlay.update_status(idle_status)
+        ok = self._tts.speak(
+            text,
+            wait=wait,
+            priority=priority,
+            ttl=ttl,
+            generation_id=generation_id,
+        )
         if not ok and not self._tts_warned:
             self._tts_warned = True
             self.log.warning("Озвучка недоступна: %s", self._tts.error)

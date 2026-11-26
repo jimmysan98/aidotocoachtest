@@ -11,6 +11,17 @@ import typing
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .paths import (
+    app_install_root,
+    atomic_write_json,
+    bundled_data_dir,
+    default_config_path,
+    meta_cache_dir,
+    resolve_writable_dir,
+    writable_root,
+)
+from .security import register_config_secrets
+
 _OBFUSCATION_KEY = b"AIDOTA_KEY_SALT_2026_XOR"
 
 
@@ -38,20 +49,8 @@ def deobfuscate_api_key(encoded_key: str) -> str:
     except Exception:
         return val
 
-def _base_dir() -> Path:
-    """Корень приложения: рядом с exe при заморозке, иначе корень проекта.
-
-    В замороженном виде ``__file__`` указывает внутрь PyInstaller-архива,
-    поэтому для поиска config.json / data / hero_icons / модели берём каталог
-    самого исполняемого файла.
-    """
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parent.parent
-
-
-PROJECT_ROOT = _base_dir()
-DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.json"
+PROJECT_ROOT = app_install_root()
+DEFAULT_CONFIG_PATH = default_config_path()
 
 
 class ConfigError(RuntimeError):
@@ -72,6 +71,32 @@ SKILL_LEVEL_LABELS: dict[str, str] = {
     "advanced": "Опытный",
     "expert": "Профи",
 }
+
+COACH_TONES: tuple[str, ...] = ("balanced", "tactical", "supportive", "brief")
+DETAIL_MODES: tuple[str, ...] = ("auto", "concise", "detailed")
+
+
+def normalize_coach_tone(value: typing.Any) -> str:
+    """Приводит тон/стиль тренера к одному из допустимых значений."""
+    text = str(value or "").strip().lower()
+    aliases = {
+        "balanced": "balanced", "сбалансированный": "balanced", "обычный": "balanced",
+        "tactical": "tactical", "тактический": "tactical", "строгий": "tactical", "профи": "tactical",
+        "supportive": "supportive", "поддерживающий": "supportive", "дружелюбный": "supportive",
+        "brief": "brief", "краткий": "brief", "лаконичный": "brief", "короткий": "brief",
+    }
+    return aliases.get(text, "balanced")
+
+
+def normalize_detail_mode(value: typing.Any) -> str:
+    """Приводит режим детализации ответов к auto | concise | detailed."""
+    text = str(value or "").strip().lower()
+    aliases = {
+        "auto": "auto", "авто": "auto",
+        "concise": "concise", "кратко": "concise", "коротко": "concise",
+        "detailed": "detailed", "подробно": "detailed", "глубокий": "detailed",
+    }
+    return aliases.get(text, "auto")
 
 #: Алиасы (в нижнем регистре) -> канонический код уровня.
 _SKILL_LEVEL_ALIASES: dict[str, str] = {
@@ -327,7 +352,7 @@ DEFAULT_LLM_PRESETS: dict[str, dict] = {
         "model": "deepseek-reasoner",
         "temperature": 0.4,
         "timeout": 60.0,
-        "max_tokens": 450,
+        "max_tokens": 4096,
     },
     "groq": {
         "provider": "openai_compatible",
@@ -403,6 +428,13 @@ class LlmConfig:
     temperature: float = 0.4
     timeout: float = 120.0
     max_tokens: int = 350
+    routing_mode: str = "auto"
+    tier1_model: str = ""
+    tier2_model: str = ""
+    tier1_timeout: float = 3.0
+    tier2_timeout: float = 20.0
+    tier2_max_tokens: int = 4096
+    allow_pollinations_fallback: bool = True
     presets: dict[str, dict] = field(default_factory=lambda: dict(DEFAULT_LLM_PRESETS))
 
 
@@ -424,8 +456,22 @@ class PlayerProfile:
     #: Уровень игры: beginner | amateur | advanced | expert.
     #: Тренер подстраивает объяснения под новичка (см. normalize_skill_level).
     skill_level: str = "beginner"
+    #: Стиль подачи тренера: balanced | tactical | supportive | brief
+    coach_tone: str = "balanced"
+    #: Режим детализации: auto | concise | detailed
+    detail_mode: str = "auto"
+    #: Личная цель или фокус игрока (подмешивается в промпт)
+    custom_focus: str = ""
+    #: Автоматически озвучивать ответы в текстовом чате
+    speak_chat: bool = True
     signature_heroes: list[str] = field(default_factory=list)
     common_mistakes: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.coach_tone = normalize_coach_tone(self.coach_tone)
+        self.detail_mode = normalize_detail_mode(self.detail_mode)
+        self.custom_focus = " ".join(str(self.custom_focus or "").split())[:200]
+        self.speak_chat = bool(self.speak_chat)
 
 
 @dataclass
@@ -437,6 +483,7 @@ class DotaConfig:
 
 @dataclass
 class Config:
+    schema_version: int = 2
     gsi: GsiConfig = field(default_factory=GsiConfig)
     audio: AudioConfig = field(default_factory=AudioConfig)
     tts: TtsConfig = field(default_factory=TtsConfig)
@@ -463,16 +510,33 @@ class Config:
         return p if p.is_absolute() else (PROJECT_ROOT / p)
 
     @property
+    def bundled_data_path(self) -> Path:
+        """Read-only каталог офлайн-снапшотов (``data/heroes.json``, ``data/items.json``)."""
+        raw = Path(self.data_dir)
+        if raw.is_absolute() and (raw / "heroes.json").is_file():
+            return raw
+        return bundled_data_dir(app_install_root())
+
+    @property
+    def state_data_path(self) -> Path:
+        """Записываемый каталог пользовательского состояния (%LOCALAPPDATA%\\AIDOTA\\data в frozen)."""
+        return resolve_writable_dir(self.data_dir)
+
+    @property
     def data_path(self) -> Path:
-        return self.path(self.data_dir)
+        return self.state_data_path
 
     @property
     def cache_path(self) -> Path:
-        return self.path(self.cache_dir)
+        return resolve_writable_dir(self.cache_dir)
+
+    @property
+    def meta_cache_path(self) -> Path:
+        return meta_cache_dir(self.cache_path)
 
     @property
     def logs_path(self) -> Path:
-        return self.path(self.logs_dir)
+        return resolve_writable_dir(self.logs_dir)
 
 
 # --------------------------------------------------------------------------- #
@@ -635,11 +699,16 @@ def validate_audio_devices(config: Config) -> bool:
     return changed
 
 
+def _resolve_config_path(path: str | Path | None) -> Path:
+    if not path:
+        return default_config_path()
+    p = Path(path)
+    return p if p.is_absolute() else (writable_root() / p)
+
+
 def reset_to_defaults(path: str | Path | None = None) -> Config:
     """Сбрасывает конфигурацию к эталонным настройкам из default_preset.json."""
-    config_path = Path(path) if path else DEFAULT_CONFIG_PATH
-    if not config_path.is_absolute():
-        config_path = PROJECT_ROOT / config_path
+    config_path = _resolve_config_path(path)
 
     raw_preset = load_default_preset()
     # Деобфусцируем ключ для живой конфигурации
@@ -658,9 +727,7 @@ def reset_to_defaults(path: str | Path | None = None) -> Config:
 
 def load_config(path: str | Path | None = None, *, create_if_missing: bool = True) -> Config:
     """Загружает config.json, дополняя его значениями по умолчанию."""
-    config_path = Path(path) if path else DEFAULT_CONFIG_PATH
-    if not config_path.is_absolute():
-        config_path = PROJECT_ROOT / config_path
+    config_path = _resolve_config_path(path)
 
     if not config_path.is_file():
         if create_if_missing:
@@ -686,6 +753,11 @@ def load_config(path: str | Path | None = None, *, create_if_missing: bool = Tru
     # Деобфусцируем ключ, если он сохранён с префиксом enc:
     if config.llm.api_key and config.llm.api_key.startswith("enc:"):
         config.llm.api_key = deobfuscate_api_key(config.llm.api_key)
+    for preset in (config.llm.presets or {}).values():
+        if isinstance(preset, dict):
+            pkey = preset.get("api_key")
+            if isinstance(pkey, str) and pkey.startswith("enc:"):
+                preset["api_key"] = deobfuscate_api_key(pkey)
 
     # Защита от пустых настроек LLM: если в конфиге был пустой блок llm
     if "llm" in raw:
@@ -698,6 +770,7 @@ def load_config(path: str | Path | None = None, *, create_if_missing: bool = Tru
 
     _validate_profile(config)
     validate_audio_devices(config)
+    register_config_secrets(config)
     return config
 
 
@@ -739,6 +812,18 @@ def _validate_profile(config: Config) -> None:
     config.player_profile.skill_level = normalize_skill_level(
         getattr(config.player_profile, "skill_level", "beginner")
     )
+    config.player_profile.coach_tone = normalize_coach_tone(
+        getattr(config.player_profile, "coach_tone", "balanced")
+    )
+    config.player_profile.detail_mode = normalize_detail_mode(
+        getattr(config.player_profile, "detail_mode", "auto")
+    )
+    config.player_profile.custom_focus = str(
+        getattr(config.player_profile, "custom_focus", "") or ""
+    ).strip()[:200]
+    config.player_profile.speak_chat = bool(
+        getattr(config.player_profile, "speak_chat", True)
+    )
 
 
 def _merge(base: dict, override: dict) -> dict:
@@ -751,16 +836,36 @@ def _merge(base: dict, override: dict) -> dict:
     return result
 
 
+def _prepare_llm_dict_for_disk(llm_dict: dict[str, typing.Any]) -> dict[str, typing.Any]:
+    """Обфусцирует API-ключи перед записью config.json на диск (не меняя объект в RAM)."""
+    out = dict(llm_dict)
+    raw_key = str(out.get("api_key") or "").strip()
+    if raw_key and not raw_key.startswith("enc:"):
+        out["api_key"] = obfuscate_api_key(raw_key)
+    presets = out.get("presets")
+    if isinstance(presets, dict):
+        clean_presets: dict[str, typing.Any] = {}
+        for name, preset in presets.items():
+            if isinstance(preset, dict):
+                p_copy = dict(preset)
+                pkey = str(p_copy.get("api_key") or "").strip()
+                if pkey and not pkey.startswith("enc:"):
+                    p_copy["api_key"] = obfuscate_api_key(pkey)
+                clean_presets[name] = p_copy
+            else:
+                clean_presets[name] = preset
+        out["presets"] = clean_presets
+    return out
+
+
 def save_config(config: Config, path: str | Path | None = None) -> Path:
-    config_path = Path(path) if path else DEFAULT_CONFIG_PATH
-    if not config_path.is_absolute():
-        config_path = PROJECT_ROOT / config_path
-    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path = _resolve_config_path(path)
+    register_config_secrets(config)
     data = dataclasses.asdict(config)
+    if isinstance(data.get("llm"), dict):
+        data["llm"] = _prepare_llm_dict_for_disk(data["llm"])
     # None-значения (например, input_device) оставляем — это осознанный выбор.
-    config_path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    atomic_write_json(config_path, data)
     return config_path
 
 
@@ -770,9 +875,8 @@ def save_llm_only(config: Config, path: str | Path | None = None) -> Path:
     Нужно, чтобы смена модели/пресета голосом не затирала другие настройки
     (и не сохраняла временные флаги командной строки вроде ``--no-tts``).
     """
-    config_path = Path(path) if path else DEFAULT_CONFIG_PATH
-    if not config_path.is_absolute():
-        config_path = PROJECT_ROOT / config_path
+    config_path = _resolve_config_path(path)
+    register_config_secrets(config)
     raw: dict = {}
     if config_path.is_file():
         try:
@@ -781,9 +885,6 @@ def save_llm_only(config: Config, path: str | Path | None = None) -> Path:
             raw = {}
     if not isinstance(raw, dict):
         raw = {}
-    raw["llm"] = dataclasses.asdict(config.llm)
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(
-        json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    raw["llm"] = _prepare_llm_dict_for_disk(dataclasses.asdict(config.llm))
+    atomic_write_json(config_path, raw)
     return config_path

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from aidota.config import Config, save_config
+from aidota.tts import SpeechPriority
 from aidota.web_app import AidotaWebApi, WebGuiController
 
 
@@ -89,6 +90,7 @@ class TestWebSocketsAndApiBridge(unittest.TestCase):
             self.assertEqual(self.api.get_item_icon(bad_key), "")
 
     def test_save_settings_url_and_model_fallbacks(self):
+        # 1) С sk- ключом и пустыми URL/моделью автодетект ставит DeepSeek (не утекает в Pollinations).
         self.ctrl.config.llm.base_url = ""
         self.ctrl.config.llm.model = ""
 
@@ -98,9 +100,22 @@ class TestWebSocketsAndApiBridge(unittest.TestCase):
             "llm_api_key": "sk-test",
         })
         self.assertTrue(res.get("success"))
+        self.assertEqual(self.ctrl.config.llm.base_url, "https://api.deepseek.com/v1")
+        self.assertEqual(self.ctrl.config.llm.model, "deepseek-chat")
+        self.assertEqual(self.ctrl.config.llm.api_key, "sk-test")
+
+        # 2) Без API-ключа и без URL/модели сохраняется бесплатный резерв Pollinations.
+        self.ctrl.config.llm.base_url = ""
+        self.ctrl.config.llm.model = ""
+        self.ctrl.config.llm.api_key = ""
+        res_free = self.api.save_settings({
+            "llm_base_url": "",
+            "llm_model": "",
+            "llm_api_key": "",
+        })
+        self.assertTrue(res_free.get("success"))
         self.assertEqual(self.ctrl.config.llm.base_url, "https://text.pollinations.ai/openai")
         self.assertEqual(self.ctrl.config.llm.model, "gemini")
-        self.assertEqual(self.ctrl.config.llm.api_key, "sk-test")
 
     def test_save_settings_skill_level_normalization_and_propagation(self):
         mock_assistant = MagicMock()
@@ -154,7 +169,11 @@ class TestWebSocketsAndApiBridge(unittest.TestCase):
         reply = self.api.send_chat("что купить?")
         self.assertEqual(reply, "Купи BKB против контроля.")
         mock_assistant._coach.coach_chat.assert_called_once_with("что купить?")
-        mock_assistant._tts.speak.assert_called_once_with("Купи BKB против контроля.")
+        mock_assistant._tts.speak.assert_called_once_with(
+            "Купи BKB против контроля.",
+            wait=False,
+            priority=SpeechPriority.LLM_COACH,
+        )
 
     def test_toggle_assistant_and_toggle_overlay(self):
         # toggle_assistant: when not running -> starts

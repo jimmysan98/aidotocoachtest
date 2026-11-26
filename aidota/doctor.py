@@ -7,13 +7,17 @@
 from __future__ import annotations
 
 import socket
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Any
 
-from .config import Config, PROJECT_ROOT
+from .config import PROJECT_ROOT, Config
 from .dota_api import DotaApi
 from .dota_install import find_gsi_dirs
+from .llm_router import compute_operating_mode
+from .meta_sync import MetaSyncService
+from .security import redact_secrets
 
 STATUS_ORDER = {"OK": 0, "WARN": 1, "FAIL": 2}
 STATUS_LABEL = {"OK": "[ OK ]", "WARN": "[WARN]", "FAIL": "[FAIL]"}
@@ -31,8 +35,6 @@ def _check_python(config: Config) -> Check:
     import sys
 
     version = ".".join(str(part) for part in sys.version_info[:3])
-    if sys.version_info < (3, 10):
-        return Check("Python", "FAIL", f"версия {version}", "Нужен Python 3.10+")
     return Check("Python", "OK", version)
 
 
@@ -156,8 +158,8 @@ def _check_llm(config: Config) -> Check:
             return Check(
                 "LLM",
                 "WARN",
-                f"модель {llm.model}, но API-ключ не указан",
-                "Откройте Настройки (⚙) в окне AIDOTA или укажите llm.api_key в config.json.",
+                f"модель {llm.model}, но API-ключ не указан (доступен детерминированный режим)",
+                "Откройте вкладку Настройки в окне AIDOTA и введите API-ключ DeepSeek или включите локальную Ollama.",
             )
         headers = {"Authorization": f"Bearer {llm.api_key}"}
         try:
@@ -168,8 +170,8 @@ def _check_llm(config: Config) -> Check:
             return Check(
                 "LLM",
                 "WARN",
-                f"{base} не отвечает: {exc}",
-                "Проверьте llm.base_url и llm.api_key в config.json или окне Настроек.",
+                f"{base} не отвечает: {redact_secrets(str(exc))}",
+                "Проверьте llm.base_url и llm.api_key в config.json или во вкладке Настроек.",
             )
         if not llm.model:
             return Check("LLM", "WARN", "модель не задана", "Укажите llm.model в config.json.")
@@ -183,7 +185,7 @@ def _check_llm(config: Config) -> Check:
         return Check(
             "LLM",
             "WARN",
-            f"{base} не отвечает: {exc}",
+            f"{base} не отвечает: {redact_secrets(str(exc))}",
             "Запустите Ollama (ollama serve) или настройте облачную модель через llm в config.json.",
         )
     if not models:
@@ -249,24 +251,75 @@ def _check_dota(config: Config) -> Check:
 
 
 def _check_snapshots(config: Config) -> Check:
-    api = DotaApi(config.data_path)
+    api = DotaApi(config.bundled_data_path, cache_dir=config.meta_cache_path, auto_swr=True)
     api.load_snapshots()
-    if not api.heroes:
+    try:
+        heroes_count = len(api.heroes)
+        items_count = len(api.items())
+        patch = api.current_patch
+    finally:
+        api.close()
+    if not heroes_count:
         return Check(
             "Данные героев",
             "WARN",
             "data/heroes.json отсутствует или пуст",
-            "Выполните: python main.py --fetch-icons (скачает и данные, и иконки).",
+            "Выполните: python main.py --update-data (скачает данные в пользовательский кэш).",
         )
-    return Check("Данные героев", "OK", f"{len(api.heroes)} героев, {len(api.items())} предметов")
+    patch_note = f", патч {patch}" if patch else ""
+    return Check("Данные героев", "OK", f"{heroes_count} героев, {items_count} предметов{patch_note}")
+
+
+def _check_meta_cache(config: Config) -> Check:
+    sync = MetaSyncService(config.meta_cache_path)
+    try:
+        diag = sync.diagnostics()
+    finally:
+        sync.close()
+    patch = diag.get("patch") or "—"
+    age_h = diag.get("bulk_age_hours")
+    backoff_rem = float(diag.get("backoff_remaining_sec") or 0.0)
+    last_err = str(diag.get("last_error") or "").strip()
+    hero_cnt = int(diag.get("cached_heroes") or 0)
+    pop_cnt = int(diag.get("cached_popularity_heroes") or 0)
+    if backoff_rem > 0:
+        return Check(
+            "Кэш меты",
+            "WARN",
+            f"пауза OpenDota 429 ({int(backoff_rem)} с), патч {patch}",
+            "Синхронизация возобновится автоматически; до этого работает офлайн-база data/.",
+        )
+    if last_err and hero_cnt == 0:
+        return Check(
+            "Кэш меты",
+            "WARN",
+            f"ошибка синхронизации ({redact_secrets(last_err)[:100]})",
+            "Работает read-only офлайн-база data/. Проверьте сеть или запустите --update-data.",
+        )
+    if hero_cnt == 0 or age_h is None:
+        return Check(
+            "Кэш меты",
+            "WARN",
+            "живой SWR-кэш ещё не прогрет (активна офлайн-база data/)",
+            "Обновится автоматически в фоне при запуске или через python main.py --update-data.",
+        )
+    status = "WARN" if last_err else "OK"
+    detail = f"патч {patch}, возраст {age_h} ч, героев: {hero_cnt}, сборок матча: {pop_cnt}"
+    if last_err:
+        detail += f" · ошибка: {redact_secrets(last_err)[:80]}"
+    hint = "Работает кэшированная мета; фоновое обновление повторится позже." if last_err else ""
+    return Check("Кэш меты", status, detail, hint)
 
 
 def _check_opendota(config: Config, quick: bool = True) -> Check:
     if quick:
         return Check("OpenDota", "OK", "проверка при необходимости: python main.py --doctor --online")
-    api = DotaApi(config.data_path, timeout=8)
-    if api.online():
-        return Check("OpenDota", "OK", "API доступен")
+    api = DotaApi(config.bundled_data_path, cache_dir=config.meta_cache_path, timeout=8)
+    try:
+        if api.online():
+            return Check("OpenDota", "OK", "API доступен")
+    finally:
+        api.close()
     return Check(
         "OpenDota",
         "WARN",
@@ -320,6 +373,7 @@ def get_checks(config: Config, *, online: bool = False) -> list[Check]:
         _check_gsi_port(config),
         _check_dota(config),
         _check_snapshots(config),
+        _check_meta_cache(config),
         _check_icons(config),
         _check_overlay(config),
         _check_opendota(config, quick=not online),
@@ -382,7 +436,7 @@ def download_vosk_model(
         return target_dir
 
     if progress_callback:
-        progress_callback(0.01, f"Подключение к серверу моделей Vosk...")
+        progress_callback(0.01, "Подключение к серверу моделей Vosk...")
 
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 AIDOTA"})
     with urllib.request.urlopen(req, timeout=30) as resp:
@@ -412,4 +466,45 @@ def download_vosk_model(
     if progress_callback:
         progress_callback(1.0, f"Модель {model_name} успешно установлена!")
     return target_dir
+
+
+def runtime_diagnostics(config: Config, coach: Any | None = None, api: Any | None = None) -> dict[str, Any]:
+    """Возвращает безопасную (без секретов) сводку runtime-состояния маршрутизатора и кэша."""
+    diag: dict[str, Any] = {
+        "operating_mode": compute_operating_mode(config.llm),
+        "breakers": {},
+        "telemetry": {},
+        "meta_cache": {},
+    }
+    if coach is not None:
+        router = getattr(coach, "router", None)
+        if router is not None and hasattr(router, "breaker"):
+            try:
+                diag["breakers"] = router.breaker.snapshot()
+            except Exception:  # noqa: BLE001
+                pass
+        telemetry = getattr(coach, "telemetry", None)
+        if telemetry is not None and hasattr(telemetry, "summary"):
+            try:
+                diag["telemetry"] = telemetry.summary()
+            except Exception:  # noqa: BLE001
+                pass
+        if api is None:
+            api = getattr(coach, "api", None)
+    sync = getattr(api, "sync_service", None) if api is not None else None
+    if sync is not None and hasattr(sync, "diagnostics"):
+        try:
+            diag["meta_cache"] = sync.diagnostics()
+        except Exception:  # noqa: BLE001
+            pass
+    else:
+        try:
+            tmp_sync = MetaSyncService(config.meta_cache_path)
+            try:
+                diag["meta_cache"] = tmp_sync.diagnostics()
+            finally:
+                tmp_sync.close()
+        except Exception:  # noqa: BLE001
+            pass
+    return diag
 

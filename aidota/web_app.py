@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import sys
 import threading
@@ -24,12 +23,12 @@ from typing import Any
 from . import __version__
 from .app import Assistant
 from .audio import list_audio_devices
-from .rust_bridge import is_rust_available
 from .config import (
     DEFAULT_CONFIG_PATH,
     PROJECT_ROOT,
     Config,
-    load_config,
+    normalize_coach_tone,
+    normalize_detail_mode,
     normalize_skill_level,
     save_config,
 )
@@ -37,18 +36,24 @@ from .context import (
     extract_own_abilities,
     get_live_gsi_snapshot,
 )
-from .doctor import get_checks
+from .doctor import get_checks, runtime_diagnostics
 from .dota_install import add_to_steam_library, install_gsi_full
 from .icons import (
     CDN as ICON_CDN,
+)
+from .icons import (
     create_session,
     download_image,
     item_icon_url,
     read_image_data_uri,
 )
 from .live_advice import build_item_advice
+from .llm_router import compute_operating_mode, detect_provider_by_key
+from .security import mask_api_key_for_display, redact_secrets, register_config_secrets
 from .settings_gui import test_llm_connection
+from .telemetry import TelemetrySink
 from .tray import AidotaTray
+from .tts import SpeechPriority
 from .windows_icon import get_app_icon_path, set_app_user_model_id, setup_window_handle
 
 log = logging.getLogger("aidota.web_app")
@@ -65,8 +70,9 @@ def _normalize_hero_key(value: Any) -> str:
 class AidotaWebApi:
     """Двусторонний API-мост между JavaScript веб-интерфейсом и ядром Python."""
 
-    def __init__(self, app_controller: "WebGuiController"):
+    def __init__(self, app_controller: WebGuiController):
         self._ctrl = app_controller
+        self._cache_lock = threading.RLock()
         # Кэши иконок живут в памяти: JS дёргает API при каждой смене героя/слота.
         self._hero_icon_cache: dict[str, str] = {}
         self._item_icon_cache: dict[str, str] = {}
@@ -76,6 +82,11 @@ class AidotaWebApi:
         self._item_costs_cache: dict[str, int] | None = None
         self._advice_cache_key: Any = None
         self._advice_cached_data: list[dict[str, Any]] = []
+        self._meta_api: Any | None = None
+        self._cached_data_version: int = -1
+        self._standalone_coach: Any | None = None
+        self._standalone_tts: Any | None = None
+        self._telemetry = TelemetrySink(getattr(app_controller.config, "logs_path", None))
 
     # ------------------------------------------------------------------ #
     # Общие источники живых данных
@@ -84,15 +95,60 @@ class AidotaWebApi:
         return getattr(self._ctrl.assistant, "_coach", None) if self._ctrl.assistant else None
 
     def _item_api(self) -> Any | None:
-        """DotaApi живого ассистента (если он уже создан)."""
+        """DotaApi живого ассистента или локальный SWR-клиент (без сетевых вызовов)."""
         coach = self._assistant_coach()
         api = getattr(coach, "api", None) if coach is not None else None
         if api is None and self._ctrl.assistant is not None:
             api = getattr(self._ctrl.assistant, "_api", None)
-        return api
+        if api is not None:
+            return api
+        with self._cache_lock:
+            if self._meta_api is None:
+                try:
+                    from .dota_api import DotaApi
+                    from .meta_db import set_live_meta_provider
+
+                    cfg = self._ctrl.config
+                    local_api = DotaApi(
+                        cfg.bundled_data_path,
+                        cache_dir=cfg.meta_cache_path,
+                        auto_swr=True,
+                    )
+                    local_api.load_snapshots()
+                    set_live_meta_provider(local_api)
+                    self._meta_api = local_api
+                except Exception:  # noqa: BLE001
+                    self._meta_api = None
+            return self._meta_api
+
+    def _sync_cache_version(self) -> int:
+        """Сбрасывает WebUI-кэши героев, цен и советов при изменении ``cache_version``."""
+        api = self._item_api()
+        api_ver = 0
+        if api is not None:
+            raw_ver = getattr(api, "cache_version", 0)
+            if isinstance(raw_ver, int) and not isinstance(raw_ver, bool):
+                api_ver = raw_ver
+        try:
+            from .meta_db import live_cache_version
+
+            db_ver = live_cache_version()
+        except Exception:  # noqa: BLE001
+            db_ver = 0
+        combined = api_ver * 100000 + db_ver
+        with self._cache_lock:
+            if combined != self._cached_data_version:
+                self._heroes_cache = None
+                self._items_cache = None
+                self._item_costs_cache = None
+                self._advice_cache_key = None
+                self._advice_cached_data = []
+                self._cached_data_version = combined
+        return combined
 
     def _heroes(self) -> list[dict]:
-        """Снапшот героев (для CDN-фолбэка иконки): DotaApi → data/heroes.json."""
+        """Снапшот героев (SWR-кэш / DotaApi → read-only data/heroes.json)."""
+        self._sync_cache_version()
         if self._heroes_cache is not None:
             return self._heroes_cache
         heroes: list[dict] = []
@@ -105,7 +161,7 @@ class AidotaWebApi:
         if not heroes:
             try:
                 data = json.loads(
-                    (self._ctrl.config.data_path / "heroes.json").read_text(encoding="utf-8")
+                    (self._ctrl.config.bundled_data_path / "heroes.json").read_text(encoding="utf-8")
                 )
                 if isinstance(data, list):
                     heroes = [h for h in data if isinstance(h, dict)]
@@ -116,7 +172,8 @@ class AidotaWebApi:
         return heroes
 
     def _items_map(self) -> dict[str, str]:
-        """Словарь слаг → display-имя предмета (DotaApi → data/items.json)."""
+        """Словарь слаг → display-имя предмета (SWR-кэш / DotaApi → read-only data/items.json)."""
+        self._sync_cache_version()
         if self._items_cache is not None:
             return self._items_cache
         result: dict[str, str] = {}
@@ -131,7 +188,7 @@ class AidotaWebApi:
         if not result:
             try:
                 data = json.loads(
-                    (self._ctrl.config.data_path / "items.json").read_text(encoding="utf-8")
+                    (self._ctrl.config.bundled_data_path / "items.json").read_text(encoding="utf-8")
                 )
                 if isinstance(data, dict):
                     for key, value in data.items():
@@ -146,7 +203,8 @@ class AidotaWebApi:
         return result
 
     def _item_costs_map(self) -> dict[str, int]:
-        """Display-имя предмета → цена (DotaApi.item_costs → data/items.json)."""
+        """Display-имя предмета → цена (SWR-кэш / DotaApi.item_costs → read-only data/items.json)."""
+        self._sync_cache_version()
         if self._item_costs_cache is not None:
             return self._item_costs_cache
         api = self._item_api()
@@ -169,7 +227,7 @@ class AidotaWebApi:
         result = {}
         try:
             data = json.loads(
-                (self._ctrl.config.data_path / "items.json").read_text(encoding="utf-8")
+                (self._ctrl.config.bundled_data_path / "items.json").read_text(encoding="utf-8")
             )
             if isinstance(data, dict):
                 for value in data.values():
@@ -209,6 +267,10 @@ class AidotaWebApi:
 
     def _hero_icon_dirs(self) -> list[Path]:
         dirs: list[Path] = []
+        try:
+            dirs.append(self._ctrl.config.cache_path / "hero_icons")
+        except Exception:  # noqa: BLE001
+            pass
         try:
             dirs.append(self._ctrl.config.path(self._ctrl.config.vision.icons_dir))
         except Exception:  # noqa: BLE001
@@ -409,13 +471,19 @@ class AidotaWebApi:
         cfg = self._ctrl.config
         coach_name = cfg.player_profile.coach_name or "Астра"
         pos = int(cfg.player_profile.default_position or 1)
+        data_ver = self._sync_cache_version()
 
-        coach = getattr(self._ctrl.assistant, "_coach", None) if self._ctrl.assistant else None
+        coach = self._assistant_coach()
         raw_state: dict | None = None
         gsi_age: float | None = None
         catalog = None
         items_map: dict[str, str] = {}
         if coach is not None:
+            coach_name = getattr(coach, "coach_name", None) or coach_name
+            try:
+                pos = int(getattr(coach, "position", pos) or pos)
+            except (TypeError, ValueError):
+                pass
             try:
                 raw_state = coach.gsi_payload()
             except Exception:  # noqa: BLE001
@@ -438,9 +506,7 @@ class AidotaWebApi:
                     items_map = api_obj.items() or {}
                 except Exception:  # noqa: BLE001
                     items_map = {}
-        item_api = getattr(coach, "api", None) if coach is not None else None
-        if item_api is None and self._ctrl.assistant is not None:
-            item_api = getattr(self._ctrl.assistant, "_api", None)
+        item_api = self._item_api()
         item_costs_map: dict[str, int] = {}
         if item_api is not None:
             costs_getter = getattr(item_api, "item_costs", None)
@@ -521,6 +587,7 @@ class AidotaWebApi:
         item_advice: list[dict[str, Any]] = []
         if gsi_snap.get("available"):
             advice_key = (
+                data_ver,
                 gsi_snap.get("hero_name") or "",
                 pos,
                 tuple(inventory_keys),
@@ -584,18 +651,26 @@ class AidotaWebApi:
             "assistant_running": self._ctrl.is_running,
             "gsi": gsi_data,
             "audio_devices": self._ctrl.audio_devices(),
-            "rust_active": is_rust_available(),
+            "rust_active": False,
+            "operating_mode": compute_operating_mode(cfg.llm),
+            "runtime_diagnostics": runtime_diagnostics(
+                cfg, self._assistant_coach() or self._standalone_coach, api=item_api
+            ),
             "settings": self.get_settings(),
         }
 
     def get_settings(self) -> dict[str, Any]:
-        """Возвращает текущую конфигурацию приложения для веб-интерфейса."""
+        """Возвращает текущую конфигурацию приложения без утечки открытого API-ключа."""
         cfg = self._ctrl.config
+        plain_key = str(cfg.llm.api_key or "").strip()
         return {
-            "llm_provider": cfg.llm.provider or "openai_compatible",
-            "llm_base_url": cfg.llm.base_url or "https://text.pollinations.ai/openai",
-            "llm_model": cfg.llm.model or "gemini",
-            "llm_api_key": cfg.llm.api_key or "",
+            "llm_provider": cfg.llm.provider or "ollama",
+            "llm_base_url": cfg.llm.base_url or "https://api.deepseek.com/v1",
+            "llm_model": cfg.llm.model or "deepseek-chat",
+            "llm_routing_mode": getattr(cfg.llm, "routing_mode", "auto") or "auto",
+            "llm_api_key": "",
+            "llm_api_key_set": bool(plain_key),
+            "llm_api_key_masked": mask_api_key_for_display(plain_key),
             "tts_provider": cfg.tts.provider or "piper",
             "edge_voice": cfg.tts.edge_voice or "ru-RU-SvetlanaNeural",
             "input_device": cfg.audio.input_device,
@@ -603,8 +678,18 @@ class AidotaWebApi:
             "ptt_key": cfg.audio.ptt_key or "v",
             "autonomy_level": cfg.player_profile.autonomy_level or "medium",
             "skill_level": normalize_skill_level(getattr(cfg.player_profile, "skill_level", "beginner")),
+            "coach_tone": normalize_coach_tone(getattr(cfg.player_profile, "coach_tone", "balanced")),
+            "detail_mode": normalize_detail_mode(getattr(cfg.player_profile, "detail_mode", "auto")),
+            "custom_focus": str(getattr(cfg.player_profile, "custom_focus", "") or ""),
+            "speak_chat": bool(getattr(cfg.player_profile, "speak_chat", True)),
             "audio_devices": self._ctrl.audio_devices(),
         }
+
+    def toggle_mic(self) -> bool:
+        """Переключает состояние микрофона активного ассистента."""
+        if self._ctrl.assistant and hasattr(self._ctrl.assistant, "toggle_mic"):
+            return bool(self._ctrl.assistant.toggle_mic())
+        return False
 
     def toggle_assistant(self) -> bool:
         """Запускает или останавливает фонового голосового тренера."""
@@ -665,64 +750,159 @@ class AidotaWebApi:
             return True
         return False
 
+    def _get_or_create_standalone_coach(self) -> Any:
+        with self._cache_lock:
+            if self._standalone_coach is not None:
+                return self._standalone_coach
+            from .coach import Coach
+            from .dota_api import DotaApi
+            from .heroes import HeroCatalog
+
+            cfg = self._ctrl.config
+            api = self._meta_api
+            if api is None:
+                api = DotaApi(
+                    cfg.bundled_data_path,
+                    cache_dir=cfg.meta_cache_path,
+                    auto_swr=True,
+                )
+                api.load_snapshots()
+                self._meta_api = api
+            catalog = HeroCatalog(api.heroes or self._heroes())
+            self._standalone_coach = Coach(
+                api,
+                catalog,
+                None,
+                cfg.llm,
+                cfg.player_profile,
+                coach_name=cfg.player_profile.coach_name or "Астра",
+                memory_path=cfg.state_data_path / "coach_memory.json",
+                state_dir=cfg.state_data_path,
+                telemetry=self._telemetry,
+            )
+            return self._standalone_coach
+
+    def _get_or_create_standalone_tts(self) -> Any:
+        with self._cache_lock:
+            if self._standalone_tts is None:
+                from .tts import HumanTTSManager
+
+                self._standalone_tts = HumanTTSManager(
+                    self._ctrl.config.tts,
+                    self._ctrl.config.cache_path,
+                )
+            return self._standalone_tts
+
     def send_chat(self, text: str) -> str:
-        """Обрабатывает текстовый вопрос игрока через ИИ и возвращает ответ тренера."""
+        """Обрабатывает текстовый вопрос игрока и неблокирующе ставит озвучку."""
         query = str(text or "").strip()
         if not query:
             return "Да, я на связи. Что подсказать?"
+        speak = bool(getattr(self._ctrl.config.player_profile, "speak_chat", True))
         if self._ctrl.assistant and hasattr(self._ctrl.assistant, "_coach"):
             reply = self._ctrl.assistant._coach.coach_chat(query)
-            if hasattr(self._ctrl.assistant, "_tts"):
-                self._ctrl.assistant._tts.speak(reply)
+            if speak and hasattr(self._ctrl.assistant, "_tts"):
+                tts = self._ctrl.assistant._tts
+                if hasattr(tts, "bump_generation"):
+                    tts.bump_generation()
+                tts.speak(reply, wait=False, priority=SpeechPriority.LLM_COACH)
             return reply
-        from .coach import Coach
-        from .dota_api import DotaApi
-        from .heroes import HeroCatalog
-
-        api = DotaApi(self._ctrl.config.data_path)
-        api.load_snapshots()
-        coach = Coach(
-            api,
-            HeroCatalog([]),
-            None,
-            self._ctrl.config.llm,
-            self._ctrl.config.player_profile,
-            coach_name=self._ctrl.config.player_profile.coach_name or "Астра",
-        )
-        return coach.coach_chat(query)
+        coach = self._get_or_create_standalone_coach()
+        reply = coach.coach_chat(query)
+        if speak and getattr(self._ctrl.config.tts, "enabled", True):
+            tts = self._get_or_create_standalone_tts()
+            if hasattr(tts, "bump_generation"):
+                tts.bump_generation()
+            tts.speak(reply, wait=False, priority=SpeechPriority.LLM_COACH)
+        return reply
 
     def test_llm_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Проверяет подключение к указанной модели LLM."""
+        """Проверяет подключение к указанной модели LLM (включая Ollama)."""
         base_url = str(payload.get("base_url") or "").strip()
         model = str(payload.get("model") or "").strip()
         api_key = str(payload.get("api_key") or "").strip()
+        provider = str(
+            payload.get("provider") or payload.get("llm_provider") or ""
+        ).strip().lower()
+
+        if not provider:
+            if "11434" in base_url or "ollama" in base_url.lower():
+                provider = "ollama"
+            else:
+                provider = "openai_compatible"
+
+        if not api_key and provider != "ollama":
+            # Если пользователь нажал «Проверить» без повторного ввода уже сохранённого ключа
+            cfg_key = str(self._ctrl.config.llm.api_key or "").strip()
+            if cfg_key:
+                api_key = cfg_key
+                register_config_secrets(self._ctrl.config)
 
         if not base_url:
-            base_url = "https://text.pollinations.ai/openai"
+            base_url = (
+                "http://127.0.0.1:11434"
+                if provider == "ollama"
+                else "https://text.pollinations.ai/openai"
+            )
         if not model:
-            model = "gemini"
+            model = "gemma3" if provider == "ollama" else "gemini"
 
-        ok, msg = test_llm_connection("openai_compatible", base_url, api_key, model)
-        return {"success": ok, "message": msg}
+        ok, msg = test_llm_connection(provider, base_url, api_key, model)
+        return {"success": ok, "message": redact_secrets(msg)}
 
     def save_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Сохраняет настройки пользователя в config.json."""
+        """Сохраняет настройки пользователя в config.json без сплита конфигурации."""
         try:
             cfg = self._ctrl.config
+            explicit_provider = str(payload.get("llm_provider") or "").strip().lower()
+            if explicit_provider in ("ollama", "openai_compatible"):
+                cfg.llm.provider = explicit_provider
+
             if "llm_base_url" in payload:
                 val = str(payload["llm_base_url"]).strip()
                 if val:
                     cfg.llm.base_url = val
+                    if not explicit_provider:
+                        cfg.llm.provider = (
+                            "ollama"
+                            if ("11434" in val or "ollama" in val.lower())
+                            else "openai_compatible"
+                        )
                 elif not cfg.llm.base_url:
-                    cfg.llm.base_url = "https://text.pollinations.ai/openai"
+                    cfg.llm.base_url = (
+                        "http://127.0.0.1:11434"
+                        if explicit_provider == "ollama"
+                        else "https://text.pollinations.ai/openai"
+                    )
             if "llm_model" in payload:
                 val = str(payload["llm_model"]).strip()
                 if val:
                     cfg.llm.model = val
                 elif not cfg.llm.model:
-                    cfg.llm.model = "gemini"
-            if "llm_api_key" in payload:
-                cfg.llm.api_key = str(payload["llm_api_key"]).strip()
+                    cfg.llm.model = "gemma3" if explicit_provider == "ollama" else "gemini"
+
+            if payload.get("llm_api_key_clear"):
+                cfg.llm.api_key = ""
+            elif "llm_api_key" in payload:
+                incoming_key = str(payload["llm_api_key"] or "").strip()
+                if incoming_key:
+                    cfg.llm.api_key = incoming_key
+                elif not cfg.llm.api_key:
+                    cfg.llm.api_key = ""
+
+            if not explicit_provider and cfg.llm.api_key:
+                detected = detect_provider_by_key(cfg.llm.api_key)
+                if detected is not None and "pollinations" in (cfg.llm.base_url or "").lower():
+                    _, det_url, det_model = detected
+                    cfg.llm.base_url = det_url
+                    if cfg.llm.model in ("", "openai", "gemini"):
+                        cfg.llm.model = det_model
+
+            if "llm_routing_mode" in payload and payload["llm_routing_mode"]:
+                rm = str(payload["llm_routing_mode"]).strip().lower()
+                if rm in ("auto", "fast_only", "custom"):
+                    cfg.llm.routing_mode = rm
+
             if "tts_provider" in payload and payload["tts_provider"]:
                 cfg.tts.provider = str(payload["tts_provider"]).strip()
             if "edge_voice" in payload and payload["edge_voice"]:
@@ -737,21 +917,43 @@ class AidotaWebApi:
                 cfg.player_profile.autonomy_level = str(payload["autonomy_level"]).strip()
             if "skill_level" in payload and payload["skill_level"]:
                 cfg.player_profile.skill_level = normalize_skill_level(payload["skill_level"])
+            if "coach_tone" in payload and payload["coach_tone"]:
+                cfg.player_profile.coach_tone = normalize_coach_tone(payload["coach_tone"])
+            if "detail_mode" in payload and payload["detail_mode"]:
+                cfg.player_profile.detail_mode = normalize_detail_mode(payload["detail_mode"])
+            if "custom_focus" in payload:
+                cfg.player_profile.custom_focus = " ".join(str(payload["custom_focus"] or "").split())[:200]
+            if "speak_chat" in payload:
+                cfg.player_profile.speak_chat = bool(payload["speak_chat"])
 
+            register_config_secrets(cfg)
             save_config(cfg, self._ctrl.config_path)
 
-            # Обновляем инстанс ассистента на лету
+            # Обновляем инстансы тренера атомарно на лету
+            if self._standalone_coach is not None and hasattr(self._standalone_coach, "set_llm_config"):
+                self._standalone_coach.set_llm_config(cfg.llm)
             if self._ctrl.assistant:
-                self._ctrl.assistant._coach.llm.base_url = cfg.llm.base_url
-                self._ctrl.assistant._coach.llm.model = cfg.llm.model
-                self._ctrl.assistant._coach.llm.api_key = cfg.llm.api_key
+                coach_inst = getattr(self._ctrl.assistant, "_coach", None)
+                if coach_inst is not None:
+                    if hasattr(coach_inst, "set_llm_config"):
+                        coach_inst.set_llm_config(cfg.llm)
+                    else:
+                        coach_inst.llm.base_url = cfg.llm.base_url
+                        coach_inst.llm.model = cfg.llm.model
+                        coach_inst.llm.api_key = cfg.llm.api_key
+                    if "coach_tone" in payload and hasattr(coach_inst, "set_coach_tone"):
+                        coach_inst.set_coach_tone(cfg.player_profile.coach_tone)
+                    if "detail_mode" in payload and hasattr(coach_inst, "set_detail_mode"):
+                        coach_inst.set_detail_mode(cfg.player_profile.detail_mode)
+                    if "custom_focus" in payload and hasattr(coach_inst, "set_custom_focus"):
+                        coach_inst.set_custom_focus(cfg.player_profile.custom_focus)
                 self._ctrl.assistant._agent.set_autonomy_level(cfg.player_profile.autonomy_level)
                 self._apply_skill_level(cfg.player_profile.skill_level)
 
             return {"success": True, "message": "Настройки успешно сохранены!"}
         except Exception as exc:  # noqa: BLE001
             log.exception("Ошибка сохранения настроек: %s", exc)
-            return {"success": False, "message": str(exc)}
+            return {"success": False, "message": redact_secrets(str(exc))}
 
     def _apply_skill_level(self, level: str) -> None:
         """Применяет уровень игры к живому тренеру без перезапуска приложения.
@@ -784,20 +986,21 @@ class AidotaWebApi:
                 except Exception:  # noqa: BLE001
                     log.debug("Не удалось обновить профиль %s", target_name, exc_info=True)
 
-    def run_doctor(self) -> list[dict[str, Any]]:
+    def run_doctor(self, online: bool = False) -> list[dict[str, Any]]:
         """Запускает 12 проверок окружения и возвращает структурированный отчёт."""
         try:
-            checks = get_checks(self._ctrl.config)
+            checks = get_checks(self._ctrl.config, online=bool(online))
             return [
                 {
                     "name": getattr(c, "name", "Проверка"),
-                    "status": "OK" if getattr(c, "ok", False) else "WARN",
-                    "details": getattr(c, "details", ""),
+                    "status": getattr(c, "status", "WARN"),
+                    "details": redact_secrets(str(getattr(c, "detail", "") or "")),
+                    "hint": redact_secrets(str(getattr(c, "hint", "") or "")),
                 }
                 for c in checks
             ]
         except Exception as exc:  # noqa: BLE001
-            return [{"name": "Ошибка диагностики", "status": "WARN", "details": str(exc)}]
+            return [{"name": "Ошибка диагностики", "status": "FAIL", "details": redact_secrets(str(exc)), "hint": ""}]
 
     def install_gsi(self) -> dict[str, Any]:
         """Автоматическая установка конфига GSI в Dota 2."""
@@ -874,6 +1077,34 @@ class AidotaWebApi:
             except Exception:  # noqa: BLE001
                 pass
             self._icon_session_obj = None
+        if self._standalone_coach is not None and hasattr(self._standalone_coach, "close"):
+            try:
+                self._standalone_coach.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._standalone_coach = None
+        if self._meta_api is not None:
+            try:
+                from .meta_db import _LIVE_META_LOCK, _LIVE_META_PROVIDER, set_live_meta_provider
+
+                with _LIVE_META_LOCK:
+                    is_current = _LIVE_META_PROVIDER is self._meta_api
+                if is_current:
+                    set_live_meta_provider(None)
+            except Exception:  # noqa: BLE001
+                pass
+            if hasattr(self._meta_api, "close"):
+                try:
+                    self._meta_api.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            self._meta_api = None
+        if self._standalone_tts is not None and hasattr(self._standalone_tts, "close"):
+            try:
+                self._standalone_tts.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._standalone_tts = None
 
 
 class WebGuiController:
@@ -909,18 +1140,18 @@ class WebGuiController:
             self.tray.start()
 
     def start_assistant(self) -> None:
-        """Запускает Assistant в фоновом потоке."""
+        """Запускает Assistant в фоновом потоке с общим Config."""
         if self.is_running:
             return
         try:
-            import copy
-
-            cfg = copy.deepcopy(self.config)
-            # Отключаем старый оверлей Tkinter: веб-интерфейс сам является
-            # полноценным окном, два GUI-цикла в одном процессе вызывают
-            # конфликт очередей сообщений Windows и зависание окна.
-            cfg.overlay.enabled = False
-            self.assistant = Assistant(cfg, text_mode=False, config_path=self.config_path)
+            # Отключаем старый оверлей Tkinter через runtime-флаг (без deepcopy Config):
+            # веб-интерфейс сам является основным окном.
+            self.assistant = Assistant(
+                self.config,
+                text_mode=False,
+                config_path=self.config_path,
+                disable_overlay=True,
+            )
             # Кнопка/голос «Настройки» больше не открывает отдельное окно:
             # переключаем пользователя на вкладку настроек основного интерфейса.
             self.assistant.on_open_settings = self.open_settings_tab
@@ -1065,13 +1296,13 @@ def run_web_gui(config: Config, config_path: Path | None = None) -> int:
     index_file = web_dir / "index.html"
 
     window = webview.create_window(
-        title=f"✦ AIDOTA PRO v{__version__} — Персональный ИИ-тренер Dota 2",
+        title=f"AIDOTA PRO v{__version__} — ИИ-тренер Dota 2",
         url=str(index_file.resolve()),
         js_api=api,
         width=1050,
         height=750,
         min_size=(880, 620),
-        background_color="#0b0e14",
+        background_color="#090a0f",
     )
     ctrl.window = window
 
