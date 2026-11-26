@@ -267,10 +267,19 @@ class VoiceInput:
         self.ptt_key = str(getattr(config, "ptt_key", "v") or "v")
         self._ptt_active = threading.Event()
         self._ptt_listener: HotkeyListener | None = None
+        self._ptt_lock = threading.Lock()
+        self._ptt_release_seq: int = 0
+        self._ptt_release_timer: threading.Timer | None = None
+        self._ptt_hangover_seconds: float = 0.22
         self.on_ptt_status: Callable[[bool], None] | None = None
         self.on_partial: Callable[[str], None] | None = None
         self._recognizer_lock = threading.Lock()
         self._last_partial: str = ""
+
+    def _effective_block_size(self) -> int:
+        """Ограничивает размер аудио-блока (<=1600 сэмплов / ~100 мс), чтобы PTT не обрезал хвост речи."""
+        raw = int(getattr(self.config, "block_size", 1600) or 1600)
+        return max(400, min(raw, 1600))
 
     # ------------------------------------------------------------------ #
     @property
@@ -408,10 +417,11 @@ class VoiceInput:
                 raw_bytes = bytes(indata)
                 self._queue.put(raw_bytes)
 
+        eff_block_size = self._effective_block_size()
         try:
             self._stream = sd.RawInputStream(
                 samplerate=self.config.sample_rate,
-                blocksize=self.config.block_size,
+                blocksize=eff_block_size,
                 device=dev_id,
                 dtype="int16",
                 channels=1,
@@ -426,7 +436,7 @@ class VoiceInput:
                     self._device_name = dev_name
                     self._stream = sd.RawInputStream(
                         samplerate=self.config.sample_rate,
-                        blocksize=self.config.block_size,
+                        blocksize=eff_block_size,
                         device=dev_id,
                         dtype="int16",
                         channels=1,
@@ -495,9 +505,15 @@ class VoiceInput:
     def _on_ptt_down(self) -> None:
         if self._is_muted:
             return
-        self._ptt_active.set()
-        self._capture.set()
-        self._drain_queue()
+        with self._ptt_lock:
+            self._ptt_release_seq += 1
+            timer = self._ptt_release_timer
+            self._ptt_release_timer = None
+            if timer is not None:
+                timer.cancel()
+            self._ptt_active.set()
+            self._capture.set()
+            self._drain_queue()
         with self._recognizer_lock:
             if self._recognizer is not None:
                 try:
@@ -512,35 +528,77 @@ class VoiceInput:
                 pass
 
     def _on_ptt_up(self) -> None:
-        self._ptt_active.clear()
-        if self.push_to_talk_enabled:
-            self._capture.clear()
+        with self._ptt_lock:
+            self._ptt_active.clear()
+            self._ptt_release_seq += 1
+            seq = self._ptt_release_seq
+            prev_timer = self._ptt_release_timer
+            self._ptt_release_timer = None
+            if prev_timer is not None:
+                prev_timer.cancel()
+            hangover = float(getattr(self, "_ptt_hangover_seconds", 0.0) or 0.0)
+            use_hangover = self.push_to_talk_enabled and hangover > 0.0 and not self._stop.is_set()
+            if not use_hangover and self.push_to_talk_enabled:
+                self._capture.clear()
         if self.on_ptt_status is not None:
             try:
                 self.on_ptt_status(False)
             except Exception:  # noqa: BLE001
                 pass
 
+        if use_hangover:
+            timer = threading.Timer(hangover, self._finalize_ptt_capture, args=(seq,))
+            timer.daemon = True
+            with self._ptt_lock:
+                if seq == self._ptt_release_seq and not self._ptt_active.is_set() and not self._stop.is_set():
+                    self._ptt_release_timer = timer
+                    timer.start()
+                    return
+            return
+
+        self._finalize_ptt_capture(seq)
+
+    def _finalize_ptt_capture(self, seq: int) -> None:
+        """Закрывает захват после hangover и извлекает всю накопленную фразу из Vosk."""
+        with self._ptt_lock:
+            if seq != self._ptt_release_seq or self._ptt_active.is_set() or self._stop.is_set():
+                return
+            self._ptt_release_timer = None
+            if self.push_to_talk_enabled:
+                self._capture.clear()
+
         if self._recognizer is None:
             return
 
         with self._recognizer_lock:
-            # Прокачиваем накопившиеся порции звука из очереди
+            segments: list[str] = []
+            # Прокачиваем накопившиеся порции звука из очереди, собирая промежуточные финалы
             while True:
                 try:
                     chunk = self._queue.get_nowait()
-                    self._recognizer.AcceptWaveform(chunk)
+                    if self._recognizer.AcceptWaveform(chunk):
+                        try:
+                            seg = (json.loads(self._recognizer.Result()).get("text") or "").strip().lower()
+                            if seg:
+                                segments.append(seg)
+                        except Exception:  # noqa: BLE001
+                            pass
                 except queue.Empty:
                     break
                 except Exception:  # noqa: BLE001
                     break
 
             try:
-                res = json.loads(self._recognizer.Result())
-                text = (res.get("text") or "").strip().lower()
-                if not text:
+                tail = ""
+                if hasattr(self._recognizer, "FinalResult"):
                     res_final = json.loads(self._recognizer.FinalResult())
-                    text = (res_final.get("text") or "").strip().lower()
+                    tail = (res_final.get("text") or "").strip().lower()
+                if not tail:
+                    res = json.loads(self._recognizer.Result())
+                    tail = (res.get("text") or "").strip().lower()
+                if tail and (not segments or segments[-1] != tail):
+                    segments.append(tail)
+                text = " ".join(s for s in segments if s).strip()
                 if not text and self._last_partial:
                     text = self._last_partial
                 if text:
@@ -549,6 +607,11 @@ class VoiceInput:
                 self._last_partial = ""
             except Exception as exc:  # noqa: BLE001
                 log.debug("Ошибка извлечения фразы PTT: %s", exc)
+            finally:
+                try:
+                    self._recognizer.Reset()
+                except Exception:  # noqa: BLE001
+                    pass
 
     def set_ptt_key(self, key: str) -> str:
         """Переключает клавишу push-to-talk и возвращает её форматированное имя."""
@@ -739,6 +802,12 @@ class VoiceInput:
     # ------------------------------------------------------------------ #
     def close(self) -> None:
         self._stop.set()
+        with self._ptt_lock:
+            self._ptt_release_seq += 1
+            timer = self._ptt_release_timer
+            self._ptt_release_timer = None
+            if timer is not None:
+                timer.cancel()
         if self._ptt_listener is not None:
             self._ptt_listener.stop()
             self._ptt_listener = None

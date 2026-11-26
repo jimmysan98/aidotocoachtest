@@ -114,6 +114,8 @@ class _StateTestsBase(unittest.TestCase):
         self.api = AidotaWebApi(self.ctrl)
 
     def tearDown(self) -> None:
+        if getattr(self, "api", None) is not None:
+            self.api.close()
         if self.ctrl.tray:
             self.ctrl.tray.stop()
         self.ctrl.assistant = None

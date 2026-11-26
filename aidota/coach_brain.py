@@ -1013,8 +1013,14 @@ def _join_sentences(items: Iterable[Any]) -> str:
     return "; ".join(cleaned)
 
 
-def render_brief(brief: dict[str, Any], *, max_chars: int = 1100) -> str:
-    """Рендерит бриф в компактный текст для промпта (одна-две строки на блок)."""
+def render_brief(
+    brief: dict[str, Any],
+    *,
+    max_chars: int = 1100,
+    compact: bool = False,
+    respawn_seconds: int | None = None,
+) -> str:
+    """Рендерит бриф в компактный текст для промпта (при ``compact=True`` опускает дубли с match_prefix/match_snapshot)."""
     if not isinstance(brief, dict) or not brief.get("available"):
         lines = ["Матч не запущен или GSI не получает данные — играй по общим принципам роли."]
         if brief.get("role"):
@@ -1022,10 +1028,15 @@ def render_brief(brief: dict[str, Any], *, max_chars: int = 1100) -> str:
         return " ".join(lines)
 
     lines: list[str] = []
-    head = f"Роль: {brief.get('role')}. Игра: {brief.get('clock')}, {brief.get('stage_ru')}."
-    if brief.get("score"):
-        head += f" Счёт {brief['score']} ({brief.get('my_team') or '?'})."
-    lines.append(head)
+    if not compact:
+        head = f"Роль: {brief.get('role')}. Игра: {brief.get('clock')}, {brief.get('stage_ru')}."
+        if brief.get("score"):
+            head += f" Счёт {brief['score']} ({brief.get('my_team') or '?'})."
+        lines.append(head)
+    elif brief.get("score") or brief.get("my_team"):
+        lines.append(
+            f"Роль: {brief.get('role')}. Счёт {brief.get('score') or '0:0'} ({brief.get('my_team') or '?'})."
+        )
 
     hero_bits: list[str] = []
     if brief.get("hero_name"):
@@ -1043,7 +1054,11 @@ def render_brief(brief: dict[str, Any], *, max_chars: int = 1100) -> str:
     if brief.get("statuses"):
         hero_bits.append(f"контроль: {', '.join(brief['statuses'])}")
     if brief.get("alive") is False:
-        hero_bits.append("мёртв")
+        r_sec = respawn_seconds if respawn_seconds is not None else brief.get("respawn_seconds")
+        if isinstance(r_sec, int) and r_sec > 0:
+            hero_bits.append(f"мёртв (респавн {r_sec} с)")
+        else:
+            hero_bits.append("мёртв")
     if hero_bits:
         lines.append("Игрок: " + ", ".join(hero_bits) + ".")
     money: list[str] = []
@@ -1057,19 +1072,28 @@ def render_brief(brief: dict[str, Any], *, max_chars: int = 1100) -> str:
         money.append(f"ластхиты {brief['last_hits']}")
     if money:
         lines.append("Экономика: " + ", ".join(money) + ".")
-    if brief.get("inventory"):
+    if not compact and brief.get("inventory"):
         lines.append("Инвентарь: " + ", ".join(brief["inventory"]) + ".")
     extras: list[str] = []
-    if brief.get("neutral_item"):
-        extras.append(f"нейтралка {brief['neutral_item']}")
-    if brief.get("has_tp") is False:
-        extras.append("НЕТ ТП")
+    if not compact:
+        if brief.get("neutral_item"):
+            extras.append(f"нейтралка {brief['neutral_item']}")
+        if brief.get("has_tp") is False:
+            extras.append("НЕТ ТП")
     if brief.get("buyback_available") is False:
         extras.append("байбек недоступен")
-    if brief.get("aghanims_scepter"):
-        extras.append("есть аганим")
-    if brief.get("aghanims_shard"):
-        extras.append("есть шард")
+    elif brief.get("alive") is False:
+        r_sec = respawn_seconds if respawn_seconds is not None else brief.get("respawn_seconds")
+        minute_val = brief.get("minute")
+        is_early = isinstance(minute_val, (int, float)) and float(minute_val) < 20.0
+        is_short_respawn = isinstance(r_sec, int) and 0 < r_sec < 25
+        if is_early or is_short_respawn:
+            extras.append("байбек НЕ трать без угрозы трону (рано/короткий респавн)")
+    if not compact:
+        if brief.get("aghanims_scepter"):
+            extras.append("есть аганим")
+        if brief.get("aghanims_shard"):
+            extras.append("есть шард")
     if brief.get("ult_name"):
         ult_cooldown = brief.get("ult_cooldown")
         if brief.get("ult_ready") is True:
@@ -1080,7 +1104,7 @@ def render_brief(brief: dict[str, Any], *, max_chars: int = 1100) -> str:
             extras.append(f"ульт {brief['ult_name']}")
     if extras:
         lines.append("Важно: " + ", ".join(extras) + ".")
-    if brief.get("my_picks") or brief.get("enemy_picks"):
+    if not compact and (brief.get("my_picks") or brief.get("enemy_picks")):
         draft_bits = []
         if brief.get("my_picks"):
             draft_bits.append("мои: " + ", ".join(brief["my_picks"]))
@@ -1090,8 +1114,9 @@ def render_brief(brief: dict[str, Any], *, max_chars: int = 1100) -> str:
             draft_bits.append("баны: " + ", ".join(brief["bans"]))
         lines.append("Драфт — " + "; ".join(draft_bits) + ".")
     if brief.get("threats"):
-        lines.append("Угрозы: " + _join_sentences(brief["threats"]) + ".")
-    if brief.get("enemy_items"):
+        threats_src = brief["threats"][:2] if compact else brief["threats"]
+        lines.append("Угрозы: " + _join_sentences(threats_src) + ".")
+    if not compact and brief.get("enemy_items"):
         lines.append("Предметы врагов: " + "; ".join(brief["enemy_items"][:3]) + ".")
     if brief.get("power_spikes"):
         lines.append("Паверспайк: " + _join_sentences(brief["power_spikes"]) + ".")
@@ -1105,7 +1130,7 @@ def render_brief(brief: dict[str, Any], *, max_chars: int = 1100) -> str:
         warning = str(next_item.get("warning") or "").strip() if isinstance(next_item, Mapping) else ""
         if warning:
             lines.append("Важно по закупке: " + warning.rstrip(".") + ".")
-    if brief.get("objectives"):
+    if not compact and brief.get("objectives"):
         lines.append("Цель: " + str(brief["objectives"]))
     if brief.get("focus"):
         lines.append("Фокус: " + str(brief["focus"]) + ".")
@@ -1452,7 +1477,16 @@ def make_system_prompt(
         "5. Используй живой сленг Доты естественно: бэкабэ, тэпэ, смоки, стаки, рошан, торментор, дасты, стики, шмотки, слоты."
     )
 
-    blocks = [header, rules]
+    factual_rules = (
+        "ФАКТИЧЕСКАЯ ТОЧНОСТЬ (ЗАПРЕЩЕНО ВЫДУМЫВАТЬ МЕХАНИКИ):\n"
+        "1. Водные руны на второй и четвёртой минутах нужны мидеру для Боттла — пятёрка не уходит с лёгкой забирать их себе.\n"
+        "2. Лотосы из пруда восстанавливают здоровье и ману и не дают золота или опыта.\n"
+        "3. Разряды нейтральных предметов выбиваются в лесу с седьмой, пятнадцатой, двадцать пятой, тридцать пятой и шестидесятой минут и не дают опыта как руны.\n"
+        "4. Не предлагай байбек до двадцатой минуты или при коротком респавне без прямой угрозы трону — выкуп тратит золото и даёт восемь минут кулдауна.\n"
+        "5. Всегда сверяйся со слотами, золотом и позицией игрока: саппорту при малом золоте советуй дешёвые компоненты, сейв или вижн, не повторяй один дорогой слот подряд."
+    )
+
+    blocks = [header, rules, factual_rules]
     level_rules = _level_rules(skill_level)
     if level_rules:
         blocks.append(level_rules)

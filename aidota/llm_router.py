@@ -337,6 +337,7 @@ class LlmRouter:
         hero_alive: bool | None = None,
         respawn_seconds: int = 0,
         requested_max_tokens: int | None = None,
+        allow_tools: bool | None = None,
     ) -> RouteDecision:
         """Выбирает Tier 1 vs Tier 2 строго по правилам боевых и стратегических путей."""
         provider = str(getattr(llm, "provider", "ollama") or "ollama").strip().lower()
@@ -428,7 +429,11 @@ class LlmRouter:
             # Текстовый чат без reasoner: допускаем стандартный таймаут провайдера.
             cfg_timeout = float(getattr(llm, "timeout", 60.0) or 60.0)
             t1_deadline = min(cfg_timeout, 20.0 if provider == "openai_compatible" else cfg_timeout)
-            allow_tools = not is_pollinations_endpoint(base_url)
+            eff_allow_tools = (
+                (not is_pollinations_endpoint(base_url))
+                if allow_tools is None
+                else bool(allow_tools)
+            )
 
         chosen_t1 = fast_model
         if is_reasoning_model(chosen_t1) and is_deepseek:
@@ -440,7 +445,7 @@ class LlmRouter:
             fallback_model=None,
             deadline_seconds=t1_deadline,
             fallback_deadline_seconds=0.0,
-            allow_tools=allow_tools,
+            allow_tools=eff_allow_tools if not voice and kind != "pick" else False,
             allow_pollinations_failover=allow_poll,
             api_max_tokens=max(60, min(req_tokens, 900)),
             send_temperature=not is_reasoning_model(chosen_t1),

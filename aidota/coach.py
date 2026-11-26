@@ -597,9 +597,7 @@ class Coach:
             is_daytime=is_day,
         )
         threats: list[str] = []
-        if isinstance(brief, dict):
-            threats = [str(t) for t in (brief.get("threats") or []) if str(t).strip()]
-        if not threats:
+        if not (isinstance(brief, dict) and brief.get("threats")):
             threats = self._enemy_item_hints_for(snapshot.get("enemy_picks") or [], limit=2)
         slots = [
             str(item)
@@ -616,8 +614,17 @@ class Coach:
                 catalog=self.catalog,
             )
             enemy_state_block = self.enemy_state_tracker.build_prompt_context(c_sec)
+        stage_label = str(snapshot.get("game_stage") or "")
+        hero_sec = data.get("hero") if isinstance(data.get("hero"), dict) else {}
+        if hero_sec.get("alive") is False:
+            try:
+                respawn_raw = int(hero_sec.get("respawn_seconds") or 0)
+            except (TypeError, ValueError):
+                respawn_raw = 0
+            if respawn_raw > 0:
+                stage_label = f"{stage_label} (мёртв, респавн {respawn_raw}с)".strip()
         return build_compact_match_suffix(
-            stage=str(snapshot.get("game_stage") or ""),
+            stage=stage_label,
             clock=str(snapshot.get("clock_formatted") or ""),
             objectives_soon=objectives_soon,
             slots=slots,
@@ -649,9 +656,25 @@ class Coach:
             profile_text = ""
         eff_detail = detail_mode if detail_mode is not None else self.detail_mode
         match_snapshot = self._compact_match_snapshot(eff_payload, brief=brief_dict)
+        eff_brief_text = brief_text
+        eff_gsi_summary = gsi_summary
+        if match_snapshot:
+            if isinstance(brief_dict, dict):
+                raw_resp = _g(eff_payload, "hero", "respawn_seconds")
+                try:
+                    respawn_sec: int | None = int(raw_resp) if raw_resp is not None else None
+                except (TypeError, ValueError):
+                    respawn_sec = None
+                eff_brief_text = render_brief(
+                    brief_dict,
+                    compact=True,
+                    respawn_seconds=respawn_sec,
+                )
+            if eff_brief_text and eff_gsi_summary:
+                eff_gsi_summary = ""
         return render_prompt_assembly(
             self.coach_name,
-            brief_text,
+            eff_brief_text,
             knowledge,
             kind=kind,
             profile_text=profile_text,
@@ -666,7 +689,7 @@ class Coach:
             my_picks=draft.my_picks,
             enemy_picks=draft.enemy_picks,
             match_snapshot=match_snapshot,
-            gsi_summary=gsi_summary,
+            gsi_summary=eff_gsi_summary,
         )
 
     def _ask_llm(
@@ -721,6 +744,12 @@ class Coach:
             stop_filler = self.on_thinking_timer(0.8)
 
         try:
+            game_state_now, _, _ = self._gsi_route_state()
+            in_live_match = game_state_now in (
+                "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS",
+                "DOTA_GAMERULES_STATE_PRE_GAME",
+                "DOTA_GAMERULES_STATE_STRATEGY_TIME",
+            )
             raw = self.chat(
                 prompt,
                 system=system,
@@ -732,6 +761,7 @@ class Coach:
                 detail_mode=eff_detail,
                 dynamic_suffix=eff_suffix,
                 generation_id=generation_id,
+                allow_tools=False if (eff_voice or in_live_match) else None,
             )
         finally:
             if stop_filler is not None:
@@ -1375,7 +1405,7 @@ class Coach:
         return assembly.build_messages(
             history,
             user_prompt,
-            char_budget=6000,
+            char_budget=1800,
             epoch_size=4,
         )
 
@@ -1624,6 +1654,7 @@ class Coach:
         detail_mode: str | None = None,
         dynamic_suffix: str = "",
         generation_id: int | None = None,
+        allow_tools: bool | None = None,
     ) -> str:
         """Запрос к LLM через маршрутизатор тиров, breaker, дедлайны и телеметрию."""
         system = system or make_system_prompt(self.coach_name, skill_level=self.skill_level)
@@ -1648,6 +1679,7 @@ class Coach:
                 hero_alive=hero_alive,
                 respawn_seconds=respawn,
                 requested_max_tokens=max_tokens,
+                allow_tools=allow_tools,
             )
 
             # Если маршрутизатор не менял модель на deepseek-chat/reasoner, оставляем base_model.

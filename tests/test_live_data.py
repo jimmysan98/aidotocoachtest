@@ -533,6 +533,8 @@ class WebStateContractTests(unittest.TestCase):
         self.ctrl.is_running = True
 
     def tearDown(self) -> None:
+        if getattr(self, "api", None) is not None:
+            self.api.close()
         if self.ctrl and getattr(self.ctrl, "tray", None):
             self.ctrl.tray.stop()
         self.ctrl.assistant = None

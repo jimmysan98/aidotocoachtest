@@ -18,6 +18,7 @@ from aidota.tts import (
     HumanTTSManager,
     SmartAudioCache,
     SpeechPriority,
+    _is_corrupted_static_waveform,
     _QueueItem,
     normalize_for_speech,
 )
@@ -336,6 +337,102 @@ class TestConcurrencyAndPriorityQueue(unittest.TestCase):
                 self.assertIn(False, results)
         finally:
             mgr.close()
+
+
+class TestPiperAndStaticNoiseProtection(unittest.TestCase):
+    def test_piper_writes_to_temp_wav_file_not_stdout_dash(self):
+        """Piper обязан писать в temp .wav, а не stdout '-' (защита от CRLF-шума на Windows)."""
+        import soundfile as sf
+
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            cfg = TtsConfig(enabled=True, provider="piper")
+            mgr = HumanTTSManager(cfg, cache_dir=td_path)
+            observed_cmds: list[list[str]] = []
+
+            try:
+                fake_exe = td_path / "piper.exe"
+                fake_model = td_path / "voice.onnx"
+                fake_exe.write_bytes(b"")
+                fake_model.write_bytes(b"")
+
+                t = np.linspace(0, 0.25, int(22050 * 0.25), endpoint=False)
+                clean_sine = (0.15 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+
+                class _FakeProc:
+                    returncode = 0
+
+                    def __init__(self, cmd, **_kwargs):
+                        observed_cmds.append(list(cmd))
+                        self._out_file = cmd[cmd.index("--output_file") + 1]
+
+                    def communicate(self, input=None, timeout=None):  # noqa: A002
+                        sf.write(self._out_file, clean_sine, 22050, format="WAV", subtype="PCM_16")
+                        return b"", b""
+
+                with patch.object(mgr, "_find_piper_binary_and_model", return_value=(fake_exe, fake_model)), \
+                     patch("aidota.tts.subprocess.Popen", side_effect=_FakeProc):
+                    data, sr = mgr._synthesize_piper_audio("Привет!")
+
+                self.assertEqual(sr, 22050)
+                self.assertFalse(_is_corrupted_static_waveform(data))
+                self.assertEqual(len(observed_cmds), 1)
+                out_arg = observed_cmds[0][observed_cmds[0].index("--output_file") + 1]
+                self.assertNotEqual(out_arg, "-")
+                self.assertTrue(out_arg.endswith(".wav"))
+                # Временный файл удаляется в finally
+                self.assertFalse(Path(out_arg).exists())
+            finally:
+                mgr.close()
+
+    def test_corrupted_static_waveform_blocked_in_cache_and_playback(self):
+        """Белый шум / повреждённый кэш отвергается, удаляется с диска и не воспроизводится."""
+        import soundfile as sf
+
+        rng = np.random.default_rng(42)
+        white_noise = rng.uniform(-1.0, 1.0, size=22050).astype(np.float32)
+        self.assertTrue(_is_corrupted_static_waveform(white_noise))
+
+        with tempfile.TemporaryDirectory() as td:
+            cache = SmartAudioCache(Path(td))
+            # 1. put() отказывает в сохранении шума
+            cache.put("битая фраза", "dmitry", "+10%", "-3Hz", white_noise, 22050, provider="piper", async_save=False)
+            self.assertIsNone(cache.get("битая фраза", "dmitry", "+10%", "-3Hz", provider="piper"))
+
+            # 2. Заранее повреждённый .wav на диске отбрасывается и удаляется при get()
+            key = cache._hash_key("старая фраза", "dmitry", "+10%", "-3Hz", provider="piper")
+            bad_wav = cache.disk_dir / f"{key}.wav"
+            bad_wav.parent.mkdir(parents=True, exist_ok=True)
+            sf.write(str(bad_wav), white_noise, 22050, format="WAV", subtype="PCM_16")
+            self.assertTrue(bad_wav.is_file())
+            self.assertIsNone(cache.get("старая фраза", "dmitry", "+10%", "-3Hz", provider="piper"))
+            self.assertFalse(bad_wav.exists())
+
+            # 3. _play_audio отменяет воспроизведение при белом шуме
+            cfg = TtsConfig(enabled=True)
+            mgr = HumanTTSManager(cfg, cache_dir=Path(td))
+            try:
+                with patch("sounddevice.play") as mock_play:
+                    mgr._play_audio(white_noise, 22050)
+                    mock_play.assert_not_called()
+            finally:
+                mgr.close()
+
+    def test_real_piper_binary_if_installed_produces_clean_audio(self):
+        """Если локальный piper/piper.exe установлен, синтез даёт чистую речь без шума."""
+        cfg = TtsConfig(enabled=True, provider="piper")
+        with tempfile.TemporaryDirectory() as td:
+            mgr = HumanTTSManager(cfg, cache_dir=Path(td))
+            try:
+                exe, model = mgr._find_piper_binary_and_model()
+                if exe is None or model is None:
+                    self.skipTest("piper.exe не установлен локально")
+                data, sr = mgr._synthesize_piper_audio("Проверка чистого звука.")
+                self.assertEqual(sr, 22050)
+                self.assertGreater(len(data), 5000)
+                self.assertFalse(_is_corrupted_static_waveform(data))
+            finally:
+                mgr.close()
 
 
 if __name__ == "__main__":

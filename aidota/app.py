@@ -1270,7 +1270,9 @@ class Assistant:
         if hero is None:
             query = (intent.raw or "дай совет по игре").strip()
             self._status(f"{self._coach.coach_name} думает…")
-            answer = self._coach.coach_chat(query, voice=self._use_voice)
+            gen_id, _ = self._coach.preemption.start_turn()
+            self._tts.bump_generation()
+            answer = self._coach.coach_chat(query, voice=self._use_voice, generation_id=gen_id)
             self._answer(answer)
             return
         self._last_hero = hero

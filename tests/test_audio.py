@@ -112,5 +112,54 @@ class TestVoiceInputSilenceEndpoint(unittest.TestCase):
         partial_mock.assert_called_with("")
 
 
+class TestPttCaptureAndHangover(unittest.TestCase):
+    def test_effective_block_size_capped_at_100ms(self) -> None:
+        cfg = AudioConfig(model_path="dummy", sample_rate=16000, block_size=8000, push_to_talk=True)
+        voice = VoiceInput(cfg, Path("."))
+        self.assertEqual(voice._effective_block_size(), 1600)
+        voice.config.block_size = 800
+        self.assertEqual(voice._effective_block_size(), 800)
+
+    def test_ptt_hangover_captures_trailing_audio_and_accumulates_segments(self) -> None:
+        cfg = AudioConfig(model_path="dummy", sample_rate=16000, block_size=1600, push_to_talk=True)
+        voice = VoiceInput(cfg, Path("."))
+        voice._ptt_hangover_seconds = 0.05
+
+        class MultiSegmentRecognizer:
+            def __init__(self) -> None:
+                self._chunks = 0
+                self.reset_calls = 0
+
+            def AcceptWaveform(self, data: bytes) -> bool:  # noqa: N802
+                self._chunks += 1
+                return self._chunks == 1
+
+            def Result(self) -> str:  # noqa: N802
+                return json.dumps({"text": "что купить" if self._chunks == 1 else ""})
+
+            def FinalResult(self) -> str:  # noqa: N802
+                return json.dumps({"text": "на рубика"})
+
+            def Reset(self) -> None:  # noqa: N802
+                self.reset_calls += 1
+
+        rec = MultiSegmentRecognizer()
+        voice._recognizer = rec
+        voice._capture.clear()
+
+        voice._on_ptt_down()
+        self.assertTrue(voice._capture.is_set())
+        voice._queue.put(b"\x01\x02" * 400)
+        voice._on_ptt_up()
+        # В период hangover захват остаётся активным для хвостового слога.
+        self.assertTrue(voice._capture.is_set())
+        voice._queue.put(b"\x03\x04" * 400)
+
+        phrase = voice.phrase_queue.get(timeout=1.5)
+        self.assertEqual(phrase, "что купить на рубика")
+        self.assertFalse(voice._capture.is_set())
+        self.assertGreaterEqual(rec.reset_calls, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

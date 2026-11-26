@@ -19,6 +19,7 @@ import asyncio
 import hashlib
 import io
 import logging
+import os
 import queue
 import random
 import re
@@ -188,6 +189,30 @@ def normalize_for_speech(text: str, max_chars: int = 700) -> str:
 sanitize_for_speech = normalize_for_speech
 
 
+def _is_corrupted_static_waveform(data: Any) -> bool:
+    """Обнаруживает битый PCM-сигнал (нефинитные сэмплы или CRLF-сдвинутый белый шум)."""
+    try:
+        import numpy as np
+
+        arr = np.asarray(data, dtype=np.float32)
+        if arr.size == 0:
+            return False
+        if not bool(np.isfinite(arr).all()):
+            return True
+        if arr.size < 512:
+            return False
+        mono = arr.mean(axis=1) if arr.ndim == 2 else arr.ravel()
+        rms = float(np.sqrt(np.mean(mono * mono)))
+        if rms <= 0.28:
+            return False
+        diff = np.diff(mono)
+        diff_rms = float(np.sqrt(np.mean(diff * diff)))
+        hf_ratio = diff_rms / max(rms, 1e-6)
+        return hf_ratio > 1.10
+    except Exception:  # noqa: BLE001
+        return False
+
+
 class SmartAudioCache:
     """Локальный Smart Cache аудио-фраз на диске (cache/audio/) и в оперативной памяти."""
 
@@ -223,6 +248,13 @@ class SmartAudioCache:
                 import soundfile as sf
 
                 data, sr = sf.read(str(wav_path), dtype="float32")
+                if _is_corrupted_static_waveform(data):
+                    log.warning("Удаляю повреждённый кэш аудио %s (обнаружен белый шум)", wav_path)
+                    try:
+                        wav_path.unlink(missing_ok=True)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return None
                 with self._lock:
                     if len(self._ram) > 500:
                         self._ram.clear()
@@ -245,6 +277,9 @@ class SmartAudioCache:
         async_save: bool = True,
     ) -> None:
         """Сохраняет аудио в RAM и асинхронно на диск."""
+        if _is_corrupted_static_waveform(data):
+            log.warning("Отказ в кэшировании повреждённого аудио (обнаружен шум/нефинитные сэмплы)")
+            return
         key = self._hash_key(text, voice, rate, pitch, provider=provider)
         with self._lock:
             # Очищаем завершившиеся потоки для предотвращения утечки объектов Thread в памяти
@@ -313,6 +348,10 @@ class HumanTTSManager:
         self._backend: str | None = None
         self._speak_failed = False
         self._init_done = threading.Event()
+        self._edge_consecutive_failures: int = 0
+        self._edge_cooldown_until: float = 0.0
+        self._edge_failure_threshold: int = 2
+        self._edge_cooldown_seconds: float = 180.0
 
         # Предварительно определяем наличие pygame
         self._pygame_mixer = None
@@ -719,7 +758,13 @@ class HumanTTSManager:
                 self._apply_audio_output(engine, self.config.output_device)
 
             self._engine = engine
-            self._backend = "Edge (нейросеть Dmitry)" if getattr(self.config, "provider", "edge") == "edge" else "SAPI"
+            prov = str(getattr(self.config, "provider", "edge") or "edge").lower()
+            if prov == "edge":
+                self._backend = "Edge (нейросеть Dmitry)"
+            elif prov == "piper" and self._find_piper_binary_and_model()[0] is not None:
+                self._backend = "Piper (офлайн-нейросеть)"
+            else:
+                self._backend = "SAPI"
             self._error = None
             log.info("Озвучка готова, бэкенд: %s, SAPI-голосов: %d", self._backend, len(self._voices))
             return
@@ -855,11 +900,16 @@ class HumanTTSManager:
             return buf
 
         loop = asyncio.new_event_loop()
+        has_piper = self._find_piper_binary_and_model()[0] is not None
         try:
             try:
                 audio_buf = loop.run_until_complete(asyncio.wait_for(_fetch(pitch), timeout=10.0))
             except Exception as exc:
-                if pitch != "+0Hz" and "NoAudioReceived" in type(exc).__name__:
+                if (
+                    not has_piper
+                    and pitch != "+0Hz"
+                    and "NoAudioReceived" in type(exc).__name__
+                ):
                     log.debug("Edge-TTS отклонил pitch='%s', повторяю с '+0Hz'", pitch)
                     audio_buf = loop.run_until_complete(asyncio.wait_for(_fetch("+0Hz"), timeout=10.0))
                 else:
@@ -901,8 +951,32 @@ class HumanTTSManager:
 
         return None, None
 
+    def _pick_piper_temp_dir(self) -> Path:
+        """Выбирает временный каталог (предпочтительно ASCII-путь для нативного piper.exe)."""
+        candidates: list[Path] = []
+        sys_temp = Path(tempfile.gettempdir())
+        if all(ord(c) < 128 for c in str(sys_temp)):
+            candidates.append(sys_temp)
+        if getattr(self, "cache_dir", None):
+            cache_p = Path(self.cache_dir)
+            if all(ord(c) < 128 for c in str(cache_p)):
+                candidates.append(cache_p)
+        candidates.append(sys_temp)
+        for cand in candidates:
+            try:
+                cand.mkdir(parents=True, exist_ok=True)
+                return cand
+            except Exception:  # noqa: BLE001
+                continue
+        return sys_temp
+
     def _synthesize_piper_audio(self, text: str) -> tuple[Any, int]:
-        """Офлайн-синтез речи через Piper TTS: noise_scale=0.75, length_scale=0.92, sentence_silence=0.1."""
+        """Офлайн-синтез речи через Piper TTS: noise_scale=0.75, length_scale=0.92, sentence_silence=0.1.
+
+        Записывает результат во временный WAV-файл вместо stdout (``--output_file -``),
+        так как на Windows текстовый режим stdout конвертирует ``0x0A`` в ``0x0D 0x0A``
+        и сдвигает 16-битные PCM-сэмплы, превращая речь в громкий белый шум.
+        """
         import soundfile as sf
 
         piper_exe, model_path = self._find_piper_binary_and_model()
@@ -912,10 +986,15 @@ class HumanTTSManager:
         noise_scale = str(getattr(self.config, "piper_noise_scale", 0.75))
         length_scale = str(getattr(self.config, "piper_length_scale", 0.92))
 
+        tmp_dir = self._pick_piper_temp_dir()
+        fd, tmp_name = tempfile.mkstemp(prefix="aidota_piper_", suffix=".wav", dir=str(tmp_dir))
+        os.close(fd)
+        tmp_path = Path(tmp_name)
+
         cmd = [
             str(piper_exe),
             "--model", str(model_path),
-            "--output_file", "-",
+            "--output_file", str(tmp_path),
             "--noise_scale", noise_scale,
             "--length_scale", length_scale,
             "--sentence_silence", "0.1",
@@ -925,26 +1004,35 @@ class HumanTTSManager:
         if sys.platform == "win32":
             creationflags = 0x08000000  # CREATE_NO_WINDOW
 
-        proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            creationflags=creationflags,
-        )
         clean_piper_text = text.replace("+", "")
         try:
-            wav_bytes, err = proc.communicate(input=clean_piper_text.encode("utf-8"), timeout=30.0)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.communicate()
-            raise
-        if proc.returncode != 0:
-            raise RuntimeError(f"Piper error ({proc.returncode}): {err.decode('utf-8', errors='ignore')}")
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                creationflags=creationflags,
+            )
+            try:
+                _out, err = proc.communicate(input=clean_piper_text.encode("utf-8"), timeout=30.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                raise
+            if proc.returncode != 0:
+                raise RuntimeError(f"Piper error ({proc.returncode}): {err.decode('utf-8', errors='ignore')}")
+            if not tmp_path.is_file() or tmp_path.stat().st_size <= 44:
+                raise RuntimeError("Piper TTS не создал корректный WAV-файл")
 
-        buf = io.BytesIO(wav_bytes)
-        data, samplerate = sf.read(buf, dtype="float32")
-        return data, samplerate
+            data, samplerate = sf.read(str(tmp_path), dtype="float32")
+            if _is_corrupted_static_waveform(data):
+                raise RuntimeError("Piper TTS вернул повреждённый аудиосигнал (белый шум)")
+            return data, samplerate
+        finally:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:  # noqa: BLE001
+                pass
 
     # ------------------------------------------------------------------ #
     # Воспроизведение аудио с поддержкой Barge-In
@@ -959,15 +1047,20 @@ class HumanTTSManager:
         arr = np.asarray(data, dtype=np.float32)
         if arr.size == 0:
             return
+        if _is_corrupted_static_waveform(arr):
+            log.warning("Отмена воспроизведения: обнаружен повреждённый сигнал (белый шум)")
+            return
+
+        arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # Защита от клиппинга до масштабирования громкости
+        peak = float(np.max(np.abs(arr)))
+        if peak > 0.88:
+            arr = arr * (0.88 / peak)
 
         # Применение громкости (self.config.volume: 0..100)
         vol = max(0.0, min(1.0, float(getattr(self.config, "volume", 100)) / 100.0))
         arr = arr * vol
-
-        # Защита от клиппинга
-        peak = float(np.max(np.abs(arr)))
-        if peak > 0.88:
-            arr = arr * (0.88 / peak)
 
         # 1. Попытка воспроизведения через pygame.mixer
         if self._pygame_mixer is not None:
@@ -1051,6 +1144,9 @@ class HumanTTSManager:
         cache_enabled = bool(getattr(self.config, "cache_audio", True))
         current_provider = getattr(self.config, "provider", "edge")
 
+        piper_exe, _ = self._find_piper_binary_and_model()
+        has_local_fallback = (piper_exe is not None) or (self._engine is not None) or (self._pyttsx_engine is not None)
+
         # Проверка Smart Cache (с учётом флага cache_audio и провайдера)
         if cache_enabled:
             cached = self._cache.get(text, voice, rate, pitch, provider=current_provider)
@@ -1062,24 +1158,47 @@ class HumanTTSManager:
                     self._error = None
                 return
 
-        # 1. Основной режим: Edge-TTS (In-Memory Streaming)
+        # 1. Основной режим: Edge-TTS (In-Memory Streaming) с cooldown при повторных сбоях
         if current_provider == "edge":
-            try:
-                data, samplerate = self._synthesize_edge_audio(text)
-                data, samplerate = self.apply_rvc_if_enabled(data, samplerate)
-                if cache_enabled:
-                    self._cache.put(text, voice, rate, pitch, data, samplerate, provider="edge")
-                if self._play_if_timely(data, samplerate):
-                    self._backend = f"Edge ({voice})"
-                    self._speak_failed = False
-                    self._error = None
-                return
-            except Exception as exc:  # noqa: BLE001
-                log.warning("Синтез через edge-tts не удался (%s), переключаюсь на резервный Piper TTS…", exc)
+            in_cooldown = has_local_fallback and (time.monotonic() < float(self._edge_cooldown_until or 0.0))
+            if in_cooldown:
+                log.debug("Edge-TTS на cooldown, сразу использую локальный синтез")
+            else:
+                try:
+                    data, samplerate = self._synthesize_edge_audio(text)
+                    self._edge_consecutive_failures = 0
+                    self._edge_cooldown_until = 0.0
+                    data, samplerate = self.apply_rvc_if_enabled(data, samplerate)
+                    if cache_enabled:
+                        self._cache.put(text, voice, rate, pitch, data, samplerate, provider="edge")
+                    if self._play_if_timely(data, samplerate):
+                        self._backend = f"Edge ({voice})"
+                        self._speak_failed = False
+                        self._error = None
+                    return
+                except Exception as exc:  # noqa: BLE001
+                    self._edge_consecutive_failures += 1
+                    if has_local_fallback and self._edge_consecutive_failures >= max(1, int(self._edge_failure_threshold)):
+                        self._edge_cooldown_until = time.monotonic() + float(self._edge_cooldown_seconds)
+                        log.warning(
+                            "Синтез через edge-tts не удался (%s), включаю cooldown %.0fс и переключаюсь на локальный TTS…",
+                            exc,
+                            self._edge_cooldown_seconds,
+                        )
+                    else:
+                        log.warning("Синтез через edge-tts не удался (%s), переключаюсь на резервный Piper TTS…", exc)
 
         # 2. Офлайн / Fallback: Piper TTS
-        piper_exe, _ = self._find_piper_binary_and_model()
         if current_provider == "piper" or piper_exe is not None:
+            if cache_enabled and current_provider != "piper":
+                cached_piper = self._cache.get(text, voice, rate, pitch, provider="piper")
+                if cached_piper is not None:
+                    data, sr = cached_piper
+                    if self._play_if_timely(data, sr):
+                        self._backend = "Smart Cache"
+                        self._speak_failed = False
+                        self._error = None
+                    return
             try:
                 data, samplerate = self._synthesize_piper_audio(text)
                 data, samplerate = self.apply_rvc_if_enabled(data, samplerate)

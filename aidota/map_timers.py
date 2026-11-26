@@ -285,7 +285,7 @@ def upcoming_objectives(
     # Водные руны (2:00 и 4:00)
     for t_water in WATER_RUNE_TIMES_SEC:
         if sec <= t_water:
-            _add("water", "водные руны на миду", t_water - sec)
+            _add("water", "водные руны на миду (для мидера)", t_water - sec)
             break
 
     # Активные руны (с 6:00 каждые 2 мин)
@@ -299,7 +299,7 @@ def upcoming_objectives(
 
     # Лотосы и баунти (каждые 3 мин)
     rem_3m = 0 if (sec > 0 and sec % LOTUS_PERIOD_SEC == 0) else _periodic_remaining(sec, LOTUS_PERIOD_SEC)
-    _add("lotus", "лотосы в пруду", rem_3m)
+    _add("lotus", "лотосы в пруду (хил HP/маны)", rem_3m)
     _add("bounty", "руны богатства", rem_3m)
 
     # Руны мудрости (каждые 7 мин)
@@ -320,7 +320,7 @@ def upcoming_objectives(
     # Разряды нейтральных предметов
     for tier, unlock_sec, _ in neutral_schedule(turbo=turbo):
         if sec <= unlock_sec:
-            _add("neutral_tier", f"нейтралки Тир {tier}", unlock_sec - sec)
+            _add("neutral_tier", f"нейтралки Тир {tier} (выбиваются в лесу)", unlock_sec - sec)
             break
 
     # Окно Рошана (если зафиксировано)
@@ -879,9 +879,9 @@ class CanonicalMapTimers:
                         self._alerted_water_runes.add(target_sec)
                         log.info("Сработал таймер: водные руны на миду (%d с, pos=%d)", target_sec, position)
                         if position == 4:
-                            return self._emit_alert_locked(sec, "Через 20 секунд водные руны на миду — четвёрка, сместись и помоги мидеру законтролить руну.")
+                            return self._emit_alert_locked(sec, "Через 20 секунд водные руны на миду — четвёрка, сместись и помоги мидеру законтролить руну для мидера.")
                         if position == 5:
-                            return self._emit_alert_locked(sec, "Через 20 секунд водные руны на миду — проверь, нужна ли помощь мидеру.")
+                            return self._emit_alert_locked(sec, "Через 20 секунд водные руны для мидера — не уходи с лёгкой без нужды, прикрой мид только если нужно.")
                         return self._emit_alert_locked(sec, "Через 20 секунд водные руны на миду, запушь пачку.")
 
             # 2. Активные руны (6:00 = 360с, каждые 2 мин -> за 20с: 340с, 460с...)
@@ -1070,8 +1070,8 @@ class CanonicalMapTimers:
                         self._alerted_lotus_bounty.add(cycle)
                         log.info("Сработал макро-таймер: лотосы + баунти (цикл %d, sec=%d, pos=%d)", cycle, sec, position)
                         if position in (4, 5):
-                            return self._emit_alert_locked(sec, "Через 20 секунд появятся лотосы в пруду и руны богатства — саппорт, забери бесплатный лотус и баунти!")
-                        return self._emit_alert_locked(sec, "Через 20 секунд появятся лотосы в пруду и руны богатства.")
+                            return self._emit_alert_locked(sec, "Через 20 секунд появятся лотосы (лечение и мана) и руны богатства — саппорт, забери лотус в пруду и баунти!")
+                        return self._emit_alert_locked(sec, "Через 20 секунд появятся лотосы (лечение и мана) и руны богатства.")
 
             # 4. Отводы крипов для позиций 4 и 5 во время стадии линии (1:00 — 8:00)
             if position in (4, 5) and 60 <= sec <= 480:

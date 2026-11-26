@@ -67,6 +67,9 @@ jobs:
           tests/test_phase4_ssot_and_kv_prefix.py
           tests/test_golden_evals.py
           tests/test_release_readiness.py
+          tests/test_audio.py
+          tests/test_tts_pipeline_hardening.py
+          tests/test_latency_and_grounding.py
 
       - name: Typecheck (mypy)
         run: python -m mypy

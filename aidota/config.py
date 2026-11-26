@@ -206,7 +206,7 @@ class GsiConfig:
 class AudioConfig:
     model_path: str = "vosk-model-small-ru-0.22"
     sample_rate: int = 16000
-    block_size: int = 8000
+    block_size: int = 1600
     input_device: int | str | None = None
     # Сколько секунд ждать тишины перед тем, как считать фразу законченной.
     listen_timeout: float = 0.0

@@ -89,6 +89,7 @@ class AidotaWebApi:
         self._cached_data_version: int = -1
         self._standalone_coach: Any | None = None
         self._standalone_tts: Any | None = None
+        self._fallback_enemy_tracker: Any | None = None
         self._telemetry = TelemetrySink(getattr(app_controller.config, "logs_path", None))
 
     # ------------------------------------------------------------------ #
@@ -1014,6 +1015,11 @@ class AidotaWebApi:
                         coach_inst.set_custom_focus(cfg.player_profile.custom_focus)
                 self._ctrl.assistant._agent.set_autonomy_level(cfg.player_profile.autonomy_level)
                 self._apply_skill_level(cfg.player_profile.skill_level)
+                tts_inst = getattr(self._ctrl.assistant, "_tts", None)
+                if tts_inst is not None and "output_device" in payload and hasattr(tts_inst, "set_output_device"):
+                    tts_inst.set_output_device(cfg.tts.output_device)
+            if self._standalone_tts is not None and "output_device" in payload and hasattr(self._standalone_tts, "set_output_device"):
+                self._standalone_tts.set_output_device(cfg.tts.output_device)
 
             return {"success": True, "message": "Настройки успешно сохранены!"}
         except Exception as exc:  # noqa: BLE001
@@ -1098,18 +1104,34 @@ class AidotaWebApi:
         team_gaps = analyze_team_draft_gaps(allies, enemies, player_role=role)
         return {"picks": picks, "team_gaps": team_gaps}
 
+    def _enemy_tracker(self) -> Any:
+        """Возвращает активный EnemyStateTracker без создания лишнего standalone Coach на опросе UI."""
+        coach = self._assistant_coach()
+        if coach is not None and getattr(coach, "enemy_state_tracker", None) is not None:
+            return coach.enemy_state_tracker
+        if self._standalone_coach is not None and getattr(self._standalone_coach, "enemy_state_tracker", None) is not None:
+            return self._standalone_coach.enemy_state_tracker
+        with self._cache_lock:
+            if self._fallback_enemy_tracker is None:
+                from .enemy_state import EnemyStateTracker
+
+                self._fallback_enemy_tracker = EnemyStateTracker()
+            return self._fallback_enemy_tracker
+
     def get_enemy_states(self) -> list[dict[str, Any]]:
         """Возвращает трёхзначные состояния врагов (confirmed | inferred | unknown) для UI."""
         try:
-            coach = self._assistant_coach() or self._get_or_create_standalone_coach()
-            tracker = getattr(coach, "enemy_state_tracker", None)
-            if tracker is not None:
-                raw_state = self._ctrl.raw_gsi_payload()
-                clock_sec = 0
-                if isinstance(raw_state, dict):
-                    clock_sec = int((raw_state.get("map") or {}).get("clock_time") or 0)
-                tracker.sync_gsi(raw_state, clock_sec, catalog=getattr(coach, "catalog", None))
-                return tracker.to_ui_payload()
+            tracker = self._enemy_tracker()
+            coach = self._assistant_coach()
+            catalog = getattr(coach, "catalog", None) if coach is not None else None
+            if catalog is None and self._ctrl.assistant is not None:
+                catalog = getattr(self._ctrl.assistant, "_catalog", None)
+            raw_state = self._ctrl.raw_gsi_payload()
+            clock_sec = 0
+            if isinstance(raw_state, dict):
+                clock_sec = int((raw_state.get("map") or {}).get("clock_time") or 0)
+            tracker.sync_gsi(raw_state, clock_sec, catalog=catalog)
+            return tracker.to_ui_payload()
         except Exception:  # noqa: BLE001
             log.debug("get_enemy_states не удался", exc_info=True)
         return []
@@ -1121,16 +1143,13 @@ class AidotaWebApi:
         if not hero or not item:
             return {"success": False, "message": "Требуется указать героя и предмет."}
         try:
-            coach = self._assistant_coach() or self._get_or_create_standalone_coach()
-            tracker = getattr(coach, "enemy_state_tracker", None)
-            if tracker is not None:
-                raw_state = self._ctrl.raw_gsi_payload()
-                clock_sec = int((raw_state.get("map") or {}).get("clock_time") or 0) if isinstance(raw_state, dict) else 0
-                ok = tracker.confirm_enemy_item(hero, item, clock_sec=clock_sec, source="web_ui")
-                return {"success": ok, "message": f"Предмет {item} подтверждён у {hero}."}
+            tracker = self._enemy_tracker()
+            raw_state = self._ctrl.raw_gsi_payload()
+            clock_sec = int((raw_state.get("map") or {}).get("clock_time") or 0) if isinstance(raw_state, dict) else 0
+            ok = tracker.confirm_enemy_item(hero, item, clock_sec=clock_sec, source="web_ui")
+            return {"success": ok, "message": f"Предмет {item} подтверждён у {hero}."}
         except Exception as exc:  # noqa: BLE001
             return {"success": False, "message": f"Ошибка подтверждения: {exc}"}
-        return {"success": False, "message": "Трекер состояния врагов недоступен."}
 
     def dismiss_enemy_item(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Сбрасывает зафиксированный предмет врага из WebUI."""
@@ -1139,14 +1158,11 @@ class AidotaWebApi:
         if not hero or not item:
             return {"success": False, "message": "Требуется указать героя и предмет."}
         try:
-            coach = self._assistant_coach() or self._get_or_create_standalone_coach()
-            tracker = getattr(coach, "enemy_state_tracker", None)
-            if tracker is not None:
-                ok = tracker.dismiss_enemy_item(hero, item)
-                return {"success": ok, "message": f"Предмет {item} сброшен у {hero}."}
+            tracker = self._enemy_tracker()
+            ok = tracker.dismiss_enemy_item(hero, item)
+            return {"success": ok, "message": f"Предмет {item} сброшен у {hero}."}
         except Exception as exc:  # noqa: BLE001
             return {"success": False, "message": f"Ошибка сброса: {exc}"}
-        return {"success": False, "message": "Трекер состояния врагов недоступен."}
 
     def get_hero_build_guide(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Возвращает детальный гайд по закупкам и прокачке героя."""
