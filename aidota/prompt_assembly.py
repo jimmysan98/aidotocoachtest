@@ -156,6 +156,7 @@ def build_compact_match_suffix(
     has_scepter: bool = False,
     has_shard: bool = False,
     threats: Iterable[str] = (),
+    enemy_state: str = "",
 ) -> str:
     """Собирает компактный детерминированный снимок матча строго для динамического суффикса (Segment 2)."""
     lines: list[str] = []
@@ -194,6 +195,10 @@ def build_compact_match_suffix(
     threat_list = [str(t).strip() for t in threats if str(t).strip()]
     if threat_list:
         lines.append(f"- Ключевые угрозы: {' | '.join(threat_list[:3])}")
+
+    enemy_st = str(enemy_state or "").strip()
+    if enemy_st:
+        lines.append(enemy_st)
 
     if not lines:
         return ""

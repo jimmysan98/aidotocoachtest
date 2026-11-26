@@ -61,6 +61,8 @@ files = [
     "aidota/doctor.py",
     "aidota/coach_memory.py",
     "aidota/map_timers.py",
+    "aidota/enemy_state.py",
+    "aidota/item_validator.py",
     "aidota/skills/__init__.py",
     "aidota/skills/macro_timer.py",
     "aidota/skills/cooldown_tracker.py",

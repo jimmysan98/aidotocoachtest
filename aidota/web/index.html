@@ -243,6 +243,17 @@
                 <div class="advice-empty" id="item-advice-empty">Свежих советов по закупу пока нет — начните матч, и тренер подскажет следующий предмет.</div>
               </div>
             </div>
+
+            <!-- Вражеский радар и статус предметов (confirmed / inferred / unknown) -->
+            <div class="hero-advice-block enemy-states-block" id="enemy-states-block" aria-live="polite" style="margin-top: 12px;">
+              <div class="hero-advice-head">
+                <span class="hero-advice-title"><svg class="ui-icon inline-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="22" y1="12" x2="18" y2="12"/><line x1="6" y1="12" x2="2" y2="12"/><line x1="12" y1="6" x2="12" y2="2"/><line x1="12" y1="22" x2="12" y2="18"/></svg> Радар предметов врагов</span>
+                <span class="hero-advice-hint" id="enemy-states-hint">confirmed • inferred • unknown</span>
+              </div>
+              <div class="enemy-states-list" id="enemy-states-list" style="display: flex; flex-direction: column; gap: 8px; margin-top: 8px;">
+                <div class="advice-empty" id="enemy-states-empty">Вне матча — слоты противников появятся при драфте или старте игры.</div>
+              </div>
+            </div>
           </div>
 
           <!-- Controls & Audio Wave Card -->
@@ -557,6 +568,12 @@
                   <p>Добавьте вражеских героев выше или нажмите «Взять героев из матча GSI», чтобы получить персональные контрпики с объяснением.</p>
                 </div>
               </div>
+            </div>
+
+            <!-- Анализ пробелов команды (Team Gaps) -->
+            <div class="team-gaps-section" id="team-gaps-section" style="display:none; margin-top: 18px;">
+              <h4 class="results-header" style="margin-bottom: 10px;">Пробелы драфта команды (8 критериев):</h4>
+              <div class="team-gaps-grid" id="team-gaps-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px;"></div>
             </div>
           </div>
 

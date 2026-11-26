@@ -52,7 +52,14 @@ from .context import (
     update_player_profile_mistakes,
 )
 from .dota_api import DotaApi
+from .enemy_state import EnemyStateTracker
 from .heroes import HeroCatalog, normalize
+from .item_validator import (
+    analyze_team_draft_gaps,
+    extract_player_owned_items,
+    pick_deterministic_fallback_item,
+    sanitize_voice_or_chat_advice_text,
+)
 from .live_advice import build_enemy_match_counter_tips, get_enemy_item_hints
 from .llm_router import (
     DEEPSEEK_CHAT_MODEL,
@@ -337,6 +344,36 @@ COACH_TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "confirm_enemy_item",
+            "description": "Зафиксировать покупку предмета врагом (BKB, Blink, Orchid, Hex и т.д.) в трекере состояния.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "hero": {"type": "string", "description": "Имя вражеского героя (на русском или английском)"},
+                    "item": {"type": "string", "description": "Купленный предмет (сленг или название)"},
+                },
+                "required": ["hero", "item"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "dismiss_enemy_item",
+            "description": "Сбросить зафиксированный предмет вражеского героя.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "hero": {"type": "string", "description": "Имя вражеского героя"},
+                    "item": {"type": "string", "description": "Сбрасываемый предмет"},
+                },
+                "required": ["hero", "item"],
+            },
+        },
+    },
 ]
 
 
@@ -437,6 +474,7 @@ class Coach:
         self.macro_timer = MacroTimerSkill()
         self.cooldown_tracker = CooldownTrackerSkill()
         self.lane_matchup = LaneMatchupSkill()
+        self.enemy_state_tracker = EnemyStateTracker()
 
     def _http_session(self) -> Any:
         """Возвращает потокобезопасную HTTP-сессию (сохраняя injected/init-thread _session)."""
@@ -568,6 +606,16 @@ class Coach:
             for item in (snapshot.get("inventory") or [])
             if str(item).strip() and str(item).strip() != "пусто"
         ]
+        enemy_state_block = ""
+        if hasattr(self, "enemy_state_tracker") and isinstance(data, dict):
+            c_sec = int(clock_sec) if clock_sec is not None else 0
+            self.enemy_state_tracker.sync_gsi(
+                data,
+                c_sec,
+                enemy_picks=list(snapshot.get("enemy_picks") or []),
+                catalog=self.catalog,
+            )
+            enemy_state_block = self.enemy_state_tracker.build_prompt_context(c_sec)
         return build_compact_match_suffix(
             stage=str(snapshot.get("game_stage") or ""),
             clock=str(snapshot.get("clock_formatted") or ""),
@@ -578,6 +626,7 @@ class Coach:
             has_scepter=bool(snapshot.get("aghanims_scepter")),
             has_shard=bool(snapshot.get("aghanims_shard")),
             threats=threats,
+            enemy_state=enemy_state_block,
         )
 
     def _build_turn_assembly(
@@ -1519,6 +1568,31 @@ class Coach:
                 return "Не указаны ключ или значение предпочтения."
             self.long_memory.remember_fact(fact_key, fact_value)
             return f"Запомнил предпочтение игрока: {fact_key} — {fact_value}."
+
+        if name == "confirm_enemy_item":
+            hero = str(args.get("hero") or "").strip()
+            item = str(args.get("item") or "").strip()
+            clock = _g(self.gsi_payload(), "map", "clock_time")
+            clock_sec = int(clock) if clock is not None else 0
+            if hasattr(self, "enemy_state_tracker"):
+                self.enemy_state_tracker.confirm_enemy_item(hero, item, clock_sec=clock_sec, source="voice_coach")
+                return f"Зафиксировано: у {hero} подтверждён {item}."
+            return f"Принято: {item} у {hero}."
+
+        if name == "dismiss_enemy_item":
+            hero = str(args.get("hero") or "").strip()
+            item = str(args.get("item") or "").strip()
+            if hasattr(self, "enemy_state_tracker"):
+                self.enemy_state_tracker.dismiss_enemy_item(hero, item)
+                return f"Сброшено: предмет {item} у {hero}."
+            return f"Сброшено: {item} у {hero}."
+
+        if name == "get_enemy_states":
+            if hasattr(self, "enemy_state_tracker"):
+                clock = _g(self.gsi_payload(), "map", "clock_time")
+                clock_sec = int(clock) if clock is not None else 0
+                return self.enemy_state_tracker.build_prompt_context(clock_sec)
+            return "Трекер состояния врагов недоступен."
 
         return f"Неизвестный инструмент: {name}"
 
@@ -2873,6 +2947,7 @@ class Coach:
         gold = _g(payload, "player", "gold")
         enemy_picks = collect_draft(payload, self.catalog).enemy_picks
         hints = self._enemy_hints()
+        owned_items = extract_player_owned_items(payload)
         context = build_gsi_context(
             payload, self.catalog, self.api.items(), age_seconds=self.gsi_age(),
             position=self.position,
@@ -2922,15 +2997,26 @@ class Coach:
             answer = self._ask_llm(prompt, kind="build", max_sentences=2, max_chars=240)
             if not answer:
                 raise OllamaError("пустой ответ")
+            answer = sanitize_voice_or_chat_advice_text(
+                answer,
+                owned_items,
+                hero_name=str(hero_name or ""),
+                role=self.position,
+                enemy_heroes=enemy_picks,
+            )
             self.remember("Что купить дальше", answer)
             return answer
         except OllamaError as exc:
             self.last_error = str(exc)
-            lines = [f"LLM недоступна ({exc}). Быстрая подсказка по предметам:"]
+            fallback_item, fallback_why = pick_deterministic_fallback_item(
+                str(hero_name or ""), self.position, owned_items, enemy_heroes=enemy_picks
+            )
+            lines = [
+                f"LLM недоступна ({exc}). Рекомендация по предметам (Tier 0):",
+                f"• Следующий слот: {fallback_item} ({fallback_why}).",
+            ]
             if hints:
-                lines.extend("• " + h for h in hints)
-            else:
-                lines.append("• Универсально: добей ключевой слот по роли и держи BKB/сейв по вражескому драфту.")
+                lines.extend("• " + h for h in hints[:2])
             lines.append("Инвентарь: " + (", ".join(inventory) or "не виден"))
             return "\n".join(lines)
 
@@ -3032,6 +3118,19 @@ class Coach:
             structured.append("Пики врага: " + ", ".join(draft.enemy_picks) + ".")
         if draft.bans:
             structured.append("Баны: " + ", ".join(draft.bans[:10]) + ".")
+        try:
+            gaps_info = analyze_team_draft_gaps(
+                list(draft.my_picks), list(draft.enemy_picks), player_role=self.position
+            )
+            missing = gaps_info.get("missing_gaps") or []
+            urgent = [f"{g['title']}: {g['reason']}" for g in missing if g.get("urgent")]
+            regular = [str(g['title']) for g in missing if not g.get("urgent")]
+            if urgent:
+                structured.append("Критичные пробелы драфта: " + "; ".join(urgent) + ".")
+            if regular:
+                structured.append("Не хватает в драфте команды: " + ", ".join(regular) + ".")
+        except Exception:  # noqa: BLE001
+            pass
         knowledge: list[str] = []
         try:
             from .meta_db import recommend_picks

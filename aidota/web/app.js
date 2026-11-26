@@ -1162,6 +1162,47 @@ function updateMacroTimersDisplay(gameTime, macroTimers) {
 }
 
 // ---------------------------------------------------------------------------
+// Enemy States & Radar (confirmed | inferred | unknown)
+// ---------------------------------------------------------------------------
+function updateEnemyStatesDisplay(enemyStates) {
+  const container = document.getElementById("enemy-states-list");
+  if (!container) return;
+  if (!Array.isArray(enemyStates) || enemyStates.length === 0) {
+    container.innerHTML = '<div class="advice-empty" id="enemy-states-empty">Вне матча — слоты противников появятся при драфте или старте игры.</div>';
+    return;
+  }
+  container.innerHTML = enemyStates.map((hero) => {
+    const badge = hero.badge || "unknown";
+    let badgeClass = "badge-secondary";
+    let badgeText = "Туман войны";
+    if (badge === "confirmed") {
+      badgeClass = "badge-success";
+      badgeText = "Подтверждено";
+    } else if (badge === "inferred") {
+      badgeClass = "badge-warning";
+      badgeText = "Тайминг";
+    }
+    const items = (hero.items || []).map((it) => {
+      const itState = it.state || "unknown";
+      const itColor = itState === "confirmed" ? "#10b981" : (itState === "inferred" ? "#f59e0b" : "#64748b");
+      return `<span style="display:inline-block; font-size:11px; padding:2px 6px; border-radius:4px; background:rgba(255,255,255,0.06); border:1px solid ${itColor}; color:${itColor};" title="${escapeHtml(it.notes || itState)}">${escapeHtml(it.display_name)}</span>`;
+    }).join(" ");
+
+    return `
+      <div class="enemy-state-row" style="display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; border-radius: 6px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08);">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-weight: 600; font-size: 13px;">${escapeHtml(hero.hero_name)}</span>
+          <span class="badge ${badgeClass}" style="font-size: 10px;">${badgeText}</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+          ${items || '<span style="font-size: 11px; opacity: 0.5;">Слоты скрыты (туман войны)</span>'}
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+// ---------------------------------------------------------------------------
 // Settings & Presets
 // ---------------------------------------------------------------------------
 function highlightMatchingPreset(baseUrl, model) {
@@ -1622,10 +1663,17 @@ async function syncStateLoop() {
       if (gsi.clock_time !== undefined || gsi.macro_timers) {
         updateMacroTimersDisplay(gsi.clock_time, gsi.macro_timers);
       }
+
+      // Enemy states & item radar
+      if (gsi.enemy_states !== undefined) {
+        updateEnemyStatesDisplay(gsi.enemy_states);
+      }
     } else {
       const dot = document.querySelector(".gsi-dot");
       if (dot) dot.classList.remove("online");
       elements.gsiStatusText.textContent = "Ожидание Dota 2";
+
+      updateEnemyStatesDisplay([]);
 
       // Вне матча: иконка героя и советы сбрасываются, UI не ломается.
       if (state.heroIconKey !== null) {
@@ -1931,6 +1979,32 @@ async function triggerDraftCalculation() {
     }
     grid.appendChild(card);
   });
+
+  const gapsSection = document.getElementById("team-gaps-section");
+  const gapsGrid = document.getElementById("team-gaps-grid");
+  if (gapsSection && gapsGrid) {
+    if (res.team_gaps && Array.isArray(res.team_gaps.missing_gaps) && res.team_gaps.missing_gaps.length > 0) {
+      gapsSection.style.display = "block";
+      gapsGrid.innerHTML = res.team_gaps.missing_gaps.map((gap) => {
+        const isUrgent = Boolean(gap.urgent);
+        const borderCol = isUrgent ? "rgba(239, 68, 68, 0.4)" : "rgba(255,255,255,0.08)";
+        const badgeCol = isUrgent ? "badge-danger" : "badge-secondary";
+        const itemsStr = (gap.recommended_items || []).join(", ");
+        return `
+          <div class="team-gap-card" style="padding: 10px 12px; border-radius: 8px; background: rgba(255,255,255,0.02); border: 1px solid ${borderCol};">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+              <span style="font-weight: 600; font-size: 13px;">${escapeHtml(gap.title)}</span>
+              <span class="badge ${badgeCol}" style="font-size: 10px;">${isUrgent ? "СРОЧНО" : "Пробел"}</span>
+            </div>
+            <p style="font-size: 12px; opacity: 0.8; margin-bottom: 6px;">${escapeHtml(gap.reason)}</p>
+            ${itemsStr ? `<div style="font-size: 11px; opacity: 0.9;">Предметы: <b>${escapeHtml(itemsStr)}</b></div>` : ""}
+          </div>
+        `;
+      }).join("");
+    } else {
+      gapsSection.style.display = "none";
+    }
+  }
 }
 
 const btnCalculateDraft = document.getElementById("btn-calculate-draft");

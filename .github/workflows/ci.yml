@@ -39,6 +39,9 @@ jobs:
           aidota/logging_setup.py
           aidota/paths.py
           aidota/meta_sync.py
+          aidota/map_timers.py
+          aidota/enemy_state.py
+          aidota/item_validator.py
           aidota/dota_api.py
           aidota/coach_memory.py
           aidota/config.py
@@ -61,6 +64,8 @@ jobs:
           tests/test_coach_intelligence_upgrade.py
           tests/test_coach_upgrade_qa.py
           tests/test_web_api_bridge.py
+          tests/test_phase4_ssot_and_kv_prefix.py
+          tests/test_golden_evals.py
           tests/test_release_readiness.py
 
       - name: Typecheck (mypy)

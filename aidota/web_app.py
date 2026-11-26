@@ -412,12 +412,22 @@ class AidotaWebApi:
                 position=position,
                 item_costs=item_costs,
             )
-            return build_item_advice(
+            from .item_validator import extract_player_owned_items, sanitize_structured_item_advice
+
+            raw_advice = build_item_advice(
                 snapshot,
                 hero_name=snapshot.get("hero_name") or "",
                 position=position,
                 enemy_heroes=list(snapshot.get("enemy_picks") or []),
                 item_costs=item_costs,
+            )
+            owned_items = extract_player_owned_items(raw_state)
+            return sanitize_structured_item_advice(
+                raw_advice,
+                owned_items,
+                hero_name=snapshot.get("hero_name") or "",
+                role=position,
+                enemy_heroes=list(snapshot.get("enemy_picks") or []),
             )
         except Exception:  # noqa: BLE001
             log.debug("get_live_advice не удался", exc_info=True)
@@ -660,6 +670,7 @@ class AidotaWebApi:
             "enemy_picks": enemy_picks,
             "item_advice": item_advice,
             "macro_timers": macro_timers,
+            "enemy_states": self.get_enemy_states(),
         }
 
         return {
@@ -1077,13 +1088,65 @@ class AidotaWebApi:
         return False
 
     def get_draft_recommendation(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Возвращает рекомендации по драфту и контрпикам."""
+        """Возвращает рекомендации по драфту, контрпикам и пробелам команды."""
+        from .item_validator import analyze_team_draft_gaps
         from .meta_db import recommend_picks
         enemies = payload.get("enemies") or []
         allies = payload.get("allies") or []
         role = int(payload.get("role") or self._ctrl.config.player_profile.default_position or 1)
         picks = recommend_picks(enemies, allies, role=role, top_k=5)
-        return {"picks": picks}
+        team_gaps = analyze_team_draft_gaps(allies, enemies, player_role=role)
+        return {"picks": picks, "team_gaps": team_gaps}
+
+    def get_enemy_states(self) -> list[dict[str, Any]]:
+        """Возвращает трёхзначные состояния врагов (confirmed | inferred | unknown) для UI."""
+        try:
+            coach = self._assistant_coach() or self._get_or_create_standalone_coach()
+            tracker = getattr(coach, "enemy_state_tracker", None)
+            if tracker is not None:
+                raw_state = self._ctrl.raw_gsi_payload()
+                clock_sec = 0
+                if isinstance(raw_state, dict):
+                    clock_sec = int((raw_state.get("map") or {}).get("clock_time") or 0)
+                tracker.sync_gsi(raw_state, clock_sec, catalog=getattr(coach, "catalog", None))
+                return tracker.to_ui_payload()
+        except Exception:  # noqa: BLE001
+            log.debug("get_enemy_states не удался", exc_info=True)
+        return []
+
+    def confirm_enemy_item(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Фиксирует наличие предмета у врага из WebUI (клик/интерфейс)."""
+        hero = str(payload.get("hero") or "").strip()
+        item = str(payload.get("item") or "").strip()
+        if not hero or not item:
+            return {"success": False, "message": "Требуется указать героя и предмет."}
+        try:
+            coach = self._assistant_coach() or self._get_or_create_standalone_coach()
+            tracker = getattr(coach, "enemy_state_tracker", None)
+            if tracker is not None:
+                raw_state = self._ctrl.raw_gsi_payload()
+                clock_sec = int((raw_state.get("map") or {}).get("clock_time") or 0) if isinstance(raw_state, dict) else 0
+                ok = tracker.confirm_enemy_item(hero, item, clock_sec=clock_sec, source="web_ui")
+                return {"success": ok, "message": f"Предмет {item} подтверждён у {hero}."}
+        except Exception as exc:  # noqa: BLE001
+            return {"success": False, "message": f"Ошибка подтверждения: {exc}"}
+        return {"success": False, "message": "Трекер состояния врагов недоступен."}
+
+    def dismiss_enemy_item(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Сбрасывает зафиксированный предмет врага из WebUI."""
+        hero = str(payload.get("hero") or "").strip()
+        item = str(payload.get("item") or "").strip()
+        if not hero or not item:
+            return {"success": False, "message": "Требуется указать героя и предмет."}
+        try:
+            coach = self._assistant_coach() or self._get_or_create_standalone_coach()
+            tracker = getattr(coach, "enemy_state_tracker", None)
+            if tracker is not None:
+                ok = tracker.dismiss_enemy_item(hero, item)
+                return {"success": ok, "message": f"Предмет {item} сброшен у {hero}."}
+        except Exception as exc:  # noqa: BLE001
+            return {"success": False, "message": f"Ошибка сброса: {exc}"}
+        return {"success": False, "message": "Трекер состояния врагов недоступен."}
 
     def get_hero_build_guide(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Возвращает детальный гайд по закупкам и прокачке героя."""
