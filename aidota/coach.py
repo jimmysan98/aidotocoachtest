@@ -53,6 +53,7 @@ from .context import (
 )
 from .dota_api import DotaApi
 from .heroes import HeroCatalog, normalize
+from .live_advice import build_enemy_match_counter_tips, get_enemy_item_hints
 from .llm_router import (
     DEEPSEEK_CHAT_MODEL,
     REASONER_MIN_API_MAX_TOKENS,
@@ -65,7 +66,13 @@ from .llm_router import (
     is_deepseek_endpoint,
     is_reasoning_model,
 )
-from .prompt_assembly import PromptAssembly
+from .map_timers import (
+    detect_enemy_mid_level,
+    extract_match_id,
+    format_objectives_window,
+    is_turbo_mode,
+)
+from .prompt_assembly import PromptAssembly, build_compact_match_suffix
 from .roles import normalize_position, position_label
 from .telemetry import TelemetrySink, TurnMetric, new_turn_id
 
@@ -81,84 +88,6 @@ def _supports_item_costs(func: Any, name: str = "item_costs") -> bool:
 
 
 _LIVE_SNAPSHOT_HAS_ITEM_COSTS = _supports_item_costs(get_live_gsi_snapshot)
-
-_COUNTER_HINTS: dict[str, str] = {
-    "faceless_void": "Против Войда покупай Aeon Disk (поглотит урон в куполе), Ghost Scepter или Halberd (дизарм Войда снаружи), а саппортам — Force Staff и Glimmer для сейва союзников. БКБ от хроносферы не спасает!",
-    "enigma": "Против Энигмы нужны дальний контроль (Silencer, Rubick, Scythe of Vyse) и Blink Dagger, чтобы сбивать Black Hole снаружи купола. БКБ от блэкхола не спасает!",
-    "doom": "Против Дуума покупай Linken's Sphere (заблокирует ульт), Lotus Orb (вернёт Doom врагу) или Aeon Disk. БКБ от ультимейта Дума не защищает!",
-    "legion_commander": "Против Легионки спасают Linken's Sphere, Lotus Orb, Halberd (дизармить до дуэли) и Aeon Disk. БКБ от дуэли не спасает!",
-    "beastmaster": "Против Бистмастера бери Linken's Sphere, Lotus Orb или Aeon Disk. Его ультимейт Primal Roar пробивает БКБ!",
-    "axe": "Против Акса держи дистанцию, собери Eul для сброса агра или выходи в Aeon Disk. Агр Акса пробивает БКБ!",
-    "juggernaut": "Против Джаггернаута саппорту обязателен Ghost Scepter или Eul против Omnislash, а корам — Halberd или броня (Shiva, Cuirass).",
-    "zuus": "Против Зевса купи Raindrops на линию, а дальше собирай Glimmer Cape, Pipe of Insight или BKB от магического урона.",
-    "phantom_assassin": "Против Фантомки собирай Ghost Scepter, Solar Crest или выходи в Monkey King Bar от уклонений.",
-    "bristleback": "Против Бристлбека возьми Magic Wand, Spirit Vessel и Silver Edge, чтобы отключать пассивку со спины.",
-    "pudge": "Против Пуджа держи варды на хайграундах, купи Force Staff для разрыва дистанции и Linken's Sphere от Dismember.",
-    "sniper": "Против Снайпера нужны Blink Dagger, Force Staff или Blade Mail, чтобы моментально сокращать дистанцию.",
-    "antimage": "Против Антимага собирай Orchid Malevolence, Scythe of Vyse или Abyssal Blade для контроля сквозь щит.",
-    "slark": "Против Сларка помогут Force Staff, Ghost Scepter, Crimson Guard и просветка Dust of Appearance.",
-    "necrolyte": "Против Некрофоса обязательны Spirit Vessel для снижения хила, Glimmer Cape под косу и Nullifier.",
-    "tinker": "Против Тинкера нужны Blink Dagger, Pipe of Insight, Lotus Orb и контроль в виде Scythe of Vyse.",
-    "ursa": "Против Урсы собирай Ghost Scepter, Force Staff, Halberd или Eul, чтобы кайтить его под Enrage.",
-    "viper": "Против Вайпера возьми фласки на линию, Force Staff для выхода из лужи и защитный Pipe of Insight.",
-    "morphling": "Против Морфа нужны Spirit Vessel, Eye of Skadi, Shiva's Guard и взрывной сайленс или Hex.",
-    "storm_spirit": "Против Шторма собирай Orchid Malevolence, Rod of Atos или Scythe of Vyse.",
-    "witch_doctor": "Против Витч Доктора держи стан на его Death Ward и купи Glimmer Cape или Ghost Scepter.",
-    "crystal_maiden": "Против ЦМки сбивай ультимейт станом или выходи из зоны Freezing Field через Force Staff.",
-    "silencer": "Против Сайленсера собирай BKB, Manta Style, Eul's Scepter или Lotus Orb для сброса безмолвия.",
-    "huskar": "Против Хускара собирай Spirit Vessel, Eye of Skadi, Shiva's Guard для среза регена, а корам — Silver Edge и Halberd.",
-    "winter_wyvern": "Против Виверны покупай Aeon Disk, Linken's Sphere и держи позиционку — не стой рядом с союзниками.",
-    "slardar": "Против Слардара держи дистанцию, покупай Ghost Scepter, Force Staff и броню (Shiva, Assault Cuirass). Снимай Corrosive Haze диспелом.",
-    "tiny": "Против Тини держи позиционку, покупай Raindrops от прокаста, Aeon Disk и броневые ауры против его гигантского физ-урона с дерева.",
-    "kunkka": "Против Кунки собирай Eul's Scepter (контрит X-Mark и комбу с Торрентом), Pipe of Insight от корабля и BKB.",
-    "dragon_knight": "Против ДК бери Spirit Vessel против Dragon Blood регена, Silver Edge для отключения пассивки и контроль до включения БКБ.",
-    "sven": "Против Свена бери Halberd (дизарм на 5 секунд), Ghost Scepter, Force Staff и Eul для кайта под его ультимейтом God's Strength.",
-    "wraith_king": "Против ВК собирай Diffusal Blade / Mana Burn чтобы сжечь ману на Reincarnation, или Spirit Vessel против вампиризма.",
-    "chaos_knight": "Против ЦК нужны АоЕ-урон и зачистка иллюзий: Shiva's Guard, Maelstrom/Mjollnir, Battle Fury или иллюзионный контрпик.",
-    "lifestealer": "Против Гули держи дистанцию, покупай Force Staff, Ghost Scepter, Halberd и Eye of Skadi для среза регена с Open Wounds.",
-    "alchemist": "Против Алхимика ставь варды в его стаки, прессуй в ранней игре, покупай Spirit Vessel и Eye of Skadi против химической ярости.",
-    "night_stalker": "Против Баланара держи варды на высоких точках ночью, собирай Force Staff, Ghost Scepter и сейвы от его сайленса.",
-    "spirit_breaker": "Против Бары носи с собой Eul's Scepter или стан для сбивания разгона (Charge), а также Linken's Sphere от Nether Strike.",
-    "lycan": "Против Ликана покупай Ghost Scepter, Crimson Guard против волков, Force Staff для кайта в ультимейте и не ходи в одиночку.",
-    "broodmother": "Против Бруды нужны Crimson Guard (блокирует весь урон паучков), Shiva's Guard, Dust of Appearance и АоЕ-способности.",
-    "clinkz": "Против Клинкза всегда носи Dust of Appearance и Sentry, собирай Ghost Scepter и Blademail от взрывного урона со спины.",
-    "weaver": "Против Вивера носи Dust of Appearance, собирай Orchid Malevolence, Rod of Atos или Scythe of Vyse для моментального контроля.",
-    "riki": "Против Рики саппортам обязателен Force Staff (вытолкнуть из тучки), Dust of Appearance и Ghost Scepter от Tricks of the Trade.",
-    "bounty_hunter": "Против БХ носи Dust, покупай Lotus Orb / Manta Style / Eul для сброса Track и держи саппортов под прикрытием.",
-    "nyx_assassin": "Против Никса носи Sentry, держи Raindrops и Pipe of Insight от взрывного магического урона и не бей в Carapace.",
-    "bloodseeker": "Против Сикера: при ультимейте Rupture просто стой на месте или используй телепорт на базу! Носи с собой свиток ТП.",
-    "razor": "Против Разора покупай Force Staff, Pike или Eul, чтобы моментально разрывать дистанцию отсоса урона Static Link.",
-    "venomancer": "Против Веномансера покупай Pipe of Insight от магии, Lotus Orb для снятия замедлений и BKB против яда.",
-    "medusa": "Против Медузы собирай Diffusal Blade, Eye of Skadi, Shiva's Guard и отворачивайся от взгляда Stone Gaze.",
-    "terrorblade": "Против ТБ собирай Linken's Sphere от Sunder, урон сквозь иллюзии (Shiva, Mjollnir) и взрывной магический урон.",
-    "luna": "Против Луны покупай Blademail, Pipe of Insight от Eclipse, Ghost Scepter и держись рядом с крипами при ульте.",
-    "phantom_lancer": "Против ПЛа обязательны Mjollnir, Shiva's Guard, Crimson Guard и постоянный АоЕ-урон. Одиночные таргеты против него бесполезны.",
-    "meepo": "Против Мипо фокусите одного самого пробитого клона, собирайте AoE-контроль, Shiva's Guard и взрывной фокус.",
-    "arc_warden": "Против Арка покупай Blink Dagger для быстрого сокращения дистанции внутрь купола Magnetic Field, и лови главную копию.",
-    "ember_spirit": "Против Эмбера нужны Orchid Malevolence, Scythe of Vyse, Rod of Atos и физ-урон, пробивающий его Flame Guard.",
-    "void_spirit": "Против Войд Спирита собирай сайленс (Orchid), Eul или Hex, чтобы не дать ему уйти через порталы и прыжки.",
-    "earth_spirit": "Против Земели покупай BKB от бесконечного контроля и Lotus Orb для сброса Magnetize.",
-    "leshrac": "Против Лешрака покупай Pipe of Insight, BKB, Mage Slayer и Spirit Vessel для снижения его вампиризма с Bloodstone.",
-    "queenofpain": "Против Квопы покупай Orchid Malevolence для контроля прыжка, Raindrops на линии и Pipe of Insight от Sonic Wave.",
-    "puck": "Против Пака собирай Orchid Malevolence, Scythe of Vyse или Rod of Atos. Не выходи из Coil без БКБ!",
-    "windrunner": "Против ВРки собирай Blade Mail (убьёт её за секунду в Focus Fire), Ghost Scepter, Halberd и Monkey King Bar от Windrun.",
-    "mirana": "Против Мираны ставь варды на реке, слушай звук стрелы и покупай Dust of Appearance против Moonlight Shadow.",
-    "jakiro": "Против Джакиро покупай Force Staff для быстрого выхода из Macropyre и Ice Path, а также Pipe of Insight.",
-    "disruptor": "Против Дизраптора собирай BKB (прожимать до Static Storm), Eul's Scepter для сейва союзника от Glimpse и Lotus Orb.",
-    "dazzle": "Против Даззла первым убивай его в драке! Покупай Orchid / Hex, чтобы не дать нажать Shallow Grave на союзников.",
-    "ancient_apparition": "Против Аппарата держи позиционку — уворачивайся от Ice Blast. Помни: хил под ультом АА заблокирован на 100%!",
-    "dark_willow": "Против Виллоу покупай BKB, Blademail против Bedlam и AoE-способности, когда она сидит в Shadow Realm.",
-    "hoodwink": "Против Белки топориком (Quelling Blade) срубай дерево с ее привязкой Bushwhack, покупай Blademail и Force Staff.",
-    "marci": "Против Марси покупай Halberd (дизарм во время Sidekick и ульта), Ghost Scepter и кайти ее рывки.",
-    "primal_beast": "Против Праймала собирай Eul's Scepter для сбивания разгона Onslaught и сбивания ультимейта Pulverize.",
-    "muerta": "Против Муэрты покупай BKB (ее ультимейт Pierce the Veil наносит ТОЛЬКО магический урон) или Blade Mail.",
-    "ringmaster": "Против Рингмастера не смотри лицом на его колесо Wheel of Wonder и покупай BKB от его магии и контроля.",
-    "mars": "Против Марса покупай Force Staff / Hurricane Pike чтобы выпрыгивать из Арены, и не бей его спереди в Bulwark.",
-    "snapfire": "Против Бабки покупай Blademail и BKB, или выходи из зоны бомбардировки Mortimer Kisses через Force Staff.",
-    "timbersaw": "Против Тимбера собирай Spirit Vessel для снижения регена Reactive Armor, Silver Edge и чистый/магический урон.",
-    "underlord": "Против Андерлорда собирай Force Staff для выхода из Pit of Malice и Pipe of Insight от Firestorm.",
-    "ogre_magi": "Против Огра покупай Spirit Vessel против его огромного хп-пула и Lotus Orb для возвращения прокастов от мультикаста.",
-}
 
 _HERO_SKILL_TIPS: dict[str, str] = {
     "oracle": "На линии для Oracle макси третью способность Purifying Flames для урона и хила, а на 1-м уровне возьми Fortune's End для диспела.",
@@ -416,32 +345,6 @@ class OllamaError(RuntimeError):
     """LLM недоступна или модель не готова. Текст исключения — для пользователя."""
 
 
-# Подсказки по предметам против конкретных вражеских героев (для fallback без LLM).
-_ENEMY_ITEM_HINTS: tuple[tuple[str, str], ...] = (
-    ("faceless_void", "Aeon Disk / Ghost Scepter / Halberd / Force Staff — сейв от хроносферы (БКБ не спасает!)"),
-    ("enigma", "Aeon Disk / Scythe of Vyse / дальний контроль — сбивать блэкхол снаружи (БКБ не спасает!)"),
-    ("legion_commander", "Linken's Sphere / Lotus Orb / Heaven's Halberd / Aeon Disk — от Duel (BKB не спасает)"),
-    ("doom", "Linken's Sphere / Lotus Orb / Aeon Disk — от Doom (BKB не спасает)"),
-    ("beastmaster", "Linken's Sphere / Lotus Orb / Aeon Disk — от Primal Roar (BKB не спасает)"),
-    ("magnus", "Aeon Disk / Scythe of Vyse / правильная позиция — от RP (БКБ не спасает!)"),
-    ("axe", "Force Staff / Eul's Scepter / Aeon Disk — от Berserker's Call (пробивает BKB)"),
-    ("silencer", "BKB / Manta / Eul / Lotus — сброс сайленсов"),
-    ("huskar", "Spirit Vessel / Skadi / Shiva / Silver Edge — срез регена и отключение пассивки"),
-    ("necrophos", "Spirit Vessel / Skadi / Glimmer Cape / Pipe — срез хила и сейв от косы"),
-    ("morphling", "Spirit Vessel / Skadi / Shiva / Orchid — срез перекачки и сайленс"),
-    ("alchemist", "Spirit Vessel / Skadi / Shiva — срез регена под ультом"),
-    ("timbersaw", "Spirit Vessel / Shiva / Silver Edge — срез регена и брейк реактора"),
-    ("phantom_assassin", "MKB / Ghost Scepter / Solar Crest — пробивать уклонение и сейв"),
-    ("brewmaster", "MKB / Eul — против промахов и кайтинг"),
-    ("warlock", "Force Staff / Glimmer / BKB — выход из замедления и сейв"),
-    ("bane", "Linken's Sphere / Lotus Orb / Aeon Disk — от Fiend's Grip (BKB не спасает)"),
-    ("pudge", "Linken's Sphere / Lotus Orb / Force Staff / Pipe — от хука и Dismember"),
-    ("winter_wyvern", "Aeon Disk / Linken's Sphere — не кучковаться с союзниками"),
-    ("juggernaut", "Ghost Scepter / Eul's Scepter / Aeon Disk — уйти от Omnislash; BKB не спасает от физического Omnislash; Linken's его НЕ блокирует"),
-    ("bristleback", "Silver Edge / Spirit Vessel / Skadi — отключение пассивки со спины"),
-)
-
-
 def _g(data: Any, *keys: str, default: Any = None) -> Any:
     current = data
     for key in keys:
@@ -485,6 +388,7 @@ class Coach:
         self._manual_hero: dict | None = None  # герой, выбранный вручную или из чата
         self._brief_cache: tuple[Any, float, dict[str, Any], str] | None = None
         self._item_costs_cache: tuple[int, int, dict[str, int]] | None = None
+        self._active_match_id: str | None = None
         self.telemetry = telemetry if telemetry is not None else TelemetrySink(None)
         self.router = router if router is not None else LlmRouter()
         self.preemption = preemption if preemption is not None else PreemptionController()
@@ -629,6 +533,93 @@ class Coach:
             return max(configured, 480)
         return max(80, min(configured, 200))
 
+    def _compact_match_snapshot(
+        self,
+        payload: dict | None = None,
+        *,
+        brief: dict[str, Any] | None = None,
+    ) -> str:
+        """Компактный снимок матча (стадия, цели 30–45с, слоты, угрозы) строго для Segment 2."""
+        data = payload if isinstance(payload, dict) else self.gsi_payload()
+        if not isinstance(data, dict) or not data:
+            return ""
+        snapshot = self._live_snapshot(data)
+        if not snapshot.get("available"):
+            return ""
+        clock_sec = snapshot.get("clock_seconds")
+        map_data = data.get("map") if isinstance(data.get("map"), dict) else {}
+        is_day = map_data.get("daytime") if isinstance(map_data.get("daytime"), bool) else None
+        tracker = getattr(self, "cooldown_tracker", None)
+        roshan_death_sec = getattr(tracker, "roshan_death_sec", None)
+        objectives_soon = format_objectives_window(
+            clock_sec,
+            window_sec=45,
+            turbo=is_turbo_mode(get_game_mode(data)),
+            roshan_death_sec=roshan_death_sec,
+            is_daytime=is_day,
+        )
+        threats: list[str] = []
+        if isinstance(brief, dict):
+            threats = [str(t) for t in (brief.get("threats") or []) if str(t).strip()]
+        if not threats:
+            threats = self._enemy_item_hints_for(snapshot.get("enemy_picks") or [], limit=2)
+        slots = [
+            str(item)
+            for item in (snapshot.get("inventory") or [])
+            if str(item).strip() and str(item).strip() != "пусто"
+        ]
+        return build_compact_match_suffix(
+            stage=str(snapshot.get("game_stage") or ""),
+            clock=str(snapshot.get("clock_formatted") or ""),
+            objectives_soon=objectives_soon,
+            slots=slots,
+            neutral_item=snapshot.get("neutral_item"),
+            has_tp=snapshot.get("has_tp"),
+            has_scepter=bool(snapshot.get("aghanims_scepter")),
+            has_shard=bool(snapshot.get("aghanims_shard")),
+            threats=threats,
+        )
+
+    def _build_turn_assembly(
+        self,
+        *,
+        kind: str = "chat",
+        detail_mode: str | None = None,
+        brief_text: str = "",
+        knowledge: Any = None,
+        brief_dict: dict[str, Any] | None = None,
+        payload: dict[str, Any] | None = None,
+        gsi_summary: str = "",
+    ) -> PromptAssembly:
+        """Единая сборка 3-сегментного PromptAssembly с инвариантным system_prefix (Fork A1)."""
+        eff_payload = payload if isinstance(payload, dict) else self.gsi_payload()
+        draft = collect_draft(eff_payload, self.catalog)
+        try:
+            profile_text = self._profile_summary()
+        except Exception:  # noqa: BLE001
+            profile_text = ""
+        eff_detail = detail_mode if detail_mode is not None else self.detail_mode
+        match_snapshot = self._compact_match_snapshot(eff_payload, brief=brief_dict)
+        return render_prompt_assembly(
+            self.coach_name,
+            brief_text,
+            knowledge,
+            kind=kind,
+            profile_text=profile_text,
+            skill_level=self.skill_level,
+            coach_tone=self.coach_tone,
+            detail_mode=eff_detail,
+            custom_focus=self.custom_focus,
+            position=self.position,
+            mmr_bracket=str(self.profile.mmr_bracket or ""),
+            hero_pool=self.profile.hero_pool,
+            signature_heroes=self.profile.signature_heroes or (),
+            my_picks=draft.my_picks,
+            enemy_picks=draft.enemy_picks,
+            match_snapshot=match_snapshot,
+            gsi_summary=gsi_summary,
+        )
+
     def _ask_llm(
         self,
         prompt: str,
@@ -643,26 +634,33 @@ class Coach:
         dynamic_suffix: str = "",
         generation_id: int | None = None,
     ) -> str:
-        """Запрос к LLM с учётом тиров маршрутизатора и чисткой ответа."""
+        """Запрос к LLM с учётом тиров маршрутизатора, стабильного KV-префикса и чисткой ответа."""
         eff_detail = detail_mode if detail_mode is not None else self.detail_mode
         eff_voice = (
             kind in ("build", "counter", "skill", "timing", "lane")
             if voice is None
             else bool(voice)
         )
-        system = system or make_system_prompt(
-            self.coach_name,
-            skill_level=self.skill_level,
-            coach_tone=self.coach_tone,
-            custom_focus="" if dynamic_suffix else self.custom_focus,
-        )
-        if kind in ("analysis", "draft", "match"):
-            system += (
-                "\n\nДЛЯ РАЗБОРА: допустимо 3–4 коротких предложения — сначала главная проблема, "
+        if system is None:
+            assembly = self._build_turn_assembly(kind=kind, detail_mode=eff_detail)
+            system = assembly.system_prefix
+            if not dynamic_suffix:
+                dynamic_suffix = assembly.dynamic_suffix
+
+        # Правила конкретного типа хода держим строго в dynamic_suffix,
+        # чтобы байты system_prefix (Segment 0 + Segment 1) не ломали DeepSeek KV Cache.
+        suffix_extra: list[str] = []
+        if dynamic_suffix and dynamic_suffix.strip():
+            suffix_extra.append(dynamic_suffix.strip())
+        if kind in ("analysis", "draft", "match") and "ДЛЯ РАЗБОРА:" not in dynamic_suffix:
+            suffix_extra.append(
+                "ДЛЯ РАЗБОРА: допустимо 3–4 коротких предложения — сначала главная проблема, "
                 "затем конкретный план действий. Без markdown, списков и нумерации."
             )
-        elif kind == "why":
-            system += "\n\nДЛЯ ОБЪЯСНЕНИЯ: допустимо 2–3 коротких предложения, но без лекций."
+        elif kind == "why" and "ДЛЯ ОБЪЯСНЕНИЯ:" not in dynamic_suffix:
+            suffix_extra.append("ДЛЯ ОБЪЯСНЕНИЯ: допустимо 2–3 коротких предложения, но без лекций.")
+        eff_suffix = "\n\n".join(suffix_extra)
+
         temperature = self._temperature_for(kind)
         max_tokens = self._max_tokens_for(kind)
 
@@ -683,7 +681,7 @@ class Coach:
                 kind=kind,
                 voice=eff_voice,
                 detail_mode=eff_detail,
-                dynamic_suffix=dynamic_suffix,
+                dynamic_suffix=eff_suffix,
                 generation_id=generation_id,
             )
         finally:
@@ -702,21 +700,21 @@ class Coach:
             detail_mode=eff_detail,
         )
         if not clean and allow_retry and not eff_voice:
-            retry_system = (
-                system
-                + "\n\nВАЖНО: ответ должен быть одним-двумя живыми предложениями по-русски, "
+            retry_note = (
+                "ВАЖНО: ответ должен быть одним-двумя живыми предложениями по-русски, "
                 "без списков, markdown и вводных фраз."
             )
+            retry_suffix = f"{eff_suffix}\n\n{retry_note}".strip() if eff_suffix else retry_note
             raw = self.chat(
                 prompt,
-                system=retry_system,
+                system=system,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 include_dynamic=False,
                 kind=kind,
                 voice=eff_voice,
                 detail_mode=eff_detail,
-                dynamic_suffix=dynamic_suffix,
+                dynamic_suffix=retry_suffix,
                 generation_id=generation_id,
             )
             clean = sanitize_answer(
@@ -864,7 +862,7 @@ class Coach:
             hero=knowledge_hero,
             position=self.position,
             enemy_heroes=knowledge_enemies,
-            legacy_counter_hints=_COUNTER_HINTS,
+            legacy_counter_hints=None,
             legacy_skill_tips=_HERO_SKILL_TIPS,
             lane_plan=lane_plan,
             catalog=self.catalog,
@@ -1081,24 +1079,42 @@ class Coach:
             self.coach_name = name.strip()
         return self.coach_name
 
+    def _sync_match_id(self, payload: dict | None) -> str | None:
+        """Сбрасывает таймеры/состояние при смене ``matchid`` в GSI."""
+        match_id = extract_match_id(payload)
+        if not match_id:
+            return None
+        if self._active_match_id is not None and match_id != self._active_match_id:
+            self.macro_timer.reset()
+            self.cooldown_tracker.reset()
+            self._manual_hero = None
+            self._brief_cache = None
+        self._active_match_id = match_id
+        self.macro_timer.sync_match_id(match_id)
+        if hasattr(self.cooldown_tracker, "sync_match_id"):
+            self.cooldown_tracker.sync_match_id(match_id)
+        return match_id
+
     def record_roshan(self) -> str:
         """Запускает отсчёт таймера Рошана."""
         payload = self.gsi_payload()
+        match_id = self._sync_match_id(payload)
         clock = _g(payload, "map", "clock_time")
-        return self.cooldown_tracker.record_roshan(clock)
+        return self.cooldown_tracker.record_roshan(clock, match_id=match_id)
 
     def record_ult(self, ability_key: str | None) -> str:
         """Запускает отсчёт перезарядки ультимейта врага."""
         payload = self.gsi_payload()
+        match_id = self._sync_match_id(payload)
         clock = _g(payload, "map", "clock_time")
-        return self.cooldown_tracker.record_ult(ability_key, clock)
+        return self.cooldown_tracker.record_ult(ability_key, clock, match_id=match_id)
 
     def lane_plan(self, enemy_hero: str | None = None) -> str:
         """Возвращает тактический план на линию."""
         payload = self.gsi_payload()
         hero_dict = self.current_hero()
         hero_name = hero_dict.get("localized_name") if hero_dict else None
-        turbo = (get_game_mode(payload) == 23)
+        turbo = is_turbo_mode(get_game_mode(payload))
         return self.lane_matchup.get_plan(
             position=self.position,
             hero_name=hero_name,
@@ -1111,6 +1127,7 @@ class Coach:
         payload = self.gsi_payload()
         if not payload:
             return None
+        match_id = self._sync_match_id(payload)
         clock = _g(payload, "map", "clock_time")
         if clock is None:
             return None
@@ -1121,17 +1138,8 @@ class Coach:
         else:
             team_name = None
 
-        enemy_mid_lvl = None
-        players = _extract_allplayers(payload)
-        for p in players:
-            p_team = p.get("team")
-            if team_name and p_team and p_team != team_name:
-                lane_val = p.get("lane")
-                is_mid = bool(p.get("is_mid")) or lane_val in (2, "mid", "middle")
-                if is_mid:
-                    lvl = p.get("level")
-                    if lvl:
-                        enemy_mid_lvl = max(enemy_mid_lvl or 0, lvl)
+        enemy_mid_lvl = detect_enemy_mid_level(payload, team_name)
+        turbo = is_turbo_mode(get_game_mode(payload))
 
         if not self.delegate_macro_timers:
             alert = self.macro_timer.check(
@@ -1139,10 +1147,13 @@ class Coach:
                 position=self.position,
                 team_name=team_name,
                 enemy_mid_level=enemy_mid_lvl,
+                payload=payload,
+                turbo=turbo,
+                match_id=match_id,
             )
             if alert:
                 return alert
-        return self.cooldown_tracker.check(clock)
+        return self.cooldown_tracker.check(clock, match_id=match_id)
 
     # ------------------------------------------------------------------ #
     # LLM: модели и запрос
@@ -1320,22 +1331,27 @@ class Coach:
         )
 
     def _legacy_counter_hint(self, hero_name: str) -> str | None:
-        """Старая ручная подсказка по контр-предметам (для героев с особыми фишками)."""
+        """Каноническая короткая контр-подсказка по герою из ``meta_db``."""
         name = str(hero_name or "").strip()
         if not name:
             return None
+        candidates = [name]
         if self.catalog.available:
             match = self.catalog.find(name) or self.catalog.find_in_tokens(name)
             if match is not None:
                 npc = str(match.hero.get("name", "")).replace("npc_dota_hero_", "").lower()
-                hint = _COUNTER_HINTS.get(npc)
-                if hint:
-                    return hint
-        key = normalize(name)
-        for fragment, hint in _COUNTER_HINTS.items():
-            if fragment and fragment in key:
-                return hint
-        return None
+                if npc:
+                    candidates.insert(0, npc)
+        try:
+            from .meta_db import HERO_COUNTER_NOTES, _resolve_hero_id, get_hero_counter_note
+
+            for cand in candidates:
+                hid = _resolve_hero_id(cand)
+                if hid and hid in HERO_COUNTER_NOTES:
+                    return HERO_COUNTER_NOTES[hid]
+            return get_hero_counter_note(candidates[0])
+        except Exception:  # noqa: BLE001
+            return None
 
     def execute_tool(self, name: str, args: dict[str, Any] | None = None) -> str:
         """Выполняет вызов зарегистрированного инструмента (Tool Calling)."""
@@ -1376,12 +1392,12 @@ class Coach:
             match = self.catalog.find(hero_name) or self.catalog.find_in_tokens(hero_name) if self.catalog.available else None
             if match:
                 npc = str(match.hero.get("name", "")).replace("npc_dota_hero_", "").lower()
-                hint = _COUNTER_HINTS.get(npc)
+                hint = self._legacy_counter_hint(npc or hero_name)
                 if hint:
                     return hint
-                for frag, item_hint in _ENEMY_ITEM_HINTS:
-                    if frag in npc:
-                        return f"Против {match.hero.get('localized_name')}: {item_hint}"
+                item_hints = get_enemy_item_hints([npc or hero_name], limit=1)
+                if item_hints:
+                    return item_hints[0]
                 return f"Рекомендуются предметы на сейв и контроль против {match.hero.get('localized_name')}."
             return f"Герой «{hero_name}» не найден."
 
@@ -2181,21 +2197,8 @@ class Coach:
         return " ".join(parts)
 
     def _enemy_item_hints_for(self, enemies: Any, *, limit: int = 5) -> list[str]:
-        """Точечные подсказки по закупке против конкретных врагов (без дублей)."""
-        hints: list[str] = []
-        seen: set[str] = set()
-        for enemy in enemies or []:
-            text = str(enemy or "").strip()
-            if not text:
-                continue
-            key = normalize(text)
-            for fragment, hint in _ENEMY_ITEM_HINTS:
-                if fragment in key and hint not in seen:
-                    hints.append(f"{text} → {hint}")
-                    seen.add(hint)
-            if len(hints) >= limit:
-                break
-        return hints[:limit]
+        """Точечные подсказки по закупке против конкретных врагов из единого ``live_advice``."""
+        return get_enemy_item_hints(enemies, limit=limit)
 
     def _enemy_hints(self) -> list[str]:
         draft = collect_draft(self.gsi_payload(), self.catalog)
@@ -2307,31 +2310,19 @@ class Coach:
                 return explanation
 
         payload = self.gsi_payload()
-        draft = collect_draft(payload, self.catalog)
+        self._sync_match_id(payload)
         hero = self.current_hero()
+        brief_dict, _ = self._cached_brief(payload, hero)
         brief_text, knowledge, kind = self._tactical_context(clean_query, hero=hero)
-        try:
-            profile_text = self._profile_summary()
-        except Exception:  # noqa: BLE001
-            profile_text = ""
         eff_detail = "concise" if voice else self.detail_mode
 
-        assembly = render_prompt_assembly(
-            self.coach_name,
-            brief_text,
-            knowledge,
+        assembly = self._build_turn_assembly(
             kind=kind,
-            profile_text=profile_text,
-            skill_level=level,
-            coach_tone=self.coach_tone,
             detail_mode=eff_detail,
-            custom_focus=self.custom_focus,
-            position=self.position,
-            mmr_bracket=str(self.profile.mmr_bracket or ""),
-            hero_pool=self.profile.hero_pool,
-            signature_heroes=self.profile.signature_heroes or (),
-            my_picks=draft.my_picks,
-            enemy_picks=draft.enemy_picks,
+            brief_text=brief_text,
+            knowledge=knowledge,
+            brief_dict=brief_dict,
+            payload=payload,
         )
         prompt = "\n".join(
             [
@@ -2599,7 +2590,7 @@ class Coach:
         player_name = player_hero.get("localized_name") if player_hero else None
         pos_str = position_label(self.position)
 
-        fallback = _COUNTER_HINTS.get(enemy_npc)
+        fallback = self._legacy_counter_hint(enemy_npc or str(enemy_name or ""))
         meta_counters: list[str] = []
         meta_tip = ""
         try:
@@ -3448,15 +3439,8 @@ class Coach:
         elif tower_damage < 800:
             lines.append(f"• Осада строений: Слабо ({tower_damage} урона по строениям). Драки не конвертировались в снос вышек.")
 
-        # 4. Проверка контр-предметов против врагов
-        counter_tips = []
-        for enemy_sub, tip in _ENEMY_ITEM_HINTS:
-            if any(enemy_sub in e for e in enemies):
-                # Проверяем, есть ли нужные предметы
-                key_words = [w.strip().lower() for w in tip.split("—")[0].split("/") if w.strip()]
-                has_any = any(any(kw in it for it in items) for kw in key_words)
-                if not has_any:
-                    counter_tips.append(f"Против {enemy_sub.capitalize()}: рекомендуется {tip}")
+        # 4. Проверка контр-предметов против врагов (SSOT live_advice)
+        counter_tips = build_enemy_match_counter_tips(enemies, items, limit=3)
 
         if counter_tips:
             lines.append("• Предметы против врагов:")

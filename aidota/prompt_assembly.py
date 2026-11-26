@@ -132,7 +132,7 @@ def build_match_stable_prefix(
                 pool_parts.append(f"поз.{pos}: {', '.join(names[:5])}")
         if pool_parts:
             lines.append(f"- Пул героев: {'; '.join(pool_parts[:5])}")
-    sigs = [str(h).strip() for h in signature_heroes if str(h).strip()]
+    sigs = sorted({str(h).strip() for h in signature_heroes if str(h).strip()})
     if sigs:
         lines.append(f"- Сигнатурные герои: {', '.join(sigs[:5])}")
 
@@ -145,11 +145,67 @@ def build_match_stable_prefix(
     return "\n".join(lines)
 
 
+def build_compact_match_suffix(
+    *,
+    stage: str = "",
+    clock: str = "",
+    objectives_soon: str = "",
+    slots: Iterable[str] = (),
+    neutral_item: str | None = None,
+    has_tp: bool | None = None,
+    has_scepter: bool = False,
+    has_shard: bool = False,
+    threats: Iterable[str] = (),
+) -> str:
+    """Собирает компактный детерминированный снимок матча строго для динамического суффикса (Segment 2)."""
+    lines: list[str] = []
+    stage_clean = str(stage or "").strip()
+    clock_clean = str(clock or "").strip()
+    if stage_clean or clock_clean:
+        if stage_clean and clock_clean and clock_clean != "?":
+            lines.append(f"- Стадия и время: {stage_clean} ({clock_clean})")
+        elif stage_clean:
+            lines.append(f"- Стадия: {stage_clean}")
+        elif clock_clean and clock_clean != "?":
+            lines.append(f"- Время: {clock_clean}")
+
+    obj_clean = str(objectives_soon or "").strip()
+    if obj_clean:
+        lines.append(f"- Объективы (30–45с / Рошан): {obj_clean}")
+
+    slot_items = [str(s).strip() for s in slots if str(s).strip()]
+    slot_bits: list[str] = []
+    if slot_items:
+        slot_bits.append(", ".join(slot_items[:6]))
+    else:
+        slot_bits.append("пусто")
+    if neutral_item and str(neutral_item).strip():
+        slot_bits.append(f"нейтралка: {str(neutral_item).strip()}")
+    if has_tp is True:
+        slot_bits.append("TP есть")
+    elif has_tp is False:
+        slot_bits.append("НЕТ TP")
+    if has_scepter:
+        slot_bits.append("Аганим")
+    if has_shard:
+        slot_bits.append("Шард")
+    lines.append(f"- Слоты: {'; '.join(slot_bits)}")
+
+    threat_list = [str(t).strip() for t in threats if str(t).strip()]
+    if threat_list:
+        lines.append(f"- Ключевые угрозы: {' | '.join(threat_list[:3])}")
+
+    if not lines:
+        return ""
+    return "СОСТОЯНИЕ МАТЧА (КРАТКО):\n" + "\n".join(lines)
+
+
 def build_dynamic_suffix(
     *,
     profile_text: str = "",
     custom_focus: str = "",
     memory_summary: str = "",
+    match_snapshot: str = "",
     gsi_summary: str = "",
     brief_text: str = "",
     knowledge: Iterable[str] = (),
@@ -164,6 +220,8 @@ def build_dynamic_suffix(
         parts.append(f"ЛИЧНАЯ ЦЕЛЬ ИГРОКА В ЭТОМ МАТЧЕ: {focus}.")
     if memory_summary and memory_summary.strip():
         parts.append("ДОЛГОВРЕМЕННАЯ ПАМЯТЬ:\n" + memory_summary.strip())
+    if match_snapshot and match_snapshot.strip():
+        parts.append(match_snapshot.strip())
     if gsi_summary and gsi_summary.strip():
         parts.append(f"ТЕКУЩАЯ СИТУАЦИЯ В МАТЧЕ (GSI Live):\n{gsi_summary.strip()}")
     if brief_text and brief_text.strip():

@@ -17,11 +17,12 @@ import copy
 import json
 import unittest
 
-from aidota.coach import _ENEMY_ITEM_HINTS, Coach
+from aidota.coach import Coach
 from aidota.coach_brain import build_brief, render_brief
 from aidota.config import LlmConfig, PlayerProfile
 from aidota.dota_api import DotaApi
 from aidota.heroes import HeroCatalog
+from aidota.live_advice import ENEMY_ITEM_NOTES, format_enemy_note_line
 from tests.helpers import FakeSession, make_temp_dir, remove_temp_dir
 
 # --------------------------------------------------------------------------- #
@@ -292,31 +293,29 @@ class ItemAdvicePromptTests(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- #
-# 4. Точечные подсказки _ENEMY_ITEM_HINTS (BKB не спасает и т.п.)
+# 4. Точечные подсказки ENEMY_ITEM_NOTES (канонический SSOT live_advice.py)
 # --------------------------------------------------------------------------- #
 class EnemyItemHintTests(unittest.TestCase):
     def test_hints_cover_hard_control_heroes(self):
-        hints = dict(_ENEMY_ITEM_HINTS)
-        fragments = [fragment for fragment, _ in _ENEMY_ITEM_HINTS]
-        self.assertEqual(len(fragments), len(set(fragments)), "дубликаты героев в подсказках")
+        self.assertGreaterEqual(len(ENEMY_ITEM_NOTES), 20)
 
-        juggernaut = hints["juggernaut"]
+        juggernaut = format_enemy_note_line("juggernaut") or ""
         for token in ("Ghost Scepter", "Eul's Scepter", "Aeon Disk", "Omnislash"):
             self.assertIn(token, juggernaut)
         self.assertIn("BKB", juggernaut)
         self.assertIn("Linken", juggernaut)
         self.assertIn("НЕ блокирует", juggernaut)
 
-        legion = hints["legion_commander"]
+        legion = format_enemy_note_line("legion_commander") or ""
         self.assertIn("Duel", legion)
         self.assertIn("BKB", legion)
         self.assertIn("Linken's Sphere", legion)
         self.assertIn("Aeon Disk", legion)
 
-        self.assertIn("Doom", hints["doom_bringer"] if "doom_bringer" in hints else hints["doom"])
-        self.assertIn("Fiend's Grip", hints["bane"])
-        self.assertIn("Primal Roar", hints["beastmaster"])
-        axe = hints["axe"]
+        self.assertIn("Doom", format_enemy_note_line("doom") or "")
+        self.assertIn("Fiend's Grip", format_enemy_note_line("bane") or "")
+        self.assertIn("Primal Roar", format_enemy_note_line("beastmaster") or "")
+        axe = format_enemy_note_line("axe") or ""
         self.assertIn("Berserker's Call", axe)
         self.assertIn("Force Staff", axe)
         self.assertIn("BKB", axe)

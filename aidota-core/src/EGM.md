@@ -1,7 +1,7 @@
 # Source Core (`aidota-core/src`)
 
 ## Overview
-Root Rust source tree for `aidota-core`, providing both the C-ABI library crate (`lib.rs`, compiled as `aidota_rust`) and the standalone async GSI/Web server binary (`main.rs`, compiled as `aidota-core`), coordinated around shared `AppState` and `LiveSnapshot` state management (`state.rs`) and four domain submodules.
+Root Rust source tree for the **frozen legacy** `aidota-core` crate, providing both the C-ABI library crate (`lib.rs`, compiled as `aidota_rust`) and the standalone async GSI/Web server binary (`main.rs`, compiled as `aidota-core`), coordinated around shared `AppState` and `LiveSnapshot` state management (`state.rs`) and four domain submodules. Tactical duplicates in `timers/macro_timer.rs` and `advice/counter_items.rs` are officially frozen per Phase 4 / Fork F2 (`aidota/map_timers.py`, `aidota/live_advice.py`, and `aidota/meta_db.py` are the SSOT).
 
 ## Interface
 - `[lib.rs:advice]`, `[lib.rs:gsi]`, `[lib.rs:state]`, `[lib.rs:timers]`, `[lib.rs:web]` — Public module exports exposed by the library crate (`lib.rs`); `main.rs` declares the same five modules privately for the binary target.

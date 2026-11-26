@@ -983,11 +983,11 @@ function appendChatMessage(role, author, text) {
       <div class="msg-text">${escapeHtml(text)}</div>
       ${!isUser ? `
       <div class="msg-actions">
-        <button class="msg-action-btn btn-speak-msg" onclick="speakMessage('${escapeJsString(text)}')" title="Озвучить голосом">
+        <button type="button" class="msg-action-btn btn-speak-msg" title="Озвучить голосом">
           <svg class="ui-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
           <span>Озвучить</span>
         </button>
-        <button class="msg-action-btn btn-copy-msg" onclick="copyMessage('${escapeJsString(text)}')" title="Копировать текст">
+        <button type="button" class="msg-action-btn btn-copy-msg" title="Копировать текст">
           <svg class="ui-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
           <span>Копировать</span>
         </button>
@@ -1007,21 +1007,23 @@ window.speakMessage = async function(text) {
 };
 
 window.copyMessage = function(text) {
-  navigator.clipboard.writeText(text);
-  alert("Текст скопирован в буфер обмена!");
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text);
+  }
+  showToast("Текст скопирован в буфер обмена!", "success");
 };
 
-// Делегирование кнопок приветственного сообщения и кнопки микрофона в чате
+// Единое делегирование кнопок озвучки/копирования для приветственного и динамических сообщений
 if (elements.chatMessagesContainer) {
   elements.chatMessagesContainer.addEventListener("click", (e) => {
     const btnSpeak = e.target.closest(".btn-speak-msg");
-    if (btnSpeak && !btnSpeak.getAttribute("onclick")) {
+    if (btnSpeak) {
       const msgText = btnSpeak.closest(".msg-bubble")?.querySelector(".msg-text")?.textContent?.trim();
       if (msgText) window.speakMessage(msgText);
       return;
     }
     const btnCopy = e.target.closest(".btn-copy-msg");
-    if (btnCopy && !btnCopy.getAttribute("onclick")) {
+    if (btnCopy) {
       const msgText = btnCopy.closest(".msg-bubble")?.querySelector(".msg-text")?.textContent?.trim();
       if (msgText) window.copyMessage(msgText);
     }
@@ -1069,47 +1071,94 @@ elements.btnClearFeed.addEventListener("click", () => {
 // ---------------------------------------------------------------------------
 // Timers & Roshan
 // ---------------------------------------------------------------------------
-elements.btnRoshanKilled.addEventListener("click", () => {
-  state.roshanDeathTime = state.gameTime;
-  addFeedItem("Рошан уничтожен!", "Аегис истекает через 5:00. Окно респавна: от 8:00 до 11:00.");
-  alert("Смерть Рошана зафиксирована! Таймер Аегиса и респавна запущен.");
+elements.btnRoshanKilled.addEventListener("click", async () => {
+  const res = await callApi("record_roshan");
+  state.roshanDeathTime = res && res.roshan_death_sec !== undefined ? res.roshan_death_sec : state.gameTime;
+  const msg = (res && res.message) || "Смерть Рошана зафиксирована! Аегис истекает через 5:00, респавн с 8:00 до 11:00.";
+  addFeedItem("Рошан уничтожен!", msg);
+  showToast("Таймер Рошана запущен", "success");
 });
 
-function updateMacroTimersDisplay(gameTime) {
-  state.gameTime = gameTime;
+function updateMacroTimersDisplay(gameTime, macroTimers) {
+  const mt = macroTimers && typeof macroTimers === "object" ? macroTimers : null;
+  const effectiveTime = Number(mt && mt.clock_seconds !== null && mt.clock_seconds !== undefined ? mt.clock_seconds : (gameTime || 0));
+  state.gameTime = effectiveTime;
 
-  // Wisdom Runes (every 7 mins: 420s)
-  const nextWisdom = (Math.floor(gameTime / 420) + 1) * 420;
-  const remWisdom = Math.max(0, nextWisdom - gameTime);
+  // Wisdom Runes (SSOT Python)
+  const wisdomPeriod = mt ? Number(mt.wisdom_period_sec || 420) : 420;
+  const remWisdom = mt
+    ? Number(mt.wisdom_remaining_sec || 0)
+    : Math.max(0, (Math.floor(effectiveTime / 420) + 1) * 420 - effectiveTime);
   const wElem = document.getElementById("timer-val-wisdom");
   if (wElem) wElem.textContent = formatTime(remWisdom);
   const wBar = document.getElementById("bar-wisdom");
-  if (wBar) wBar.style.width = `${Math.min(100, (remWisdom / 420) * 100)}%`;
+  if (wBar) wBar.style.width = `${Math.min(100, (remWisdom / wisdomPeriod) * 100)}%`;
 
-  // Active Runes (every 2 mins after 6:00)
-  const nextActive = (Math.floor(gameTime / 120) + 1) * 120;
-  const remActive = Math.max(0, nextActive - gameTime);
+  // Active Runes (SSOT Python)
+  const activePeriod = mt ? Number(mt.active_rune_period_sec || 120) : 120;
+  const remActive = mt
+    ? Number(mt.active_rune_remaining_sec || 0)
+    : Math.max(0, (Math.floor(effectiveTime / 120) + 1) * 120 - effectiveTime);
   const aElem = document.getElementById("timer-val-active-rune");
   if (aElem) aElem.textContent = formatTime(remActive);
   const aBar = document.getElementById("bar-active-rune");
-  if (aBar) aBar.style.width = `${Math.min(100, (remActive / 120) * 100)}%`;
+  if (aBar) aBar.style.width = `${Math.min(100, (remActive / Math.max(1, activePeriod)) * 100)}%`;
 
-  // Tormentor (20:00 = 1200s)
+  // Tormentor (SSOT Python)
   const torElem = document.getElementById("timer-val-tormentor");
+  const remTor = mt ? Number(mt.tormentor_remaining_sec || 0) : Math.max(0, 1200 - effectiveTime);
+  const torAvailable = mt ? Boolean(mt.tormentor_available) : remTor <= 0;
   if (torElem) {
-    const remTor = Math.max(0, 1200 - gameTime);
-    torElem.textContent = remTor > 0 ? formatTime(remTor) : "Доступен!";
+    torElem.textContent = torAvailable ? "Доступен!" : formatTime(remTor);
   }
+  const torBar = document.getElementById("bar-tormentor");
+  if (torBar) torBar.style.width = `${torAvailable ? 100 : Math.min(100, (remTor / 1200) * 100)}%`;
 
-  // Stacks (:53 of current minute)
-  const secInMin = gameTime % 60;
-  const remStack = secInMin <= 53 ? 53 - secInMin : 60 - secInMin + 53;
+  // Lotus Pool (SSOT Python)
+  const lotusPeriod = mt ? Number(mt.lotus_period_sec || 180) : 180;
+  const remLotus = mt
+    ? Number(mt.lotus_remaining_sec || 0)
+    : Math.max(0, (Math.floor(effectiveTime / 180) + 1) * 180 - effectiveTime);
+  const lElem = document.getElementById("timer-val-lotus");
+  if (lElem) lElem.textContent = formatTime(remLotus);
+  const lBar = document.getElementById("bar-lotus");
+  if (lBar) lBar.style.width = `${Math.min(100, (remLotus / lotusPeriod) * 100)}%`;
+
+  // Stacks (:53 of current minute, SSOT Python)
+  const secInMin = effectiveTime % 60;
+  const remStack = mt
+    ? Number(mt.stack_remaining_sec || 0)
+    : (secInMin <= 53 ? 53 - secInMin : 60 - secInMin + 53);
   const sElem = document.getElementById("timer-val-stack");
   if (sElem) sElem.textContent = `00:${String(remStack).padStart(2, "0")}`;
+  const sBar = document.getElementById("bar-stack");
+  if (sBar) sBar.style.width = `${Math.min(100, (remStack / 60) * 100)}%`;
+
+  // Neutral Items Tiers (SSOT Python — 7/15/25/35/60 или Turbo 0.5x)
+  const nElem = document.getElementById("timer-val-neutral");
+  const nBar = document.getElementById("bar-neutral");
+  if (mt) {
+    if (nElem) nElem.textContent = mt.neutral_label || "Тир 5";
+    const nRem = mt.neutral_next_remaining_sec;
+    const nPer = Number(mt.neutral_period_sec || 420);
+    if (nBar) {
+      nBar.style.width = nRem === null || nRem === undefined ? "100%" : `${Math.min(100, (Number(nRem) / Math.max(1, nPer)) * 100)}%`;
+    }
+  } else if (nElem) {
+    const tiers = [
+      [1, 420],
+      [2, 900],
+      [3, 1500],
+      [4, 2100],
+      [5, 3600],
+    ];
+    const next = tiers.find(([, unlock]) => effectiveTime < unlock);
+    nElem.textContent = next ? `${formatTime(next[1] - effectiveTime)} (Тир ${next[0]})` : "Тир 5 (60:00+)";
+  }
 
   // Game clock badge
   const clockBadge = document.getElementById("game-clock-badge");
-  if (clockBadge) clockBadge.textContent = formatTime(gameTime);
+  if (clockBadge) clockBadge.textContent = formatTime(effectiveTime);
 }
 
 // ---------------------------------------------------------------------------
@@ -1512,14 +1561,6 @@ async function syncStateLoop() {
       if (tipBadge && tipBadge.textContent !== label) tipBadge.textContent = label;
     }
 
-    // Rust Core indicator
-    if (data.rust_active !== undefined) {
-      const rustPill = document.getElementById("rust-status-pill");
-      if (rustPill) {
-        rustPill.style.display = data.rust_active ? "inline-flex" : "none";
-      }
-    }
-
     // 2. Assistant Status
     if (data.assistant_running !== undefined && data.assistant_running !== state.assistantRunning) {
       state.assistantRunning = data.assistant_running;
@@ -1577,9 +1618,9 @@ async function syncStateLoop() {
         }
       }
 
-      // Timers
-      if (gsi.clock_time !== undefined) {
-        updateMacroTimersDisplay(gsi.clock_time);
+      // Timers (SSOT Python macro_timers)
+      if (gsi.clock_time !== undefined || gsi.macro_timers) {
+        updateMacroTimersDisplay(gsi.clock_time, gsi.macro_timers);
       }
     } else {
       const dot = document.querySelector(".gsi-dot");
@@ -1877,12 +1918,17 @@ async function triggerDraftCalculation() {
       <div class="hero-advice-snippet">${escapeHtml(pick.advice)}</div>
 
       <div class="card-footer-actions">
-        <button type="button" class="btn btn-secondary btn-sm" onclick="speakMessage('На ${escapeJsString(pick.ru_name)}: ${escapeJsString(pick.advice)}')">
+        <button type="button" class="btn btn-secondary btn-sm btn-speak-draft">
           <svg class="ui-icon inline-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
           <span>Озвучить</span>
         </button>
       </div>
     `;
+    const btnSpeakDraft = card.querySelector(".btn-speak-draft");
+    if (btnSpeakDraft) {
+      const phrase = `На ${pick.ru_name}: ${pick.advice}`;
+      btnSpeakDraft.addEventListener("click", () => window.speakMessage(phrase));
+    }
     grid.appendChild(card);
   });
 }

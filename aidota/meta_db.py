@@ -2186,6 +2186,13 @@ _HERO_ID_ALIASES: dict[str, str] = {
     "гиро": "gyrocopter",
     "коза": "enchantress",
     "дед": "keeper_of_the_light",
+    "doom": "doom_bringer",
+    "doombringer": "doom_bringer",
+    "necrophos": "necrolyte",
+    "centaur_warrunner": "centaur",
+    "vengeful_spirit": "vengefulspirit",
+    "nature_s_prophet": "furion",
+    "prophet": "furion",
 }
 
 
@@ -2646,6 +2653,90 @@ def _resolve_hero_ids(values: Any) -> list[str]:
 # ---------------------------------------------------------------------------
 # A3: публичные функции знаний для тренера
 # ---------------------------------------------------------------------------
+# Точечные контр-примечания для героев с важными механиками (напр. пробитие BKB).
+# Канонический единый источник истины вместо удалённых таблиц coach.py/context.py.
+HERO_COUNTER_NOTES: dict[str, str] = {
+    "faceless_void": "Против Войда покупай Aeon Disk (поглотит урон в куполе), Ghost Scepter или Halberd (дизарм Войда снаружи), а саппортам — Force Staff и Glimmer для сейва союзников. БКБ от хроносферы не спасает!",
+    "enigma": "Против Энигмы нужны дальний контроль (Silencer, Rubick, Scythe of Vyse) и Blink Dagger, чтобы сбивать Black Hole снаружи купола. БКБ от блэкхола не спасает!",
+    "doom_bringer": "Против Дуума покупай Linken's Sphere (заблокирует ульт), Lotus Orb (вернёт Doom врагу) или Aeon Disk. БКБ от ультимейта Дума не защищает!",
+    "legion_commander": "Против Легионки спасают Linken's Sphere, Lotus Orb, Halberd (дизармить до дуэли) и Aeon Disk. БКБ от дуэли не спасает!",
+    "beastmaster": "Против Бистмастера бери Linken's Sphere, Lotus Orb или Aeon Disk. Его ультимейт Primal Roar пробивает БКБ!",
+    "axe": "Против Акса держи дистанцию, собери Eul для сброса агра или выходи в Aeon Disk. Агр Акса пробивает БКБ!",
+    "magnataur": "Против Магнуса бери Aeon Disk, Scythe of Vyse и держи рассредоточенную позицию — RP пробивает БКБ!",
+    "juggernaut": "Против Джаггернаута саппорту обязателен Ghost Scepter или Eul против Omnislash, а корам — Halberd или броня (Shiva, Cuirass). БКБ от Omnislash не спасает!",
+    "zuus": "Против Зевса купи Raindrops на линию, а дальше собирай Glimmer Cape, Pipe of Insight или BKB от магического урона.",
+    "phantom_assassin": "Против Фантомки собирай Ghost Scepter, Solar Crest или выходи в Monkey King Bar от уклонений.",
+    "bristleback": "Против Бристлбека возьми Magic Wand, Spirit Vessel и Silver Edge, чтобы отключать пассивку со спины.",
+    "pudge": "Против Пуджа держи варды на хайграундах, купи Force Staff для разрыва дистанции и Linken's Sphere от Dismember.",
+    "sniper": "Против Снайпера нужны Blink Dagger, Force Staff или Blade Mail, чтобы моментально сокращать дистанцию.",
+    "antimage": "Против Антимага собирай Orchid Malevolence, Scythe of Vyse или Abyssal Blade для контроля сквозь щит.",
+    "slark": "Против Сларка помогут Force Staff, Ghost Scepter, Crimson Guard и просветка Dust of Appearance.",
+    "necrolyte": "Против Некрофоса обязательны Spirit Vessel для снижения хила, Glimmer Cape под косу и Nullifier.",
+    "tinker": "Против Тинкера нужны Blink Dagger, Pipe of Insight, Lotus Orb и контроль в виде Scythe of Vyse.",
+    "ursa": "Против Урсы собирай Ghost Scepter, Force Staff, Halberd или Eul, чтобы кайтить его под Enrage.",
+    "morphling": "Против Морфа нужны Spirit Vessel, Eye of Skadi, Shiva's Guard и взрывной сайленс или Hex.",
+    "storm_spirit": "Против Шторма собирай Orchid Malevolence, Rod of Atos или Scythe of Vyse.",
+    "silencer": "Против Сайленсера собирай BKB, Manta Style, Eul's Scepter или Lotus Orb для сброса безмолвия.",
+    "huskar": "Против Хускара собирай Spirit Vessel, Eye of Skadi, Shiva's Guard для среза регена, а корам — Silver Edge и Halberd.",
+    "winter_wyvern": "Против Виверны покупай Aeon Disk, Linken's Sphere и держи позиционку — не стой рядом с союзниками.",
+    "bloodseeker": "Против Сикера при ультимейте Rupture просто стой на месте или используй телепорт на базу! Носи свиток ТП.",
+    "medusa": "Против Медузы собирай Diffusal Blade, Eye of Skadi, Shiva's Guard и отворачивайся от взгляда Stone Gaze.",
+    "bane": "Против Бейна бери Linken's Sphere, Lotus Orb или Aeon Disk — Fiend's Grip пробивает BKB!",
+    "muerta": "Против Муэрты покупай BKB (её ультимейт Pierce the Veil наносит магический урон) или Blade Mail.",
+}
+
+# Короткие угрозы для радара врагов (там, где важны точные формулировки и контр-слоты).
+HERO_THREAT_OVERRIDES: dict[str, tuple[str, str, tuple[str, ...]]] = {
+    "huskar": ("Huskar", "реген и живучесть в драке", ("Spirit Vessel", "Eye of Skadi", "Shiva's Guard")),
+    "phantom_assassin": ("Phantom Assassin", "уворот и криты с руки", ("Monkey King Bar", "Silver Edge", "Ghost Scepter")),
+    "doom_bringer": ("Doom", "ульт-сайленс и выжигание", ("Linken's Sphere", "Lotus Orb")),
+    "axe": ("Axe", "Blink-Калл и колючки", ("Black King Bar", "Force Staff", "Silver Edge")),
+    "legion_commander": ("Legion Commander", "Дуэль через Blink", ("Linken's Sphere", "Black King Bar", "Aeon Disk")),
+    "juggernaut": ("Juggernaut", "Омнислэш и спин", ("Ghost Scepter", "Black King Bar", "Force Staff")),
+    "slark": ("Slark", "инвиз и кража статов", ("Sentry Wards", "Force Staff", "Ghost Scepter")),
+    "bristleback": ("Bristleback", "колючки и живучесть", ("Silver Edge", "Spirit Vessel")),
+    "necrolyte": ("Necrophos", "аура и саркофаг", ("Spirit Vessel", "Black King Bar")),
+    "faceless_void": ("Faceless Void", "Хроносфера", ("Black King Bar", "Aeon Disk")),
+    "pudge": ("Pudge", "хук и ульт-контроль", ("Force Staff", "Black King Bar", "Sentry Wards")),
+    "silencer": ("Silencer", "глобальный сайленс", ("Black King Bar", "Lotus Orb")),
+}
+
+
+def get_hero_counter_note(hero_name: str) -> str | None:
+    """Каноническая короткая контр-подсказка по герою из единой базы ``meta_db``."""
+    meta = get_hero_meta_entry(hero_name)
+    if not meta:
+        return None
+    hid = meta["id"]
+    note = HERO_COUNTER_NOTES.get(hid)
+    if note:
+        return note
+    counters = get_hero_counters(hid)
+    if not counters:
+        return None
+    items = [str(i) for i in (counters.get("counter_items") or [])[:3]]
+    tip = str(counters.get("tip") or "").strip()
+    display = str(meta.get("name") or meta.get("ru_name") or hero_name)
+    if items:
+        return f"Против {display} бери {', '.join(items)}." + (f" {tip}" if tip else "")
+    return f"Против {display}: {tip}" if tip else None
+
+
+def get_hero_threat_summary(hero_name: str) -> tuple[str, str, tuple[str, ...]] | None:
+    """Каноническая сводка угроз героя ``(display_name, threat_phrase, counter_items)``."""
+    meta = get_hero_meta_entry(hero_name)
+    if not meta:
+        return None
+    hid = meta["id"]
+    override = HERO_THREAT_OVERRIDES.get(hid)
+    if override is not None:
+        return override
+    tags = [tag for tag in (meta.get("tags") or []) if tag in TAG_THREAT_PHRASES]
+    threat = ", ".join(TAG_THREAT_PHRASES[tag] for tag in tags[:2]) or "сильная сторона героя"
+    counters = tuple(_counter_items_for_tags(tags, limit=3)) or ("Black King Bar", "Force Staff")
+    return str(meta.get("name") or meta.get("ru_name") or hid), threat, counters
+
+
 def _counter_items_for_tags(tags: Iterable[str], limit: int = 6) -> list[str]:
     items: list[str] = []
     for tag in tags:

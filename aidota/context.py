@@ -17,6 +17,19 @@ from typing import Any, Callable, Iterable, Mapping
 
 from .beginner import normalize_skill_level
 from .heroes import HeroCatalog
+from .map_timers import (
+    CanonicalMapTimers,
+    extract_match_id,
+)
+from .map_timers import (
+    neutral_tier as _canonical_neutral_tier,
+)
+from .map_timers import (
+    objectives_context as _canonical_objectives_context,
+)
+from .map_timers import (
+    roshan_pit_location as _canonical_roshan_pit_location,
+)
 from .roles import position_label
 
 log = logging.getLogger("aidota.context")
@@ -125,66 +138,29 @@ def _next_occurrence(minute: float, start: float, period: float) -> float:
 
 
 def roshan_pit_location(clock_seconds: Any = None, is_daytime: bool | None = None) -> str:
-    """Определяет, в каком логове находится Рошан (патч 7.33+):
-
-    Днём (0-5 мин, 10-15 мин...) — в нижнем логове (сторона Radiant).
-    Ночью (5-10 мин, 15-20 мин...) — в верхнем логове (сторона Dire).
-    Рошан переходит строго по естественному 300-секундному циклу игровых часов (0:00, 5:00...),
-    независимо от искусственной ночи способностей героев (Night Stalker / Luna).
-    """
-    sec = _i(clock_seconds)
-    if sec is not None:
-        if sec < 0:
-            return "нижнем логове (Radiant, день)"
-        cycle = (sec // 300) % 2
-        return "нижнем логове (Radiant, день)" if cycle == 0 else "верхнем логове (Dire, ночь)"
-    if is_daytime is not None:
-        return "нижнем логове (Radiant, день)" if is_daytime else "верхнем логове (Dire, ночь)"
-    return "нижнем логове (Radiant, день)"
+    """Определяет, в каком логове находится Рошан (делегирует в ``aidota.map_timers``)."""
+    return _canonical_roshan_pit_location(clock_seconds, is_daytime=is_daytime)
 
 
-def objectives_context(clock_seconds: Any, game_mode: Any = None) -> str:
-    """Что из таймингов скоро наступит: руны, лотусы, Терзатель, Рошан."""
-    minute = (_i(clock_seconds) or 0) / 60.0
-    if minute < 0:
-        return ""
-    wisdom = _next_occurrence(minute, 7, 7)
-    lotus = _next_occurrence(minute, 3, 3)
-    tormentor = _next_occurrence(minute, 20, 10)
-    pit = roshan_pit_location(clock_seconds)
-    parts = [
-        f"руны мудрости {_fmt_minute(wisdom)}",
-        f"лотусы {_fmt_minute(lotus)}",
-        f"Терзатель {_fmt_minute(tormentor)}",
-    ]
-    if minute < 15:
-        parts.append(f"Рошан (в {pit}): первый Аегис примерно с 15:00")
-    else:
-        parts.append(f"Рошан (в {pit}): возможно, жив (Аегис/Рефрешер)")
-    return "Ближайшие цели — " + ", ".join(parts) + "."
+def objectives_context(
+    clock_seconds: Any,
+    game_mode: Any = None,
+    *,
+    roshan_death_sec: float | int | None = None,
+    window_sec: int = 45,
+) -> str:
+    """Что из таймингов скоро наступит (делегирует в ``aidota.map_timers``)."""
+    return _canonical_objectives_context(
+        clock_seconds,
+        game_mode,
+        roshan_death_sec=roshan_death_sec,
+        window_sec=window_sec,
+    )
 
 
 def neutral_tier(minute: float, turbo: bool) -> int:
-    """Номер доступного разряда нейтральных предметов по минуте игры (патч 7.36/7.37)."""
-    if turbo:
-        if minute < 7.5:
-            return 1
-        if minute < 12.5:
-            return 2
-        if minute < 17.5:
-            return 3
-        if minute < 30.0:
-            return 4
-        return 5
-    if minute < 15.0:
-        return 1
-    if minute < 25.0:
-        return 2
-    if minute < 35.0:
-        return 3
-    if minute < 60.0:
-        return 4
-    return 5
+    """Номер доступного разряда нейтральных предметов по минуте игры (7/15/25/35/60)."""
+    return _canonical_neutral_tier(minute, turbo=turbo)
 
 
 def format_clock(seconds: Any) -> str:
@@ -389,12 +365,18 @@ def _extract_allplayers(payload: dict) -> list[dict[str, Any]]:
             if not isinstance(raw_items, dict):
                 raw_items = hero_dict.get("items")
             name = entry.get("name") or entry.get("player_name")
+            lane = entry.get("lane") if entry.get("lane") is not None else hero_dict.get("lane")
+            is_mid = entry.get("is_mid") if "is_mid" in entry else hero_dict.get("is_mid")
+            pos_val = entry.get("position") if entry.get("position") is not None else hero_dict.get("position")
             result.append(
                 {
                     "npc": npc,
                     "team": team,
                     "level": level,
                     "name": name if isinstance(name, str) and name else None,
+                    "lane": lane,
+                    "is_mid": is_mid,
+                    "position": pos_val,
                     "kills": stats["kills"],
                     "deaths": stats["deaths"],
                     "assists": stats["assists"],
@@ -1343,166 +1325,6 @@ def get_player_profile_summary(data_dir: Path | str | None = None) -> str:
 # Короткие знания «герой -> чем он опасен -> что брать». Ключ — короткий id
 # NPC-героя (`npc_dota_hero_` отбрасывается). Список намеренно ручной: только
 # проверенные, не выдуманные связки, чтобы тренер не галлюцинировал.
-_ENEMY_THREAT_HINTS: dict[str, tuple[str, str, tuple[str, ...]]] = {
-    "huskar": ("Huskar", "реген и живучесть в драке", ("Spirit Vessel", "Eye of Skadi", "Shiva's Guard")),
-    "phantom_assassin": ("Phantom Assassin", "уворот и криты с руки", ("Monkey King Bar", "Silver Edge", "Ghost Scepter")),
-    "doom_bringer": ("Doom", "ульт-сайленс и выжигание", ("Linken's Sphere", "Lotus Orb")),
-    "axe": ("Axe", "Blink-Калл и колючки", ("Black King Bar", "Force Staff", "Silver Edge")),
-    "legion_commander": ("Legion Commander", "Дуэль через Blink", ("Linken's Sphere", "Black King Bar", "Aeon Disk")),
-    "bristleback": ("Bristleback", "колючки и живучесть", ("Silver Edge", "Spirit Vessel")),
-    "alchemist": ("Alchemist", "реген и быстрый фарм", ("Spirit Vessel", "Eye of Skadi")),
-    "medusa": ("Medusa", "каменный взгляд и танкованность", ("Black King Bar", "Diffusal Blade", "Silver Edge")),
-    "spectre": ("Spectre", "глобальный ульт и изоляция", ("Ghost Scepter", "Black King Bar")),
-    "slark": ("Slark", "инвиз и кража статов", ("Sentry Wards", "Force Staff", "Ghost Scepter")),
-    "riki": ("Riki", "постоянный инвиз и бурст", ("Sentry Wards", "Dust of Appearance", "Force Staff")),
-    "bounty_hunter": ("Bounty Hunter", "инвиз и отслеживание", ("Sentry Wards", "Dust of Appearance")),
-    "clinkz": ("Clinkz", "инвиз и бурст по строениям", ("Sentry Wards", "Dust of Appearance", "Ghost Scepter")),
-    "weaver": ("Weaver", "Шукра и мобильность", ("Sentry Wards", "Dust of Appearance", "Black King Bar")),
-    "nyx_assassin": ("Nyx Assassin", "инвиз и бурст", ("Sentry Wards", "Black King Bar")),
-    "invoker": ("Invoker", "маг-бурст и контроль", ("Black King Bar", "Lotus Orb")),
-    "zuus": ("Zeus", "глобальный маг-бурст", ("Black King Bar", "Pipe of Insight", "Glimmer Cape")),
-    "lina": ("Lina", "маг-бурст и Лагуна", ("Black King Bar", "Linken's Sphere")),
-    "lion": ("Lion", "Хекс и Фингер", ("Black King Bar", "Linken's Sphere")),
-    "shadow_shaman": ("Shadow Shaman", "Хекс и змеиный ульт", ("Black King Bar", "Force Staff")),
-    "witch_doctor": ("Witch Doctor", "канальный ульт и хил", ("Black King Bar", "Spirit Vessel")),
-    "crystal_maiden": ("Crystal Maiden", "огромный АоЕ-ульт", ("Black King Bar", "Force Staff")),
-    "dazzle": ("Dazzle", "сейвы и Шейл", ("Spirit Vessel", "Black King Bar")),
-    "oracle": ("Oracle", "сейвы и диспел", ("Spirit Vessel", "Black King Bar")),
-    "wisp": ("Io", "глобальный релокейт и хил", ("Spirit Vessel", "Black King Bar")),
-    "undying": ("Undying", "Томбстоун и отжор", ("Spirit Vessel", "Black King Bar")),
-    "necrolyte": ("Necrophos", "аура и саркофаг", ("Spirit Vessel", "Black King Bar")),
-    "faceless_void": ("Faceless Void", "Хроносфера", ("Black King Bar", "Aeon Disk")),
-    "enigma": ("Enigma", "Блэкхол", ("Black King Bar", "Force Staff")),
-    "magnataur": ("Magnus", "RP-инициация", ("Black King Bar", "Linken's Sphere")),
-    "earthshaker": ("Earthshaker", "Эхо-слэм", ("Black King Bar", "Force Staff")),
-    "tidehunter": ("Tidehunter", "Раваг и живучесть", ("Force Staff", "Aeon Disk")),
-    "centaur": ("Centaur Warrunner", "Blink-стан и тафнесс", ("Black King Bar", "Silver Edge")),
-    "pudge": ("Pudge", "хук и ульт-контроль", ("Force Staff", "Black King Bar", "Sentry Wards")),
-    "tinker": ("Tinker", "марчи и ганк с переездами", ("Black King Bar", "Blink Dagger", "Pipe of Insight")),
-    "sniper": ("Sniper", "дальний урон и шрапнель", ("Blink Dagger", "Silver Edge", "Smoke of Deceit")),
-    "storm_spirit": ("Storm Spirit", "мобильность и бурст", ("Scythe of Vyse", "Orchid Malevolence", "Black King Bar")),
-    "queenofpain": ("Queen of Pain", "маг-бурст и мобильность", ("Black King Bar", "Linken's Sphere")),
-    "templar_assassin": ("Templar Assassin", "Refraction и мощные удары", ("Black King Bar", "Ghost Scepter")),
-    "ursa": ("Ursa", "фури-свайпы и бурст вблизи", ("Force Staff", "Ghost Scepter", "Heaven's Halberd")),
-    "life_stealer": ("Lifestealer", "Rage и отжор", ("Ghost Scepter", "Force Staff", "Aeon Disk")),
-    "troll_warlord": ("Troll Warlord", "баш и скорость атаки", ("Black King Bar", "Heaven's Halberd")),
-    "monkey_king": ("Monkey King", "Jingu и мобильность", ("Black King Bar", "Force Staff", "Silver Edge")),
-    "viper": ("Viper", "яды и замедление", ("Black King Bar", "Force Staff", "Spirit Vessel")),
-    "venomancer": ("Venomancer", "яды и пуш", ("Black King Bar", "Pipe of Insight")),
-    "broodmother": ("Broodmother", "пауки и пуш", ("Battle Fury", "Maelstrom", "Black King Bar")),
-    "phantom_lancer": ("Phantom Lancer", "иллюзии", ("Maelstrom", "Battle Fury", "Diffusal Blade")),
-    "naga_siren": ("Naga Siren", "сон и иллюзии", ("Black King Bar", "Maelstrom")),
-    "terrorblade": ("Terrorblade", "иллюзии и метаморфоза", ("Maelstrom", "Battle Fury", "Silver Edge")),
-    "chaos_knight": ("Chaos Knight", "иллюзии и стан", ("Maelstrom", "Black King Bar")),
-    "meepo": ("Meepo", "толпа и бурст", ("Maelstrom", "Battle Fury", "Black King Bar")),
-    "visage": ("Visage", "фамильяры", ("Maelstrom", "Black King Bar")),
-    "chen": ("Chen", "пуш и хил", ("Maelstrom", "Battle Fury")),
-    "beastmaster": ("Beastmaster", "пуш и Хок", ("Maelstrom", "Black King Bar")),
-    "lycan": ("Lycan", "пуш и волки", ("Maelstrom", "Battle Fury")),
-    "furion": ("Nature's Prophet", "глобальный пуш", ("Maelstrom", "Battle Fury")),
-    "death_prophet": ("Death Prophet", "пуш и ульт-ливень", ("Black King Bar", "Spirit Vessel")),
-    "sven": ("Sven", "АоЕ-клив и стан", ("Black King Bar", "Ghost Scepter")),
-    "juggernaut": ("Juggernaut", "Омнислэш и спин", ("Ghost Scepter", "Black King Bar", "Force Staff")),
-    "antimage": ("Anti-Mage", "сжигание маны и мобильность", ("Scythe of Vyse", "Orchid Malevolence", "Black King Bar")),
-    "drow_ranger": ("Drow Ranger", "дальний урон и сайленс", ("Black King Bar", "Silver Edge", "Force Staff")),
-    "morphling": ("Morphling", "морф и выживаемость", ("Scythe of Vyse", "Orchid Malevolence", "Spirit Vessel")),
-    "razor": ("Razor", "АоЕ-урон и ослабление", ("Black King Bar", "Pipe of Insight")),
-    "nevermore": ("Shadow Fiend", "АоЕ маг-урон из мида", ("Black King Bar", "Pipe of Insight")),
-    "windrunner": ("Windranger", "Шекл и фокус", ("Black King Bar", "Linken's Sphere")),
-    "warlock": ("Warlock", "голем и массовый хил", ("Spirit Vessel", "Force Staff")),
-    "silencer": ("Silencer", "глобальный сайленс", ("Black King Bar", "Lotus Orb")),
-    "obsidian_destroyer": ("Outworld Destroyer", "сжигание интеллекта и ульта", ("Black King Bar", "Linken's Sphere")),
-    "skywrath_mage": ("Skywrath Mage", "маг-бурст и сайленс", ("Black King Bar", "Linken's Sphere")),
-    "leshrac": ("Leshrac", "АоЕ-бурст и пуш", ("Black King Bar", "Pipe of Insight")),
-    "luna": ("Luna", "АоЕ-клив и ульта", ("Black King Bar", "Glimmer Cape")),
-    "gyrocopter": ("Gyrocopter", "Ракета и АоЕ-урон", ("Black King Bar", "Pipe of Insight")),
-    "dragon_knight": ("Dragon Knight", "пуш и стан", ("Black King Bar", "Silver Edge")),
-    "treant": ("Treant Protector", "глобальный хил и контроль", ("Black King Bar", "Spirit Vessel")),
-    "spirit_breaker": ("Spirit Breaker", "чардж и глобальное давление", ("Linken's Sphere", "Black King Bar")),
-    "kunkka": ("Kunkka", "Торрент и клив", ("Black King Bar", "Force Staff")),
-    "mirana": ("Mirana", "стрела и ганги", ("Black King Bar", "Sentry Wards")),
-    "puck": ("Puck", "инициация и мобильность", ("Black King Bar", "Scythe of Vyse")),
-    "batrider": ("Batrider", "Лассо", ("Black King Bar", "Linken's Sphere")),
-    "rattletrap": ("Clockwerk", "хук и заточение", ("Force Staff", "Black King Bar")),
-    "elder_titan": ("Elder Titan", "ульт и разделение драки", ("Black King Bar", "Force Staff")),
-    "dark_seer": ("Dark Seer", "стенка и ионка", ("Black King Bar", "Force Staff")),
-    "enchantress": ("Enchantress", "пуш и хил", ("Spirit Vessel", "Maelstrom")),
-    "skeleton_king": ("Wraith King", "реинкарнация и скелеты", ("Diffusal Blade", "Spirit Vessel")),
-    "abaddon": ("Abaddon", "сейвы и диспел", ("Spirit Vessel", "Black King Bar")),
-    "shredder": ("Timbersaw", "броня и деревья", ("Silver Edge", "Spirit Vessel", "Black King Bar")),
-    "vengefulspirit": ("Vengeful Spirit", "стан и снижение брони", ("Black King Bar", "Force Staff")),
-    # --- остальной ростер: короткие честные связки, без выдуманных таймингов ---
-    "abyssal_underlord": ("Underlord", "АоЕ-урон и ослабление", ("Black King Bar", "Pipe of Insight")),
-    "ancient_apparition": ("Ancient Apparition", "запрет хила глобальным ультом", ("Pipe of Insight", "Glimmer Cape")),
-    "arc_warden": ("Arc Warden", "клоны и мобильность", ("Maelstrom", "Black King Bar")),
-    "bane": ("Bane", "контроль и сон", ("Black King Bar", "Linken's Sphere")),
-    "bloodseeker": ("Bloodseeker", "Rupture наказывает за бег", ("Black King Bar", "Linken's Sphere")),
-    "brewmaster": ("Brewmaster", "пьяный ульт и АоЕ-контроль", ("Black King Bar", "Force Staff")),
-    "dawnbreaker": ("Dawnbreaker", "глобальный хил и стан", ("Spirit Vessel", "Black King Bar")),
-    "dark_willow": ("Dark Willow", "контроль и АоЕ-бурст", ("Black King Bar", "Force Staff")),
-    "disruptor": ("Disruptor", "Глимпс и статик-шторм", ("Black King Bar", "Force Staff")),
-    "earth_spirit": ("Earth Spirit", "контроль и роллинг", ("Black King Bar", "Linken's Sphere")),
-    "ember_spirit": ("Ember Spirit", "мобильность и Слейт", ("Scythe of Vyse", "Orchid Malevolence", "Black King Bar")),
-    "grimstroke": ("Grimstroke", "контроль и тёмная иллюзия", ("Black King Bar", "Force Staff")),
-    "hoodwink": ("Hoodwink", "стрелы и мобильность", ("Black King Bar", "Force Staff")),
-    "jakiro": ("Jakiro", "АоЕ-контроль и пуш", ("Black King Bar", "Pipe of Insight")),
-    "keeper_of_the_light": ("Keeper of the Light", "глобальный хил и АоЕ", ("Black King Bar", "Spirit Vessel")),
-    "kez": ("Kez", "мобильность и бурст", ("Black King Bar", "Ghost Scepter")),
-    "lich": ("Lich", "ульт-цепочка и хил", ("Black King Bar", "Force Staff")),
-    "lone_druid": ("Lone Druid", "медведь и пуш", ("Maelstrom", "Battle Fury")),
-    "marci": ("Marci", "инициация и бурст", ("Black King Bar", "Force Staff")),
-    "mars": ("Mars", "арена и контроль", ("Black King Bar", "Force Staff")),
-    "muerta": ("Muerta", "маг-урон и ульта", ("Black King Bar", "Pipe of Insight")),
-    "night_stalker": ("Night Stalker", "ночное давление и сайленс", ("Black King Bar", "Force Staff")),
-    "ogre_magi": ("Ogre Magi", "стан и живучесть", ("Black King Bar", "Spirit Vessel")),
-    "omniknight": ("Omniknight", "сейвы и диспел", ("Spirit Vessel", "Black King Bar")),
-    "pangolier": ("Pangolier", "мобильность и ульт-стан", ("Black King Bar", "Force Staff")),
-    "phoenix": ("Phoenix", "АоЕ-ульта и хил", ("Spirit Vessel", "Black King Bar")),
-    "primal_beast": ("Primal Beast", "тафнесс и контроль", ("Black King Bar", "Spirit Vessel")),
-    "pugna": ("Pugna", "сжигание маны и пуш", ("Black King Bar", "Spirit Vessel")),
-    "ringmaster": ("Ringmaster", "контроль и АоЕ", ("Black King Bar", "Force Staff")),
-    "rubick": ("Rubick", "кража заклинаний", ("Black King Bar", "Linken's Sphere")),
-    "sand_king": ("Sand King", "Эпицентр и Блинк", ("Black King Bar", "Force Staff")),
-    "shadow_demon": ("Shadow Demon", "диспел и контроль", ("Black King Bar", "Linken's Sphere")),
-    "slardar": ("Slardar", "минус-броня и стан", ("Black King Bar", "Force Staff")),
-    "snapfire": ("Snapfire", "АоЕ-урон и контроль", ("Black King Bar", "Pipe of Insight")),
-    "techies": ("Techies", "мины и контроль", ("Black King Bar", "Force Staff")),
-    "tiny": ("Tiny", "бурст и АоЕ-стан", ("Black King Bar", "Linken's Sphere")),
-    "tusk": ("Tusk", "инициация и сейв", ("Black King Bar", "Linken's Sphere")),
-    "void_spirit": ("Void Spirit", "мобильность и бурст", ("Black King Bar", "Scythe of Vyse")),
-    "winter_wyvern": ("Winter Wyvern", "холод и сейв-ульт", ("Black King Bar", "Spirit Vessel")),
-}
-
-# Разные варианты имени одного и того же героя -> ключ _ENEMY_THREAT_HINTS.
-_HERO_THREAT_ALIASES: dict[str, str] = {
-    "doom": "doom_bringer",
-    "doombringer": "doom_bringer",
-    "shadow_fiend": "nevermore",
-    "shadowfiend": "nevermore",
-    "sf": "nevermore",
-    "anti_mage": "antimage",
-    "am": "antimage",
-    "outworld_destroyer": "obsidian_destroyer",
-    "od": "obsidian_destroyer",
-    "wraith_king": "skeleton_king",
-    "wk": "skeleton_king",
-    "nature_s_prophet": "furion",
-    "natures_prophet": "furion",
-    "prophet": "furion",
-    "clockwerk": "rattletrap",
-    "timbersaw": "shredder",
-    "io": "wisp",
-    "zeus": "zuus",
-    "windranger": "windrunner",
-    "necrophos": "necrolyte",
-    "queen_of_pain": "queenofpain",
-    "qop": "queenofpain",
-    "vengeful_spirit": "vengefulspirit",
-    "lifestealer": "life_stealer",
-    "centaur_warrunner": "centaur",
-    "magnus": "magnataur",
-}
-
 _ENEMY_ITEM_PRIORITY: tuple[str, ...] = (
     "item_black_king_bar",
     "item_blink",
@@ -1515,15 +1337,22 @@ _ENEMY_ITEM_PRIORITY: tuple[str, ...] = (
 
 
 def _hero_threat_key(value: Any) -> str:
-    """Нормализует id / npc-имя / отображаемое имя героя в ключ словаря угроз."""
+    """Нормализует id / npc-имя / отображаемое имя героя через каноническую ``meta_db``."""
     if not isinstance(value, str):
         return ""
     text = value.strip().lower()
     if text.startswith("npc_dota_hero_"):
         text = text[len("npc_dota_hero_"):]
+    try:
+        from .meta_db import get_hero_meta_entry
+
+        meta = get_hero_meta_entry(value)
+        if meta and meta.get("id"):
+            return str(meta["id"])
+    except Exception:  # noqa: BLE001
+        pass
     text = text.replace("'", "").replace("’", "")
-    text = re.sub(r"[^a-z0-9]+", "_", text).strip("_")
-    return _HERO_THREAT_ALIASES.get(text, text)
+    return re.sub(r"[^a-z0-9]+", "_", text).strip("_")
 
 
 def _hero_display(hint: Any, catalog: HeroCatalog | None) -> str | None:
@@ -1608,12 +1437,16 @@ def analyze_enemy_threats(
     if not candidates:
         return []
 
+    from .meta_db import get_hero_threat_summary
+
     phrases: list[str] = []
     covered: set[str] = set()
     for candidate in candidates:
         key = _hero_threat_key(candidate)
-        hint = _ENEMY_THREAT_HINTS.get(key)
-        if hint is None or key in covered:
+        if not key or key in covered:
+            continue
+        hint = get_hero_threat_summary(candidate)
+        if hint is None:
             continue
         covered.add(key)
         display, threat, counter_items = hint
@@ -1982,79 +1815,68 @@ def format_gsi_summary(snapshot: dict[str, Any]) -> str:
 
 
 class MidTimersTracker:
-    """Отслеживает руны, отводы, стаки, 6-й уровень мидера и макро-таймеры с защитой от повторов."""
+    """Фасад совместимости над каноническим ``CanonicalMapTimers`` (Phase 4 / Fork F2)."""
 
-    def __init__(self, enabled: bool = True):
-        self.enabled = bool(enabled)
-        self._alerted_water_runes: set[int] = set()
-        self._alerted_active_runes: set[int] = set()
-        self._alerted_wisdom: set[Any] = set()
-        self._alerted_lotus: set[int] = set()
-        self._alerted_stacks: set[int] = set()
-        self._alerted_pulls: set[tuple[int, str]] = set()
-        self._alerted_neutrals: set[int] = set()
-        self._alerted_day_night: set[int] = set()
-        self._alerted_tormentor = False
-        self._alerted_mid_lvl6 = False
+    def __init__(
+        self,
+        enabled: bool = True,
+        *,
+        core: CanonicalMapTimers | None = None,
+        proactive_enabled: bool = True,
+    ):
+        self._core = core if core is not None else CanonicalMapTimers(
+            enabled=bool(enabled),
+            proactive_enabled=bool(proactive_enabled),
+        )
+        if core is None:
+            self._core.enabled = bool(enabled)
+            self._core.proactive_enabled = bool(proactive_enabled)
+
+    @property
+    def core(self) -> CanonicalMapTimers:
+        return self._core
+
+    @property
+    def enabled(self) -> bool:
+        return self._core.enabled
+
+    @enabled.setter
+    def enabled(self, value: bool) -> None:
+        self._core.enabled = bool(value)
+
+    @property
+    def proactive_enabled(self) -> bool:
+        return self._core.proactive_enabled
+
+    @proactive_enabled.setter
+    def proactive_enabled(self, value: bool) -> None:
+        self._core.proactive_enabled = bool(value)
+
+    @property
+    def _alerted_tormentor(self) -> bool:
+        return self._core._alerted_tormentor
+
+    @_alerted_tormentor.setter
+    def _alerted_tormentor(self, value: bool) -> None:
+        self._core._alerted_tormentor = bool(value)
 
     def reset(self) -> None:
         """Сбрасывает историю всех оповещений при старте нового матча."""
-        self._alerted_water_runes.clear()
-        self._alerted_active_runes.clear()
-        self._alerted_wisdom.clear()
-        self._alerted_lotus.clear()
-        self._alerted_stacks.clear()
-        self._alerted_pulls.clear()
-        self._alerted_neutrals.clear()
-        self._alerted_day_night.clear()
-        self._alerted_tormentor = False
-        self._alerted_mid_lvl6 = False
+        self._core.reset()
 
-    def check_mid_runes(self, clock_seconds: Any, position: int = 1) -> str | None:
+    def sync_match_id(self, match_id: Any) -> bool:
+        """Синхронизирует ``match_id`` и сбрасывает таймеры при смене матча."""
+        return self._core.sync_match_id(match_id)
+
+    def check_mid_runes(
+        self,
+        clock_seconds: Any,
+        position: int = 1,
+        *,
+        match_id: Any = None,
+    ) -> str | None:
         """Проверяет появление водных и активных рун на миде ровно за 20 секунд."""
-        if not self.enabled or clock_seconds is None:
-            return None
-        try:
-            sec = int(clock_seconds)
-        except (ValueError, TypeError):
-            return None
-
-        if sec < 0:
-            if self._alerted_water_runes or self._alerted_active_runes:
-                self.reset()
-            return None
-
-        # 1. Водные руны (2:00 = 120s, 4:00 = 240s) -> за 20 секунд (на 1:40 = 100s, 3:40 = 220s)
-        # Окно детекции: [98..104] и [218..224] с защитой от повторов
-        for target_sec in (100, 220):
-            if target_sec - 2 <= sec <= target_sec + 4:
-                if target_sec not in self._alerted_water_runes:
-                    self._alerted_water_runes.add(target_sec)
-                    log.info("Сработал таймер: водные руны на миду (%d с, pos=%d)", target_sec, position)
-                    if position == 4:
-                        return "Через 20 секунд водные руны на миду — четвёрка, сместись и помоги мидеру законтролить руну."
-                    elif position == 5:
-                        return "Через 20 секунд водные руны на миду — проверь, нужна ли помощь мидеру."
-                    return "Через 20 секунд водные руны на миду, запушь пачку."
-
-        # 2. Активные руны: каждые 2 минуты начиная с 6:00 (360s, 480s, 600s, 720s...)
-        # Предупреждение за 20 секунд: 5:40 (340s), 7:40 (460s), 9:40 (580s)...
-        if sec >= 338:
-            cycle = (sec + 22) // 120
-            target_sec = cycle * 120 - 20
-            if cycle >= 3 and target_sec - 2 <= sec <= target_sec + 4:
-                if cycle not in self._alerted_active_runes:
-                    self._alerted_active_runes.add(cycle)
-                    log.info("Сработал таймер: активная руна на миду (цикл %d, %d с, pos=%d)", cycle, sec, position)
-                    if cycle == 3:  # 5:40 (приближение 6-й минуты и катапульты)
-                        if position in (4, 5):
-                            return "Через 20 секунд активная руна на миду и ночная катапульта! Саппортам пора помочь на руне."
-                        return "Через 20 секунд активная руна на миду и ночная катапульта! Приготовься к пушу или гангу."
-                    if position in (4, 5):
-                        return "Через 20 секунд активная руна на реке — помогите законтролить спавн."
-                    return "Через 20 секунд активная руна на миду, проконтролируй спавн."
-
-        return None
+        return self._core.check_mid_runes(clock_seconds, position=position, match_id=match_id)
 
     def check_mid_level_6(
         self,
@@ -2062,64 +1884,21 @@ class MidTimersTracker:
         clock_seconds: Any = None,
         vision_level: int | None = None,
         clock_sec: Any = None,
+        *,
+        enemy_mid_level: int | None = None,
+        match_id: Any = None,
+        allow_predictive: bool = True,
     ) -> str | None:
         """Детектор 6-го уровня вражеского мидера (EnemyMidLevel6Alert)."""
-        if not self.enabled or self._alerted_mid_lvl6:
-            return None
-
-        # 1. Прямая валидация по компьютерному зрению (курсор на враге)
-        if vision_level and vision_level >= 6:
-            self._alerted_mid_lvl6 = True
-            log.info("Сработал детектор (Vision): вражеский герой достиг 6 уровня (%d)", vision_level)
-            return "Внимание! Вражеский мидер достиг шестого уровня! Возможен ганг на боковых линиях."
-
-        if not isinstance(payload, dict):
-            return None
-
-        sec = _i(clock_seconds if clock_seconds is not None else clock_sec)
-        if sec is None:
-            sec = _i(_dig(payload, "map", "clock_time"))
-        if sec is None or sec < 0:
-            return None
-
-        # Не срабатываем после 10 минут (в мидгейме у всех уже есть ульт)
-        if sec > 600:
-            return None
-
-        # 2. Явные данные из GSI (если враги передаются)
-        players = _extract_allplayers(payload)
-        my_team = _dig(payload, "player", "team_name")
-        enemy_mid_lvl = 0
-        for p in players:
-            p_team = p.get("team")
-            if my_team and p_team and p_team != my_team:
-                lvl = p.get("level") or 0
-                enemy_mid_lvl = max(enemy_mid_lvl, lvl)
-
-        if enemy_mid_lvl >= 6:
-            self._alerted_mid_lvl6 = True
-            log.info("Сработал детектор (GSI allplayers): враг достиг 6 уровня (%d)", enemy_mid_lvl)
-            return "Внимание! Вражеский мидер достиг шестого уровня! Возможен ганг на боковых линиях."
-
-        # 3. Предиктивный детектор (когда данные врага скрыты матчмейкингом Valve)
-        # Если наш мидер на 5 уровне с >=65% опыта ЛИБО тайминг 5:10–5:35 (310–335 сек)
-        my_hero = payload.get("hero") if isinstance(payload.get("hero"), dict) else {}
-        my_lvl = _i(my_hero.get("level"), 0)
-        exp_pct = _f(my_hero.get("experience_percent")) or _f(my_hero.get("experience")) or 0.0
-
-        is_mid_ally = my_lvl == 5 and (exp_pct >= 65.0 or exp_pct >= 0.65)
-        is_standard_mid_window = (310 <= sec <= 335)
-        # Если были ранние фраги/смерти на миде (4:45–5:00 = 285–300 сек)
-        kills = _i(_dig(payload, "player", "kills"), 0)
-        deaths = _i(_dig(payload, "player", "deaths"), 0)
-        is_fast_mid_window = (285 <= sec <= 300) and (kills + deaths >= 1)
-
-        if is_mid_ally or is_standard_mid_window or is_fast_mid_window:
-            self._alerted_mid_lvl6 = True
-            log.info("Сработал предиктивный детектор: получение 6 уровня мидером (sec=%d, lvl=%d)", sec, my_lvl)
-            return "Осторожно! Вражеский мидер сейчас получает шестой уровень, берегись ульты!"
-
-        return None
+        return self._core.check_mid_level_6(
+            payload,
+            clock_seconds=clock_seconds,
+            vision_level=vision_level,
+            clock_sec=clock_sec,
+            enemy_mid_level=enemy_mid_level,
+            match_id=match_id,
+            allow_predictive=allow_predictive,
+        )
 
     def check_macro_timers(
         self,
@@ -2127,130 +1906,17 @@ class MidTimersTracker:
         position: int = 1,
         team_name: str | None = None,
         turbo: bool = False,
+        *,
+        match_id: Any = None,
     ) -> str | None:
-        """Общие и специализированные тайминги: руны мудрости, лотосы, отводы, стаки, Терзатель."""
-        if not self.enabled or clock_seconds is None:
-            return None
-        try:
-            sec = int(clock_seconds)
-        except (ValueError, TypeError):
-            return None
-
-        if sec < 0:
-            return None
-
-        # 1. Появление Терзателя: 20:00 (1200 сек), предупреждение за 20 сек (1180 сек)
-        if 1178 <= sec <= 1184 and not self._alerted_tormentor:
-            self._alerted_tormentor = True
-            log.info("Сработал макро-таймер: появление Терзателя")
-            return "Через 20 секунд появится Терзатель на двадцатой минуте! Соберитесь за бесплатным Шардом."
-
-        # 2. Руны мудрости: каждые 7 минут (420 сек): 7:00 (420s), 14:00 (840s), 21:00 (1260s)...
-        # Предупреждение за 20–30 секунд (на 6:35–6:44 = 395–404s, 13:35–13:44 = 815–824s...)
-        if sec >= 390:
-            cycle = (sec + 30) // 420
-            target_sec = cycle * 420 - 20
-            if cycle >= 1 and target_sec - 10 <= sec <= target_sec + 4:
-                if cycle not in self._alerted_wisdom:
-                    self._alerted_wisdom.add(cycle)
-                    min_num = cycle * 7
-                    log.info("Сработал макро-таймер: руны мудрости (цикл %d, sec=%d, pos=%d)", cycle, sec, position)
-                    if position in (4, 5):
-                        return f"Через 20 секунд руны мудрости на {min_num}-й минуте! Саппорты 4 и 5, смещайтесь за руной, можно украсть вражескую."
-                    return f"Через 20 секунд руны мудрости на {min_num}-й минуте! Не забудьте забрать."
-
-        # 3. Лотосы в пруду: каждые 3 минуты (180 сек): 3:00 (180s), 6:00 (360s), 9:00 (540s)...
-        # Предупреждение за 20 секунд: на 2:40 (160s), 5:40 (340s), 8:40 (520s)...
-        if sec >= 155:
-            cycle = (sec + 22) // 180
-            target_sec = cycle * 180 - 20
-            if cycle >= 1 and target_sec - 3 <= sec <= target_sec + 4:
-                if cycle not in self._alerted_lotus:
-                    self._alerted_lotus.add(cycle)
-                    log.info("Сработал макро-таймер: лотусы (цикл %d, sec=%d, pos=%d)", cycle, sec, position)
-                    if position in (4, 5):
-                        return "Через 20 секунд появятся лотосы в пруду — саппорт, забери бесплатный лотус!"
-                    return "Через 20 секунд появятся лотосы в пруду."
-
-        # 4. Отводы крипов (Pulls) специально для саппортов 4 и 5 во время стадии лайнинга (1:00 — 7:30)
-        if position in (4, 5) and 60 <= sec <= 450:
-            minute = sec // 60
-            sec_in_min = sec % 60
-
-            # Отвод на :17 секунде (напоминание на :11–:15)
-            if 11 <= sec_in_min <= 15:
-                pull_key = (minute, "pull_17")
-                if pull_key not in self._alerted_pulls:
-                    self._alerted_pulls.add(pull_key)
-                    log.info("Сработал таймер: отвод на 17-й секунде (мин %d, pos %d)", minute, position)
-                    if position == 5:
-                        return "15-я секунда — если линия пушится, готовь отвод на малый лагерь на 17-й секунде!"
-                    else:
-                        return "15-я секунда — готовь отвод большого кемпа на 17-й секунде, чтобы держать линию у вышки."
-
-            # Отвод на :47 секунде (напоминание на :41–:45)
-            elif 41 <= sec_in_min <= 45:
-                pull_key = (minute, "pull_47")
-                if pull_key not in self._alerted_pulls:
-                    self._alerted_pulls.add(pull_key)
-                    log.info("Сработал таймер: отвод на 47-й секунде (мин %d, pos %d)", minute, position)
-                    if position == 5:
-                        return "42-я секунда — готовься к отводу на малый лагерь на 47-й секунде."
-                    else:
-                        return "42-я секунда — готовь отвод большого лагеря на 47-й секунде."
-
-        # 5. Стаки нейтральных крипов: каждую минуту на :48–:53 секунде
-        # Специально для саппортов (поз 4 и 5) — широкий надёжный интервал
-        if position in (4, 5) and sec >= 48:
-            minute_idx = sec // 60
-            sec_in_min = sec % 60
-            if 48 <= sec_in_min <= 53:
-                if minute_idx not in self._alerted_stacks:
-                    self._alerted_stacks.add(minute_idx)
-                    log.info("Сработал макро-таймер: стак нейтралов для саппорта (мин %d, sec=%d, pos=%d)", minute_idx, sec, position)
-                    return "50-я секунда — время стакать нейтралов! Ударь крипов на 53–55-й секунде и уводи из лагеря."
-        elif sec >= 50 and (sec % 60) == 53:
-            minute_idx = sec // 60
-            if minute_idx not in self._alerted_stacks:
-                self._alerted_stacks.add(minute_idx)
-                log.info("Сработал макро-таймер: стак нейтралов (мин %d)", minute_idx)
-                return "53-я секунда — время стакать нейтралов."
-
-        # 6. Нейтральные предметы (разряды 1..5, актуальные тайминги 7.36/7.37)
-        if turbo:
-            neutral_tiers = {
-                1: (210, "Четвёртая минута — в Турбо появились нейтральные предметы 1-го разряда! Зачищайте лагеря за жетонами."),
-                2: (450, "Восьмая минута — в Турбо доступен 2-й разряд нейтральных предметов! Обновите артефакт."),
-                3: (750, "Тринадцатая минута — в Турбо доступен 3-й разряд нейтралок!"),
-                4: (1050, "Восемнадцатая минута — в Турбо доступен 4-й разряд нейтральных предметов!"),
-                5: (1800, "Тридцатая минута — в Турбо появился 5-й разряд нейтральных предметов!"),
-            }
-        else:
-            neutral_tiers = {
-                1: (420, "Седьмая минута — появились нейтральные предметы 1-го разряда! Зачищайте лесные лагеря за жетонами."),
-                2: (900, "Пятнадцатая минута — доступен 2-й разряд нейтральных предметов! Не забудьте обновить артефакт."),
-                3: (1500, "Двадцать пятая минута — доступен 3-й разряд нейтралок!"),
-                4: (2100, "Тридцать пятая минута — доступен 4-й разряд нейтральных предметов!"),
-                5: (3600, "Шестидесятая минута — появился 5-й разряд нейтральных предметов!"),
-            }
-        for tier, (t_sec, text) in neutral_tiers.items():
-            if t_sec <= sec <= t_sec + 6:
-                if tier not in self._alerted_neutrals:
-                    self._alerted_neutrals.add(tier)
-                    log.info("Сработал макро-таймер: нейтральные предметы тир %d", tier)
-                    return text
-
-        # 7. Смена дня и ночи: каждые 5 минут (300 сек)
-        if sec >= 295 and (sec % 300) in (298, 299, 0, 1):
-            cycle_idx = (sec + 2) // 300
-            if cycle_idx > 0 and cycle_idx not in self._alerted_day_night:
-                self._alerted_day_night.add(cycle_idx)
-                is_night = (cycle_idx % 2 == 1)
-                if is_night:
-                    log.info("Сработал таймер дня и ночи: наступила ночь (цикл %d)", cycle_idx)
-                    return "Наступила ночь. Обзор снижен до 800. Опасайтесь внезапных смок-атак врагов!"
-
-        return None
+        """Общие и специализированные тайминги через канонический ``CanonicalMapTimers``."""
+        return self._core.check_macro_timers(
+            clock_seconds,
+            position=position,
+            team_name=team_name,
+            turbo=turbo,
+            match_id=match_id,
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -2380,12 +2046,15 @@ class AutonomousCoachAgent:
         on_advice: Callable[[str], None] | None = None,
         advice_ttl_seconds: float = 240.0,
         skill_level: str = "beginner",
+        macro_timer: Any = None,
     ):
         self.autonomy_level = autonomy_level.strip().lower()
         self.cooldown_seconds = max(0.0, float(cooldown_seconds))
         self.on_advice = on_advice
         self.skill_level = normalize_skill_level(skill_level)
-        self.mid_timers = MidTimersTracker()
+        shared_core = getattr(macro_timer, "core", getattr(macro_timer, "_core", None))
+        self.mid_timers = MidTimersTracker(core=shared_core)
+        self._active_match_id: str | None = None
 
         self.last_advice_time: float = 0.0
         self._prev_player_items: set[str] = set()
@@ -2401,10 +2070,12 @@ class AutonomousCoachAgent:
         self._advice_cache: dict[str, float] = {}
         self._lock = threading.Lock()
 
-    def reset(self) -> None:
+    def reset(self, *, reset_timers: bool = True) -> None:
         """Сбрасывает состояние при начале нового матча."""
         with self._lock:
-            self.mid_timers.reset()
+            if reset_timers:
+                self.mid_timers.reset()
+            self._active_match_id = None
             self.last_advice_time = 0.0
             self._prev_player_items.clear()
             self._prev_enemy_items.clear()
@@ -2417,9 +2088,28 @@ class AutonomousCoachAgent:
             self._roshan_reported = False
             self._advice_cache.clear()
 
+    def is_autonomy_off(self) -> bool:
+        """True, если автономные проактивные подсказки полностью отключены."""
+        return self.autonomy_level in ("off", "none", "request_only", "только по запросу", "выкл")
+
     def set_autonomy_level(self, level: str) -> None:
         """Настраивает уровень автономности: 'high' / 'medium' / 'off'."""
         self.autonomy_level = level.strip().lower()
+
+    def _sync_match_id(self, payload: Mapping[str, Any]) -> str | None:
+        match_id = extract_match_id(payload)
+        if not match_id:
+            return None
+        # CanonicalMapTimers сам сбрасывает таймеры ровно один раз на новый matchid
+        # (даже если его уже переключил Coach.check_skills_alerts на том же тике).
+        self.mid_timers.sync_match_id(match_id)
+        if self._active_match_id is not None and match_id != self._active_match_id:
+            self.reset(reset_timers=False)
+            self._active_match_id = match_id
+            return match_id
+        if self._active_match_id is None:
+            self._active_match_id = match_id
+        return match_id
 
     def set_skill_level(self, level: str) -> str:
         """Нормализует и применяет уровень игрока (beginner/amateur/advanced/expert)."""
@@ -2442,6 +2132,8 @@ class AutonomousCoachAgent:
         """Анализирует очередной GSI-тик и возвращает совет, если сработал триггер."""
         if not isinstance(payload, dict):
             return None
+
+        match_id = self._sync_match_id(payload)
 
         map_data = payload.get("map") if isinstance(payload.get("map"), dict) else {}
         clock_sec = _i(map_data.get("clock_time"))
@@ -2469,29 +2161,38 @@ class AutonomousCoachAgent:
             self._prev_deaths = cur_deaths
             self._last_death_time = now
 
+        # При выключенной автономности запрещены любые проактивные тик-алерты
+        # (пользовательские ручные таймеры в MacroTimerSkill работают независимо).
+        if self.is_autonomy_off():
+            return None
+
         # 1. Приоритетные тайминги (руны на миде, 6-й уровень мидера, отводы, стаки, макро)
-        mid_rune = self.mid_timers.check_mid_runes(clock_sec, position=position)
-        if mid_rune:
-            return mid_rune if self._emit(mid_rune, now) else None
+        # Если общий CanonicalMapTimers уже выдал алерт на этой же секунде (например, через MacroTimerSkill),
+        # не дублируем второе срабатывание поверх него.
+        if self.mid_timers.core.last_alert_clock_sec != clock_sec:
+            mid_rune = self.mid_timers.check_mid_runes(clock_sec, position=position, match_id=match_id)
+            if mid_rune:
+                return mid_rune if self._emit(mid_rune, now) else None
 
-        lvl6_alert = self.mid_timers.check_mid_level_6(payload, clock_sec)
-        if lvl6_alert:
-            return lvl6_alert if self._emit(lvl6_alert, now) else None
+            lvl6_alert = self.mid_timers.check_mid_level_6(payload, clock_sec, match_id=match_id)
+            if lvl6_alert:
+                return lvl6_alert if self._emit(lvl6_alert, now) else None
 
-        game_mode = map_data.get("game_mode")
-        turbo = is_turbo(game_mode)
-        macro_alert = self.mid_timers.check_macro_timers(clock_sec, position=position, turbo=turbo)
-        if macro_alert:
-            return macro_alert if self._emit(macro_alert, now) else None
+            game_mode = map_data.get("game_mode")
+            turbo = is_turbo(game_mode)
+            macro_alert = self.mid_timers.check_macro_timers(
+                clock_sec,
+                position=position,
+                turbo=turbo,
+                match_id=match_id,
+            )
+            if macro_alert:
+                return macro_alert if self._emit(macro_alert, now) else None
 
         # 2. Аегис / Рошан — только если GSI реально отдаёт эти поля.
         aegis_alert = self._check_aegis_and_roshan(payload, catalog, my_team)
         if aegis_alert:
             return aegis_alert if self._emit(aegis_alert, now) else None
-
-        # Если автономность отключена — больше непрошеных советов не выдаём
-        if self.autonomy_level in ("off", "none", "request_only", "только по запросу", "выкл"):
-            return None
 
         # 3. Проверка кулдауна между свободными советами (не менее 45–60 сек)
         if now - self.last_advice_time < self.cooldown_seconds:

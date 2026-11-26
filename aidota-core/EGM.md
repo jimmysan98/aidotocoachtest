@@ -1,7 +1,9 @@
 # aidota-core
 
 ## Overview
-Cargo crate root for the AIDOTA Rust engine (`[Cargo.toml:package]` `name = "aidota-core"`, `version = "1.3.0"`, `edition = "2021"`), grouping the C-ABI library target, standalone async GSI/Web server binary, and domain submodules under `./src/`.
+Cargo crate root for the **frozen legacy** AIDOTA Rust engine (`[Cargo.toml:package]` `name = "aidota-core"`, `version = "1.3.0"`, `edition = "2021"`), grouping the C-ABI library target, standalone async GSI/Web server binary, and domain submodules under `./src/`.
+
+> **Phase 4 / Fork F2 Freeze Notice:** Canonical map-timer and counter-item tactical logic now lives strictly in Python (`aidota/map_timers.py`, `aidota/live_advice.py`, `aidota/meta_db.py`). `aidota-core/` tactical duplicates (`src/timers/macro_timer.rs`, `src/advice/counter_items.rs`) are officially frozen for compatibility/build stability only and must not evolve independently.
 
 ### Cargo Targets & Dependencies
 - **Package** (`[Cargo.toml:package]`): `aidota-core` `v1.3.0` (`edition = "2021"`, `authors = ["AIDOTA Team"]`) — "High-performance Rust core and GSI engine for AIDOTA".

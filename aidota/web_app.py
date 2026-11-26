@@ -34,7 +34,9 @@ from .config import (
 )
 from .context import (
     extract_own_abilities,
+    get_game_mode,
     get_live_gsi_snapshot,
+    is_turbo,
 )
 from .doctor import get_checks, runtime_diagnostics
 from .dota_install import add_to_steam_library, install_gsi_full
@@ -49,6 +51,7 @@ from .icons import (
 )
 from .live_advice import build_item_advice
 from .llm_router import compute_operating_mode, detect_provider_by_key
+from .map_timers import compute_map_timers, compute_roshan_state, extract_match_id
 from .security import mask_api_key_for_display, redact_secrets, register_config_secrets
 from .settings_gui import test_llm_connection
 from .telemetry import TelemetrySink
@@ -610,6 +613,23 @@ class AidotaWebApi:
                 except Exception:  # noqa: BLE001 — советы не должны ломать UI
                     log.debug("build_item_advice в get_state не удался", exc_info=True)
                     item_advice = []
+        coach_for_timers = coach if coach is not None else self._standalone_coach
+        tracker = getattr(coach_for_timers, "cooldown_tracker", None)
+        match_id = extract_match_id(raw_state) if raw_state else None
+        if tracker is not None and match_id and hasattr(tracker, "sync_match_id"):
+            try:
+                tracker.sync_match_id(match_id)
+            except Exception:  # noqa: BLE001
+                pass
+        roshan_death_sec = getattr(tracker, "roshan_death_sec", None)
+        is_daytime = raw_map.get("daytime") if isinstance(raw_map.get("daytime"), bool) else None
+        macro_timers = compute_map_timers(
+            clock_seconds if raw_state else None,
+            turbo=is_turbo(get_game_mode(raw_state)) if raw_state else False,
+            roshan_death_sec=roshan_death_sec,
+            is_daytime=is_daytime,
+        )
+
         gsi_data = {
             "connected": gsi_connected,
             "age": round(float(gsi_age), 1) if gsi_age is not None else None,
@@ -639,6 +659,7 @@ class AidotaWebApi:
             "ult_ready": ult_ready,
             "enemy_picks": enemy_picks,
             "item_advice": item_advice,
+            "macro_timers": macro_timers,
         }
 
         return {
@@ -650,6 +671,7 @@ class AidotaWebApi:
             ),
             "assistant_running": self._ctrl.is_running,
             "gsi": gsi_data,
+            "macro_timers": macro_timers,
             "audio_devices": self._ctrl.audio_devices(),
             "rust_active": False,
             "operating_mode": compute_operating_mode(cfg.llm),
@@ -749,6 +771,38 @@ class AidotaWebApi:
             self._ctrl.assistant._overlay.toggle()
             return True
         return False
+
+    def record_roshan(self) -> dict[str, Any]:
+        """Фиксирует смерть Рошана в каноническом CooldownTrackerSkill из WebUI."""
+        coach = self._assistant_coach() or self._get_or_create_standalone_coach()
+        payload: dict[str, Any] | None = None
+        if hasattr(coach, "gsi_payload"):
+            try:
+                payload = coach.gsi_payload()
+            except Exception:  # noqa: BLE001
+                payload = None
+        if payload is None and hasattr(self._ctrl, "raw_gsi_payload"):
+            try:
+                payload = self._ctrl.raw_gsi_payload()
+            except Exception:  # noqa: BLE001
+                payload = None
+        raw_map = payload.get("map") if isinstance(payload, dict) and isinstance(payload.get("map"), dict) else {}
+        clock_sec = raw_map.get("clock_time")
+        match_id = extract_match_id(payload) if payload else None
+        tracker = getattr(coach, "cooldown_tracker", None)
+        if tracker is not None:
+            message = tracker.record_roshan(clock_sec, match_id=match_id)
+            death_sec = tracker.roshan_death_sec
+        else:
+            message = coach.record_roshan() if hasattr(coach, "record_roshan") else "Рошан зафиксирован."
+            death_sec = clock_sec
+        roshan = compute_roshan_state(death_sec, clock_sec)
+        return {
+            "success": True,
+            "message": message,
+            "roshan_death_sec": death_sec,
+            "roshan": roshan,
+        }
 
     def _get_or_create_standalone_coach(self) -> Any:
         with self._cache_lock:

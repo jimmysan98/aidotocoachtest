@@ -1,11 +1,11 @@
 """CooldownTrackerSkill: голосовой трекер Рошана и ключевых ультимейтов врага.
 
-Позволяет игроку голосом зафиксировать:
-- «Астра, Рошан упал» / «Джарвис, Рошан упал»
+Позволяет игроку голосом или через UI зафиксировать:
+- «Астра, Рошан упал» / «Джарвис, Рошан упал» / кнопка в WebUI
 - «Астра, Равага ушла», «купол ушел», «блэкхол ушел», «дум ушел» и др.
 
-Автоматически считает время отката по часам GSI и предупреждает за 30 секунд
-до респавна/отката способности.
+Автоматически считает время отката по часам GSI, предупреждает за 30 секунд
+до респавна/отката способности и сбрасывается при смене ``matchid``.
 """
 
 from __future__ import annotations
@@ -39,8 +39,9 @@ class UltEntry:
 
 
 class CooldownTrackerSkill:
-    def __init__(self, enabled: bool = True):
+    def __init__(self, enabled: bool = True) -> None:
         self.enabled = bool(enabled)
+        self._match_id: str | None = None
         self.roshan_death_sec: float | None = None
         self._roshan_aegis_alerted = False
         self._roshan_min_alerted = False
@@ -48,17 +49,35 @@ class CooldownTrackerSkill:
         self.tracked_ults: dict[str, UltEntry] = {}
 
     def reset(self) -> None:
+        self._match_id = None
         self.roshan_death_sec = None
         self._roshan_aegis_alerted = False
         self._roshan_min_alerted = False
         self._roshan_max_alerted = False
         self.tracked_ults.clear()
 
+    def sync_match_id(self, match_id: Any) -> bool:
+        """Сбрасывает таймеры Рошана и ультимейтов при смене ``matchid``."""
+        if match_id is None or isinstance(match_id, bool):
+            return False
+        clean = str(match_id).strip()
+        if not clean or clean in ("0", "none", "null"):
+            return False
+        if self._match_id is not None and clean != self._match_id:
+            self.reset()
+            self._match_id = clean
+            return True
+        if self._match_id is None:
+            self._match_id = clean
+        return False
+
     # ------------------------------------------------------------------ #
     # Фиксация событий пользователем
     # ------------------------------------------------------------------ #
-    def record_roshan(self, clock_seconds: Any = None) -> str:
+    def record_roshan(self, clock_seconds: Any = None, *, match_id: Any = None) -> str:
         """Фиксирует убийство Рошана."""
+        if match_id is not None:
+            self.sync_match_id(match_id)
         sec = self._parse_seconds(clock_seconds)
         self.roshan_death_sec = sec
         self._roshan_aegis_alerted = False
@@ -67,8 +86,10 @@ class CooldownTrackerSkill:
         log.info("Рошан записан на секунде %s", sec)
         return "Рошан убит! Таймер Рошана запущен: Аегис пропадёт через 5 минут, Респаун с 8 до 11 минут. Предупрежу заранее."
 
-    def record_ult(self, ability_key: str | None, clock_seconds: Any = None) -> str:
+    def record_ult(self, ability_key: str | None, clock_seconds: Any = None, *, match_id: Any = None) -> str:
         """Фиксирует применение ультимейта врагом."""
+        if match_id is not None:
+            self.sync_match_id(match_id)
         sec = self._parse_seconds(clock_seconds)
         raw_key = (ability_key or "ravage").strip().lower()
         hero_to_ult = {
@@ -83,7 +104,7 @@ class CooldownTrackerSkill:
         }
         key = hero_to_ult.get(raw_key, raw_key)
         info = ULTIMATE_COOLDOWNS.get(key, {"name": key.title(), "cd": 120})
-        name = info["name"]
+        name = str(info["name"])
         cd = float(info["cd"])
 
         self.tracked_ults[key] = UltEntry(
@@ -94,7 +115,7 @@ class CooldownTrackerSkill:
             alerted_30s=False,
             is_ready_alerted=False,
         )
-        log.info("Зафиксирован откат способности %s (%s) на %d сек", key, name, cd)
+        log.info("Зафиксирован откат способности %s (%s) на %d сек", key, name, int(cd))
         return f"{name}: отсчёт запущен на {int(cd)} секунд. Предупрежу за 30 секунд до отката!"
 
     record_enemy_ult = record_ult
@@ -102,9 +123,11 @@ class CooldownTrackerSkill:
     # ------------------------------------------------------------------ #
     # Проверка таймеров на тиках GSI
     # ------------------------------------------------------------------ #
-    def check(self, clock_seconds: Any = None) -> str | None:
+    def check(self, clock_seconds: Any = None, *, match_id: Any = None) -> str | None:
         if not self.enabled:
             return None
+        if match_id is not None:
+            self.sync_match_id(match_id)
         sec = self._parse_seconds(clock_seconds)
 
         # 1. Проверяем Рошана
@@ -116,17 +139,17 @@ class CooldownTrackerSkill:
                 return None
 
             # Предупреждение об окончании Аегиса (4:30 = 270 сек)
-            if elapsed >= 270 and not self._roshan_aegis_alerted and elapsed < 310:
+            if 270 <= elapsed < 310 and not self._roshan_aegis_alerted:
                 self._roshan_aegis_alerted = True
                 return "Внимание: через 30 секунд пропадёт Аегис!"
 
             # Предупреждение за 30 сек до минимального респавна (7:30 = 450 сек)
-            if elapsed >= 450 and not self._roshan_min_alerted and elapsed < 490:
+            if 450 <= elapsed < 490 and not self._roshan_min_alerted:
                 self._roshan_min_alerted = True
                 return "Внимание: через 30 секунд возможно появление Рошана!"
 
             # Предупреждение за 30 сек до гарантированного респавна (10:30 = 630 сек)
-            if elapsed >= 630 and not self._roshan_max_alerted and elapsed < 670:
+            if 630 <= elapsed < 670 and not self._roshan_max_alerted:
                 self._roshan_max_alerted = True
                 return "Внимание: через 30 секунд гарантированный респавн Рошана!"
 
@@ -139,7 +162,7 @@ class CooldownTrackerSkill:
                 continue
 
             # Предупреждение за 30 секунд до отката
-            if elapsed >= (entry.duration - 30) and not entry.alerted_30s and elapsed < entry.duration:
+            if (entry.duration - 30) <= elapsed < entry.duration and not entry.alerted_30s:
                 entry.alerted_30s = True
                 return f"Внимание, через 30 секунд у врага откатится {entry.name}!"
 
@@ -156,7 +179,7 @@ class CooldownTrackerSkill:
     @staticmethod
     def _parse_seconds(clock_seconds: Any) -> float:
         try:
-            if clock_seconds is not None:
+            if clock_seconds is not None and not isinstance(clock_seconds, bool):
                 return float(clock_seconds)
         except (ValueError, TypeError):
             pass

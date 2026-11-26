@@ -1,3 +1,8 @@
+//! ОФИЦИАЛЬНАЯ ЗАМОРОЗКА (Phase 4 / Fork F2):
+//! Модуль сохранён исключительно для совместимости Rust C-ABI / `cargo test`.
+//! Канонический единый источник истины по всем таймерам карты, нейтральным тирам,
+//! Turbo-режиму и edge-алертам — Python-модуль `aidota/map_timers.py`.
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -1,3 +1,8 @@
+//! ОФИЦИАЛЬНАЯ ЗАМОРОЗКА (Phase 4 / Fork F2):
+//! Модуль сохранён исключительно для совместимости Rust C-ABI / `cargo test`.
+//! Канонический единый источник истины по контр-предметам и угрозам вражеских героев —
+//! Python-модули `aidota/live_advice.py` и `aidota/meta_db.py`.
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 

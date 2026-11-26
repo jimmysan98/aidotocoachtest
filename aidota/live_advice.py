@@ -60,8 +60,8 @@ ENEMY_ITEM_NOTES: dict[str, dict[str, Any]] = {
                 "priority": "LOW",
             },
         ],
-        "warning": "Linken's Sphere НЕ блокирует Omnislash — не трать на него слот "
-        "только ради защиты от Джаггернаута.",
+        "warning": "BKB не спасает от физического Omnislash; Linken's Sphere НЕ блокирует Omnislash — "
+        "не трать на него слот только ради защиты от Джаггернаута.",
     },
     "legion_commander": {
         "name": "Legion Commander",
@@ -181,6 +181,7 @@ ENEMY_ITEM_NOTES: dict[str, dict[str, Any]] = {
                 "priority": "LOW",
             },
         ],
+        "warning": "BKB сбрасывает Global Silence и позволяет кастовать в драке.",
     },
     "phantom_assassin": {
         "name": "Phantom Assassin",
@@ -426,6 +427,120 @@ ENEMY_ITEM_NOTES: dict[str, dict[str, Any]] = {
         ],
         "warning": "BKB от Chronosphere не спасает — старайся стоять рассредоточенно.",
     },
+    "enigma": {
+        "name": "Enigma",
+        "threat": "Black Hole (контроль по области сквозь BKB)",
+        "items": [
+            {
+                "item": "Aeon Disk",
+                "why": "переживает урон внутри Black Hole и даёт шанс выйти",
+                "priority": "HIGH",
+            },
+            {
+                "item": "Scythe of Vyse",
+                "why": "дальний контроль помогает сбить Black Hole снаружи",
+                "priority": "HIGH",
+            },
+        ],
+        "warning": "BKB от Black Hole не спасает — держись рассредоточенно и сбивай каст издалека.",
+    },
+    "magnataur": {
+        "name": "Magnus",
+        "threat": "Reverse Polarity (стяжка пробивает BKB)",
+        "items": [
+            {
+                "item": "Aeon Disk",
+                "why": "не даёт погибнуть за время RP и Skewers",
+                "priority": "HIGH",
+            },
+            {
+                "item": "Scythe of Vyse",
+                "why": "мгновенный хекс срывает инициацию Магнуса",
+                "priority": "MEDIUM",
+            },
+        ],
+        "warning": "BKB не защищает от Reverse Polarity — не кучкуйтесь впятером.",
+    },
+    "morphling": {
+        "name": "Morphling",
+        "threat": "перекачка ловкости/силы и взрывной урон",
+        "items": [
+            {
+                "item": "Spirit Vessel",
+                "why": "срезает лечение от перекачки в силу",
+                "priority": "HIGH",
+            },
+            {
+                "item": "Orchid Malevolence",
+                "why": "сайленс не даёт нажать Waveform и Morph",
+                "priority": "MEDIUM",
+            },
+        ],
+    },
+    "alchemist": {
+        "name": "Alchemist",
+        "threat": "Chemical Rage (бешеный реген) и ранний темп",
+        "items": [
+            {
+                "item": "Spirit Vessel",
+                "why": "срезает реген ультимейта Алхимика",
+                "priority": "HIGH",
+            },
+            {
+                "item": "Eye of Skadi",
+                "why": "режет лечение и кайтит Алхимика в драке",
+                "priority": "MEDIUM",
+            },
+        ],
+    },
+    "shredder": {
+        "name": "Timbersaw",
+        "threat": "реактор брони и чистый урон",
+        "items": [
+            {
+                "item": "Silver Edge",
+                "why": "отключает стаки брони Reactive Armor",
+                "priority": "HIGH",
+            },
+            {
+                "item": "Spirit Vessel",
+                "why": "режет реген и живучесть в затяжном бою",
+                "priority": "MEDIUM",
+            },
+        ],
+    },
+    "brewmaster": {
+        "name": "Brewmaster",
+        "threat": "уклонение Drunken Brawler и Primal Split",
+        "items": [
+            {
+                "item": "Monkey King Bar",
+                "why": "пробивает уклонения в стойке",
+                "priority": "MEDIUM",
+            },
+            {
+                "item": "Eul's Scepter of Divinity",
+                "why": "кайтит панд во время ультимейта",
+                "priority": "MEDIUM",
+            },
+        ],
+    },
+    "warlock": {
+        "name": "Warlock",
+        "threat": "Fatal Bonds, Upheaval и големы",
+        "items": [
+            {
+                "item": "Force Staff",
+                "why": "выводит из замедления Upheaval",
+                "priority": "HIGH",
+            },
+            {
+                "item": "Glimmer Cape",
+                "why": "сейвит команду и помогает переживать големов",
+                "priority": "MEDIUM",
+            },
+        ],
+    },
 }
 
 # Эквиваленты апгрейдов: если куплен старший слот, базовый больше не советуем.
@@ -533,8 +648,104 @@ def _norm_hero(value: Any) -> str:
         "сларк": "slark",
         "войд": "faceless_void",
         "void": "faceless_void",
+        "магнус": "magnataur",
+        "magnus": "magnataur",
+        "тимбер": "shredder",
+        "timbersaw": "shredder",
+        "морф": "morphling",
+        "алхим": "alchemist",
+        "энигма": "enigma",
     }
     return aliases.get(text, text)
+
+
+def format_enemy_note_line(hero_key_or_name: Any) -> str | None:
+    """Форматирует короткую подсказку по контр-предметам врага из единой ``ENEMY_ITEM_NOTES``."""
+    hid = _norm_hero(hero_key_or_name)
+    note = ENEMY_ITEM_NOTES.get(hid)
+    if note is None:
+        return None
+    items = " / ".join(
+        str(entry.get("item") or "").strip()
+        for entry in (note.get("items") or [])[:4]
+        if isinstance(entry, Mapping) and str(entry.get("item") or "").strip()
+    )
+    threat = str(note.get("threat") or "").strip()
+    warning = str(note.get("warning") or "").strip()
+    parts: list[str] = []
+    if items:
+        parts.append(items)
+    tail_bits = [bit for bit in (threat, warning) if bit]
+    if parts and tail_bits:
+        return f"{parts[0]} — {'; '.join(tail_bits)}"
+    return parts[0] if parts else (warning or threat or None)
+
+
+def get_enemy_item_hints(enemies: Iterable[Any] | None, *, limit: int = 5) -> list[str]:
+    """Возвращает дедуплицированные подсказки по контр-предметам против списка врагов."""
+    hints: list[str] = []
+    seen_heroes: set[str] = set()
+    max_items = max(1, int(limit or 1))
+    for enemy in enemies or []:
+        text = str(enemy or "").strip()
+        if not text:
+            continue
+        hid = _norm_hero(text)
+        if not hid or hid in seen_heroes:
+            continue
+        seen_heroes.add(hid)
+        line = format_enemy_note_line(hid)
+        if line is None:
+            try:
+                from . import meta_db
+
+                counters = meta_db.get_hero_counters(text)
+            except Exception:  # noqa: BLE001
+                counters = None
+            if isinstance(counters, Mapping):
+                items = [str(i) for i in (counters.get("counter_items") or [])[:3]]
+                tip = str(counters.get("tip") or "").strip()
+                if items:
+                    line = f"{' / '.join(items)} — {tip}" if tip else " / ".join(items)
+        if line:
+            display = str((ENEMY_ITEM_NOTES.get(hid) or {}).get("name") or text)
+            hints.append(f"{display} → {line}")
+        if len(hints) >= max_items:
+            break
+    return hints[:max_items]
+
+
+def build_enemy_match_counter_tips(
+    enemies: Iterable[Any] | None,
+    owned_items: Iterable[Any] | None,
+    *,
+    limit: int = 3,
+) -> list[str]:
+    """Для послематчевого разбора: какие ключевые контр-слоты против врагов не были куплены."""
+    owned_low = {str(it or "").strip().lower() for it in (owned_items or []) if str(it or "").strip()}
+    tips: list[str] = []
+    seen: set[str] = set()
+    for enemy in enemies or []:
+        hid = _norm_hero(enemy)
+        if not hid or hid in seen:
+            continue
+        seen.add(hid)
+        note = ENEMY_ITEM_NOTES.get(hid)
+        if note is None:
+            continue
+        item_names = [
+            str(entry.get("item") or "").strip()
+            for entry in (note.get("items") or [])
+            if isinstance(entry, Mapping) and str(entry.get("item") or "").strip()
+        ]
+        has_any = any(any(it.lower() in owned for owned in owned_low) for it in item_names)
+        if not has_any:
+            line = format_enemy_note_line(hid)
+            if line:
+                tips.append(f"Против {note.get('name') or hid}: рекомендуется {line}")
+        if len(tips) >= max(1, int(limit or 1)):
+            break
+    return tips
 
 
 def _primary_item(name: Any) -> str:

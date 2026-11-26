@@ -15,13 +15,14 @@ from .audio import AudioError, VoiceInput
 from .coach import Coach
 from .commands import Intent
 from .config import DEFAULT_CONFIG_PATH, PROJECT_ROOT, Config, save_config, save_llm_only
-from .context import AutonomousCoachAgent, _dig, collect_draft
+from .context import AutonomousCoachAgent, _dig, collect_draft, get_game_mode, is_turbo
 from .dota_api import DotaApi
 from .gsi import GsiError, GsiServer
 from .heroes import HeroCatalog, HeroMatch
 from .icons import count_icons, fetch_hero_icons
 from .llm_router import compute_operating_mode
 from .logging_setup import get_logger
+from .map_timers import describe_neutral_schedule
 from .meta_db import set_live_meta_provider
 from .overlay import Overlay
 from .roles import position_label
@@ -120,7 +121,9 @@ class Assistant:
             autonomy_level=autonomy,
             cooldown_seconds=45.0,
             skill_level=getattr(config.player_profile, "skill_level", "beginner"),
+            macro_timer=self._coach.macro_timer,
         )
+        self._coach.macro_timer.proactive_enabled = not self._agent.is_autonomy_off()
         self._vision = HeroVision(config.vision, PROJECT_ROOT, self._catalog)
         self._worker: threading.Thread | None = None
         self._text_queue: queue.Queue[str] = queue.Queue()
@@ -226,6 +229,11 @@ class Assistant:
         clean_lvl = level.strip().lower()
         if hasattr(self, "_agent") and self._agent is not None:
             self._agent.set_autonomy_level(clean_lvl)
+        if hasattr(self, "_coach") and hasattr(self._coach, "macro_timer"):
+            off = self._agent.is_autonomy_off() if getattr(self, "_agent", None) else clean_lvl in (
+                "off", "none", "request_only", "только по запросу", "выкл",
+            )
+            self._coach.macro_timer.proactive_enabled = not off
         self.config.player_profile.autonomy_level = clean_lvl
         if self.config_path:
             save_config(self.config, self.config_path)
@@ -1103,20 +1111,8 @@ class Assistant:
         if kind == commands.NEUTRALS_ALERT:
             payload = self._coach.gsi_payload()
             clock_sec = _dig(payload, "map", "clock_time") if payload else None
-            if clock_sec is not None and clock_sec >= 0:
-                sec = int(clock_sec)
-                if sec < 420:
-                    self._say(f"Нейтральные предметы 1-го разряда появятся на 7-й минуте, через {420 - sec} секунд.")
-                elif sec < 1020:
-                    self._say(f"Нейтральные предметы 2-го разряда появятся на 17-й минуте, через {(1020 - sec) // 60} минут.")
-                elif sec < 1620:
-                    self._say(f"Нейтральные предметы 3-го разряда появятся на 27-й минуте, через {(1620 - sec) // 60} минут.")
-                elif sec < 2220:
-                    self._say("Нейтральные предметы 4-го разряда появятся на 37-й минуте.")
-                else:
-                    self._say("Доступны нейтралки высших разрядов!")
-            else:
-                self._say("Разряды нейтральных предметов открываются на 7-й, 17-й, 27-й, 37-й и 60-й минутах.")
+            turbo = is_turbo(get_game_mode(payload))
+            self._say(describe_neutral_schedule(clock_sec, turbo=turbo))
             return
         if kind == commands.SET_POSITION:
             if intent.position is None:

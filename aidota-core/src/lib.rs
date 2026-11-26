@@ -1,3 +1,9 @@
+//! ОФИЦИАЛЬНАЯ ЗАМОРОЗКА (Phase 4 / Fork F2):
+//! Единый источник истины (SSOT) по макро-таймерам, контр-предметам и тактике
+//! перенесён и поддерживается в Python-слое (`aidota/map_timers.py`,
+//! `aidota/live_advice.py`, `aidota/meta_db.py`). Rust-дубликаты в `aidota-core/`
+//! заморожены на чтение для совместимости FFI/сборки и не вызываются Python-ядром.
+
 pub mod advice;
 pub mod gsi;
 pub mod state;

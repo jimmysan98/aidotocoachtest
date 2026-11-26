@@ -1,7 +1,7 @@
 # Advice (`aidota-core/src/advice`)
 
 ## Overview
-Rule-based counter-item recommendation engine for Dota 2 matches. Evaluates the player's current gold, owned inventory, and enemy hero list to emit prioritized `ItemAdvice` suggestions.
+**FROZEN LEGACY MODULE (Phase 4 / Fork F2):** Hardcoded rule-based counter-item recommendation engine kept only for Rust C-ABI / `cargo test` compatibility. The canonical single source of truth for counter-items and enemy threat analysis is Python (`aidota/live_advice.py` and `aidota/meta_db.py`). Do not add new tactical rules here.
 
 ## Interface
 - `[mod.rs:counter_items]` — Public submodule exposing counter-item structures and recommendation logic.

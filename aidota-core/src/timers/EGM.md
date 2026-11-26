@@ -1,7 +1,7 @@
 # Timers (`aidota-core/src/timers`)
 
 ## Overview
-Deterministic Dota 2 macro objective timer and alert calculator. Derives day/night countdowns, rune timers, lotus pool intervals, Tormentor spawn countdown, stack/pull timing, Roshan respawn windows, and active Russian-language alert strings from match clock time and optional Roshan kill timestamp.
+**FROZEN LEGACY MODULE (Phase 4 / Fork F2):** Deterministic Dota 2 macro objective timer and alert calculator kept only for Rust C-ABI / `cargo test` compatibility. The canonical single source of truth for map timers, neutral item schedules (7/15/25/35/60 min + Turbo), Roshan windows, and edge-triggered alerts is `aidota/map_timers.py`. Do not add new game rules here.
 
 ## Interface
 - `[mod.rs:macro_timer]` — Public submodule exposing macro timer calculations.

@@ -26,7 +26,12 @@ from typing import Any, Iterable, Mapping
 
 from .beginner import level_label, normalize_skill_level
 from .heroes import HeroCatalog, normalize
-from .prompt_assembly import PromptAssembly, build_dynamic_suffix, build_match_stable_prefix
+from .prompt_assembly import (
+    PromptAssembly,
+    build_compact_match_suffix,
+    build_dynamic_suffix,
+    build_match_stable_prefix,
+)
 from .roles import position_label
 
 log = logging.getLogger("aidota.coach_brain")
@@ -1234,11 +1239,18 @@ def retrieve_knowledge(
                     if tip:
                         snippet += f". {tip}"
                     legacy = _legacy_hint_for(enemy, legacy_counter_hints)
+                    if not legacy and meta_db is not None and legacy_counter_hints is None:
+                        canon_notes = getattr(meta_db, "HERO_COUNTER_NOTES", None)
+                        hero_id = counters.get("id")
+                        if isinstance(canon_notes, Mapping) and hero_id:
+                            legacy = canon_notes.get(hero_id)
                     if legacy:
-                        snippet += f". Классические варианты: {legacy.rstrip('.')}"
+                        snippet += f". Классические варианты: {str(legacy).rstrip('.')}"
                     snippets.append(snippet + ".")
                     continue
             legacy = _legacy_hint_for(enemy, legacy_counter_hints)
+            if not legacy and meta_db is not None and legacy_counter_hints is None:
+                legacy = _safe_call(meta_db, "get_hero_counter_note", enemy)
             if legacy:
                 snippets.append(f"Против {enemy}: {legacy}")
 
@@ -1517,6 +1529,7 @@ def render_prompt_assembly(
     signature_heroes: Iterable[str] = (),
     my_picks: Iterable[str] = (),
     enemy_picks: Iterable[str] = (),
+    match_snapshot: str = "",
     gsi_summary: str = "",
     memory_summary: str = "",
 ) -> PromptAssembly:
@@ -1550,6 +1563,7 @@ def render_prompt_assembly(
         profile_text=profile_text,
         custom_focus=custom_focus,
         memory_summary=memory_summary,
+        match_snapshot=match_snapshot,
         gsi_summary=gsi_summary,
         brief_text=brief_text,
         knowledge=knowledge or (),
